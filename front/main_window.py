@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
         tab_layout.setSpacing(5)
         
         self.tab_buttons = {}
-        for tab_name in ["Grid", "Wells", "Fractures", "Results"]:
+        for tab_name in ["Grid", "PVT", "Wells", "Fractures", "Results"]:
             btn = QPushButton(tab_name)
             btn.setCheckable(True)
             btn.setFixedHeight(30)
@@ -562,6 +562,9 @@ class MainWindow(QMainWindow):
         self.grid_page = self.create_grid_page()
         self.param_stack.addWidget(self.grid_page)
         
+        self.pvt_page = self.create_pvt_page()
+        self.param_stack.addWidget(self.pvt_page)
+        
         # Wells参数页面
         self.wells_page = self.create_wells_page()
         self.param_stack.addWidget(self.wells_page)
@@ -580,6 +583,9 @@ class MainWindow(QMainWindow):
 
         self.corner_grid_page = self.create_corner_grid_page()
         self.corner_param_stack.addWidget(self.corner_grid_page)
+
+        self.corner_pvt_page = self.create_corner_pvt_page()
+        self.corner_param_stack.addWidget(self.corner_pvt_page)
 
         self.corner_wells_page = self.create_corner_wells_page()
         self.corner_param_stack.addWidget(self.corner_wells_page)
@@ -640,6 +646,24 @@ class MainWindow(QMainWindow):
         
         return page
 
+    def create_pvt_page(self):
+        """创建 PVT 参数页面，支持加密/不加密两套参数面板切换。"""
+        page = QWidget()
+        page.setStyleSheet("background-color: #2b2b2b;")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self.pvt_param_stack = QStackedWidget()
+        self.pvt_unrefined_page = self.create_unrefined_pvt_params_page()
+        self.pvt_refined_page = self.create_refined_pvt_params_page()
+        self.pvt_param_stack.addWidget(self.pvt_unrefined_page)
+        self.pvt_param_stack.addWidget(self.pvt_refined_page)
+        self.update_pvt_parameter_panel(self.combo_grid_refinement.currentText())
+        layout.addWidget(self.pvt_param_stack, 1)
+        layout.addStretch()
+
+        return page
+
     def create_unrefined_grid_params_page(self):
         """未加密角格参数面板，默认值以源码为准。"""
         content = QWidget()
@@ -680,29 +704,6 @@ class MainWindow(QMainWindow):
             ("Pressure (bar):", self.basic_spin_initial_pressure),
             ("Sw:", self.basic_spin_initial_sw),
             ("Sg:", self.basic_spin_initial_sg),
-        ]))
-
-        self.basic_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
-        self.basic_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
-        self.basic_spin_mu_g = self.create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
-        self.basic_spin_cw = self.create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
-        self.basic_spin_co = self.create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
-        self.basic_spin_cg = self.create_double_spinbox(0.0, 1.0, 1e-3, decimals=6, step=1e-4)
-        self.basic_spin_p_ref = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
-        self.basic_spin_swi = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        self.basic_spin_sor = self.create_double_spinbox(0.0, 1.0, 0.01, decimals=4)
-        self.basic_spin_sgc = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        layout.addWidget(self.create_parameter_group("Fluid Properties", [
-            ("mu_w (cP):", self.basic_spin_mu_w),
-            ("mu_o (cP):", self.basic_spin_mu_o),
-            ("mu_g (cP):", self.basic_spin_mu_g),
-            ("cw (1/bar):", self.basic_spin_cw),
-            ("co (1/bar):", self.basic_spin_co),
-            ("cg (1/bar):", self.basic_spin_cg),
-            ("P_ref (bar):", self.basic_spin_p_ref),
-            ("Swi:", self.basic_spin_swi),
-            ("Sor:", self.basic_spin_sor),
-            ("Sgc:", self.basic_spin_sgc),
         ]))
 
         self.basic_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
@@ -776,6 +777,56 @@ class MainWindow(QMainWindow):
             ("Sg:", self.refined_spin_initial_sg),
         ]))
 
+        self.refined_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
+        self.refined_spin_time_step = self.create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
+        layout.addWidget(self.create_parameter_group("Simulation Control", [
+            ("Simulation Time (days):", self.refined_spin_simulation_time),
+            ("Time Step (days):", self.refined_spin_time_step),
+        ]))
+        layout.addStretch()
+
+        return self.wrap_in_scroll_area(content)
+
+    def create_unrefined_pvt_params_page(self):
+        """未加密 PVT 参数页面。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.basic_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
+        self.basic_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
+        self.basic_spin_mu_g = self.create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
+        self.basic_spin_cw = self.create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
+        self.basic_spin_co = self.create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
+        self.basic_spin_cg = self.create_double_spinbox(0.0, 1.0, 1e-3, decimals=6, step=1e-4)
+        self.basic_spin_p_ref = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
+        self.basic_spin_swi = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.basic_spin_sor = self.create_double_spinbox(0.0, 1.0, 0.01, decimals=4)
+        self.basic_spin_sgc = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        layout.addWidget(self.create_parameter_group("Fluid Properties", [
+            ("mu_w (cP):", self.basic_spin_mu_w),
+            ("mu_o (cP):", self.basic_spin_mu_o),
+            ("mu_g (cP):", self.basic_spin_mu_g),
+            ("cw (1/bar):", self.basic_spin_cw),
+            ("co (1/bar):", self.basic_spin_co),
+            ("cg (1/bar):", self.basic_spin_cg),
+            ("P_ref (bar):", self.basic_spin_p_ref),
+            ("Swi:", self.basic_spin_swi),
+            ("Sor:", self.basic_spin_sor),
+            ("Sgc:", self.basic_spin_sgc),
+        ]))
+        layout.addStretch()
+
+        return self.wrap_in_scroll_area(content)
+
+    def create_refined_pvt_params_page(self):
+        """加密 PVT 参数页面。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
         self.refined_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
         self.refined_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
         self.refined_spin_mu_g = self.create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
@@ -797,13 +848,6 @@ class MainWindow(QMainWindow):
             ("Swi:", self.refined_spin_swi),
             ("Sor:", self.refined_spin_sor),
             ("Sgc:", self.refined_spin_sgc),
-        ]))
-
-        self.refined_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
-        self.refined_spin_time_step = self.create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
-        layout.addWidget(self.create_parameter_group("Simulation Control", [
-            ("Simulation Time (days):", self.refined_spin_simulation_time),
-            ("Time Step (days):", self.refined_spin_time_step),
         ]))
         layout.addStretch()
 
@@ -858,6 +902,14 @@ class MainWindow(QMainWindow):
             else:
                 self.wells_param_stack.setCurrentWidget(self.wells_unrefined_page)
 
+    def update_pvt_parameter_panel(self, refinement_text):
+        """根据是否加密切换 PVT 参数面板。"""
+        if hasattr(self, 'pvt_param_stack'):
+            if refinement_text == "加密":
+                self.pvt_param_stack.setCurrentWidget(self.pvt_refined_page)
+            else:
+                self.pvt_param_stack.setCurrentWidget(self.pvt_unrefined_page)
+
     def update_fractures_parameter_panel(self, refinement_text):
         """根据是否加密切换 Fractures 参数面板。"""
         if hasattr(self, 'fractures_param_stack'):
@@ -867,8 +919,9 @@ class MainWindow(QMainWindow):
                 self.fractures_param_stack.setCurrentWidget(self.fractures_unrefined_page)
 
     def update_parameter_mode(self, refinement_text):
-        """统一同步 Grid/Wells/Fractures 三个页签的参数面板。"""
+        """统一同步 Grid/PVT/Wells/Fractures 四个页签的参数面板。"""
         self.update_grid_parameter_panel(refinement_text)
+        self.update_pvt_parameter_panel(refinement_text)
         self.update_wells_parameter_panel(refinement_text)
         self.update_fractures_parameter_panel(refinement_text)
 
@@ -1457,11 +1510,32 @@ class MainWindow(QMainWindow):
         self.corner_initial_state_panel = InitialStatePanel()
         layout.addWidget(self.corner_initial_state_panel)
 
-        self.corner_fluid_panel = FluidPropertiesPanel()
-        layout.addWidget(self.corner_fluid_panel)
-
         self.corner_sim_control_panel = SimulationControlPanel()
         layout.addWidget(self.corner_sim_control_panel)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+        return page
+
+    def create_corner_pvt_page(self):
+        """创建 Corner Grid 的 PVT 页面。"""
+        page = QWidget()
+        page.setStyleSheet("background-color: #2b2b2b;")
+        main_layout = QVBoxLayout(page)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self.corner_fluid_panel = FluidPropertiesPanel()
+        layout.addWidget(self.corner_fluid_panel)
 
         layout.addStretch()
         scroll.setWidget(content)
@@ -1936,7 +2010,7 @@ class MainWindow(QMainWindow):
         for name, btn in self.tab_buttons.items():
             btn.setChecked(name == tab_name)
         
-        tab_index = {"Grid": 0, "Wells": 1, "Fractures": 2, "Results": 3}
+        tab_index = {"Grid": 0, "PVT": 1, "Wells": 2, "Fractures": 3, "Results": 4}
         self.get_active_param_stack().setCurrentIndex(tab_index.get(tab_name, 0))
         self.sync_selection_tool_status()
     
