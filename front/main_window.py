@@ -27,6 +27,8 @@ from .input_panel import (
     NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
     SimulationControlPanel, groupbox_style
 )
+from .pvt_plot import PVTPlotWidget
+from .grdecl_parser import convert_grdecl_to_temp_csv
 
 # 导入可视化模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -697,15 +699,6 @@ class MainWindow(QMainWindow):
             ("Kz (Darcy):", self.basic_spin_perm_z),
         ]))
 
-        self.basic_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
-        self.basic_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        self.basic_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
-        layout.addWidget(self.create_parameter_group("Initial State", [
-            ("Pressure (bar):", self.basic_spin_initial_pressure),
-            ("Sw:", self.basic_spin_initial_sw),
-            ("Sg:", self.basic_spin_initial_sg),
-        ]))
-
         self.basic_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
         layout.addWidget(self.create_parameter_group("Simulation Control", [
             ("Simulation Time (days):", self.basic_spin_simulation_time),
@@ -768,15 +761,6 @@ class MainWindow(QMainWindow):
             ("Kz (Darcy):", self.refined_spin_perm_z),
         ]))
 
-        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
-        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
-        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        layout.addWidget(self.create_parameter_group("Initial State", [
-            ("Pressure (bar):", self.refined_spin_initial_pressure),
-            ("Sw:", self.refined_spin_initial_sw),
-            ("Sg:", self.refined_spin_initial_sg),
-        ]))
-
         self.refined_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
         self.refined_spin_time_step = self.create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
         layout.addWidget(self.create_parameter_group("Simulation Control", [
@@ -793,6 +777,20 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        self.pvt_plot_btn = QPushButton("绘图")
+        self.pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.pvt_plot_btn)
+
+        self.basic_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
+        self.basic_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.basic_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
+        layout.addWidget(self.create_parameter_group("Initial State", [
+            ("Pressure (bar):", self.basic_spin_initial_pressure),
+            ("Sw:", self.basic_spin_initial_sw),
+            ("Sg:", self.basic_spin_initial_sg),
+        ]))
 
         self.basic_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
         self.basic_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
@@ -826,6 +824,20 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        self.pvt_plot_btn = QPushButton("绘图")
+        self.pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.pvt_plot_btn)
+
+        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
+        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
+        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        layout.addWidget(self.create_parameter_group("Initial State", [
+            ("Pressure (bar):", self.refined_spin_initial_pressure),
+            ("Sw:", self.refined_spin_initial_sw),
+            ("Sg:", self.refined_spin_initial_sg),
+        ]))
 
         self.refined_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
         self.refined_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
@@ -1377,6 +1389,34 @@ class MainWindow(QMainWindow):
         self.corner_coord_file_path = ""
         self.corner_zcorn_file_path = ""
 
+         # ================= 新增：一键导入 GRDECL 按钮 =================
+        grid_import_layout = QHBoxLayout()
+        grid_import_btn = QPushButton("一键导入 .GRDECL 网格...")
+        grid_import_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0078D7;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #005A9E;
+            }
+        """)
+        grid_import_btn.clicked.connect(self.load_grdecl_file)
+        grid_import_layout.addWidget(grid_import_btn)
+        file_layout.addLayout(grid_import_layout)
+        
+        # 加一条灰色的横线，将新按钮和下面的 CSV 选项隔开，UI 更清晰
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #555555; margin: 5px 0px;")
+        file_layout.addWidget(line)
+        # ==============================================================
+
+
         coord_layout = QHBoxLayout()
         coord_label = QLabel("COORD:")
         coord_label.setFixedWidth(60)
@@ -1507,9 +1547,6 @@ class MainWindow(QMainWindow):
         self.corner_matrix_panel = MatrixPropertiesPanel()
         layout.addWidget(self.corner_matrix_panel)
 
-        self.corner_initial_state_panel = InitialStatePanel()
-        layout.addWidget(self.corner_initial_state_panel)
-
         self.corner_sim_control_panel = SimulationControlPanel()
         layout.addWidget(self.corner_sim_control_panel)
 
@@ -1533,6 +1570,14 @@ class MainWindow(QMainWindow):
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
+
+        self.corner_pvt_plot_btn = QPushButton("绘图")
+        self.corner_pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.corner_pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.corner_pvt_plot_btn)
+
+        self.corner_initial_state_panel = InitialStatePanel()
+        layout.addWidget(self.corner_initial_state_panel)
 
         self.corner_fluid_panel = FluidPropertiesPanel()
         layout.addWidget(self.corner_fluid_panel)
@@ -1717,6 +1762,7 @@ class MainWindow(QMainWindow):
             self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(50.0, cpg.ly / 4.0))
             self.corner_hydraulic_frac_panel.spin_height.setValue(min(20.0, cpg.lz * 0.4))
 
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
             self.update_corner_grid_statistics()
 
@@ -1914,14 +1960,79 @@ class MainWindow(QMainWindow):
         if self.current_algorithm == "black_oil_corner_grid" and hasattr(self, 'corner_param_stack'):
             return self.corner_param_stack
         return self.param_stack
+
+    def get_current_pvt_plot_inputs(self):
+        """从当前 UI 页面收集 PVT 曲线所需参数。"""
+        if self.current_algorithm == "black_oil_corner_grid":
+            initial_state = self.corner_initial_state_panel.get_values()
+            fluid_props = self.corner_fluid_panel.get_values()
+            return {
+                'sw': float(initial_state['initial_sw']),
+                'sg': float(initial_state['initial_sg']),
+                'swi': float(fluid_props['swi']),
+                'sor': float(fluid_props['sor']),
+                'sgc': float(fluid_props['sgc']),
+            }
+
+        if self.is_refined_grid_mode():
+            return {
+                'sw': float(self.refined_spin_initial_sw.value()),
+                'sg': float(self.refined_spin_initial_sg.value()),
+                'swi': float(self.refined_spin_swi.value()),
+                'sor': float(self.refined_spin_sor.value()),
+                'sgc': float(self.refined_spin_sgc.value()),
+            }
+
+        return {
+            'sw': float(self.basic_spin_initial_sw.value()),
+            'sg': float(self.basic_spin_initial_sg.value()),
+            'swi': float(self.basic_spin_swi.value()),
+            'sor': float(self.basic_spin_sor.value()),
+            'sgc': float(self.basic_spin_sgc.value()),
+        }
+
+    def plot_current_pvt_curve(self):
+        """在中间显示区域绘制当前工况对应的气水截面曲线。"""
+        try:
+            plot_inputs = self.get_current_pvt_plot_inputs()
+            so_fixed = self.pvt_plot_widget.plot_gas_water_section(**plot_inputs)
+            self.show_pvt_center_view()
+            self.append_sim_status(
+                "PVT plot generated: "
+                f"So_fixed={so_fixed:.4f}, "
+                f"Sw={plot_inputs['sw']:.4f}, Sg={plot_inputs['sg']:.4f}, "
+                f"Swi={plot_inputs['swi']:.4f}, Sor={plot_inputs['sor']:.4f}, Sgc={plot_inputs['sgc']:.4f}"
+            )
+            self.status_bar.showMessage("PVT curve generated")
+        except Exception as exc:
+            self.append_sim_status(f"PVT plot error: {exc}")
+            self.status_bar.showMessage("PVT curve failed")
     
     def create_center_panel(self):
         """创建中间VTK视图面板 - 与原文件一致"""
+        self.center_stack = QStackedWidget()
+        self.center_stack.setStyleSheet("background-color: #000000;")
+        self.center_layout.addWidget(self.center_stack)
+
         self.vtk_widget = VTKWidget()
-        self.center_layout.addWidget(self.vtk_widget)
+        self.center_stack.addWidget(self.vtk_widget)
+
+        self.pvt_plot_widget = PVTPlotWidget()
+        self.center_stack.addWidget(self.pvt_plot_widget)
+        self.show_vtk_center_view()
         
         # 初始化VTK渲染器
         self.vtk_renderer = VTKRenderer(self.vtk_widget)
+
+    def show_vtk_center_view(self):
+        """切回中间区域的 VTK 视图。"""
+        if hasattr(self, 'center_stack') and hasattr(self, 'vtk_widget'):
+            self.center_stack.setCurrentWidget(self.vtk_widget)
+
+    def show_pvt_center_view(self):
+        """切换到中间区域的 PVT 曲线视图。"""
+        if hasattr(self, 'center_stack') and hasattr(self, 'pvt_plot_widget'):
+            self.center_stack.setCurrentWidget(self.pvt_plot_widget)
     
     def create_bottom_panel(self):
         """创建底部数据面板 - 与原文件一致，3个panel"""
@@ -1997,6 +2108,26 @@ class MainWindow(QMainWindow):
             }
             QCheckBox {
                 color: #cccccc;
+            }
+        """
+
+    def action_button_style(self):
+        """统一的操作按钮样式。"""
+        return """
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
             }
         """
     
@@ -2437,6 +2568,7 @@ class MainWindow(QMainWindow):
             self.append_sim_status("  Data Loaded Successfully!")
             self.append_sim_status("=" * 50)
             
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
             self.update_corner_grid_statistics()
             
@@ -2667,7 +2799,8 @@ class MainWindow(QMainWindow):
             self.append_sim_status("  Simulation Completed Successfully!")
             self.append_sim_status("=" * 50)
             
-            # 只渲染压力场、裂缝、井，不重新渲染网格（用户已先点击"绘制"显示网格）
+            # 只渲染压力场、裂缝、井，不重新渲染网格（用户已先点击“绘制”显示网格）
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_pressure_field(self.sim_data)
             self.vtk_renderer.render_corner_wells(self.sim_data)
             self.vtk_renderer.render_corner_fractures(self.sim_data)
@@ -3497,6 +3630,7 @@ class MainWindow(QMainWindow):
         """渲染平滑压力场"""
         # 检查是否切换了算法，如果是则清除前一个算法的绘制
         self.check_and_clear_if_algorithm_switched()
+        self.show_vtk_center_view()
         
         if self.current_algorithm == "black_oil_corner_grid" and self.sim_data.corner_point_grid:
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
@@ -3509,6 +3643,7 @@ class MainWindow(QMainWindow):
         """渲染裂缝"""
         # 检查是否切换了算法，如果是则清除前一个算法的绘制
         self.check_and_clear_if_algorithm_switched()
+        self.show_vtk_center_view()
         
         self.vtk_renderer.render_fractures(self.sim_data)
     
@@ -3585,6 +3720,36 @@ class MainWindow(QMainWindow):
         if show and not self.vtk_renderer.cache['fracture_actors']:
             self.render_fractures()
         self.vtk_renderer.toggle_fractures(show)
+
+    def load_grdecl_file(self):
+        """导入标准的 ECLIPSE .GRDECL 文件并静默转换为 CSV"""
+        # 1. 弹出文件选择框，只让用户选 .GRDECL 文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "导入网格文件", "", "ECLIPSE Grid Files (*.GRDECL);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                # 界面提示用户正在解析，防止用户以为卡死
+                self.statusBar().showMessage(f"正在解析并转换网格文件: {os.path.basename(file_path)}...")
+                QApplication.processEvents() # 强制刷新UI
+                
+                # 2. 调用转换脚本，静默生成两个 CSV，并拿到它们的临时绝对路径
+                coord_path, zcorn_path = convert_grdecl_to_temp_csv(file_path)
+                
+                # 3. 将这两个临时 CSV 的路径，赋值给现有的数据模型
+                self.sim_data.coord_file_path = coord_path
+                self.sim_data.zcorn_file_path = zcorn_path
+                
+                self.statusBar().showMessage("网格导入并转换成功！", 5000)
+                
+                # 4. 触发 C++ 求解器或 VTK 渲染 (调用你原有的渲染方法)
+                # 如果你之前点击导入后会自动渲染，请在这里加上原来的渲染代码，例如：
+                if hasattr(self, 'vtk_renderer') and self.vtk_renderer:
+                    self.vtk_renderer.render_corner_point_grid(self.sim_data)
+                
+            except Exception as e:
+                self.statusBar().showMessage(f"网格读取或转换失败: {str(e)}")
 
 
 def main():
