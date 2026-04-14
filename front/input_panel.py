@@ -329,8 +329,8 @@ class MatrixPropertiesPanel(QWidget):
         }
 
 
-class FluidPropertiesPanel(QWidget):
-    """流体属性参数面板 - 可复用"""
+class OilWaterPropertiesPanel(QWidget):
+    """油水相基础参数面板 - Corner Grid FluidProps 页使用"""
     def __init__(self, parent=None, prefix=""):
         super().__init__(parent)
         self.prefix = prefix
@@ -340,16 +340,14 @@ class FluidPropertiesPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        group = QGroupBox("Fluid Properties")
+        group = QGroupBox("油水相基础参数")
         group.setStyleSheet(groupbox_style())
         grid = QGridLayout()
         
         self.spin_mu_w = create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
         self.spin_mu_o = create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
-        self.spin_mu_g = create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
         self.spin_cw = create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
         self.spin_co = create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
-        self.spin_cg = create_double_spinbox(0.0, 1.0, 1e-3, decimals=6, step=1e-4)
         self.spin_p_ref = create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
         self.spin_swi = create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
         self.spin_sor = create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
@@ -359,22 +357,18 @@ class FluidPropertiesPanel(QWidget):
         grid.addWidget(self.spin_mu_w, 0, 1)
         grid.addWidget(QLabel("mu_o (cP):"), 1, 0)
         grid.addWidget(self.spin_mu_o, 1, 1)
-        grid.addWidget(QLabel("mu_g (cP):"), 2, 0)
-        grid.addWidget(self.spin_mu_g, 2, 1)
-        grid.addWidget(QLabel("cw (1/bar):"), 3, 0)
-        grid.addWidget(self.spin_cw, 3, 1)
-        grid.addWidget(QLabel("co (1/bar):"), 4, 0)
-        grid.addWidget(self.spin_co, 4, 1)
-        grid.addWidget(QLabel("cg (1/bar):"), 5, 0)
-        grid.addWidget(self.spin_cg, 5, 1)
-        grid.addWidget(QLabel("P_ref (bar):"), 6, 0)
-        grid.addWidget(self.spin_p_ref, 6, 1)
-        grid.addWidget(QLabel("Swi:"), 7, 0)
-        grid.addWidget(self.spin_swi, 7, 1)
-        grid.addWidget(QLabel("Sor:"), 8, 0)
-        grid.addWidget(self.spin_sor, 8, 1)
-        grid.addWidget(QLabel("Sgc:"), 9, 0)
-        grid.addWidget(self.spin_sgc, 9, 1)
+        grid.addWidget(QLabel("cw (1/bar):"), 2, 0)
+        grid.addWidget(self.spin_cw, 2, 1)
+        grid.addWidget(QLabel("co (1/bar):"), 3, 0)
+        grid.addWidget(self.spin_co, 3, 1)
+        grid.addWidget(QLabel("P_ref (bar):"), 4, 0)
+        grid.addWidget(self.spin_p_ref, 4, 1)
+        grid.addWidget(QLabel("Swi:"), 5, 0)
+        grid.addWidget(self.spin_swi, 5, 1)
+        grid.addWidget(QLabel("Sor:"), 6, 0)
+        grid.addWidget(self.spin_sor, 6, 1)
+        grid.addWidget(QLabel("Sgc:"), 7, 0)
+        grid.addWidget(self.spin_sgc, 7, 1)
         
         group.setLayout(grid)
         layout.addWidget(group)
@@ -383,14 +377,63 @@ class FluidPropertiesPanel(QWidget):
         return {
             'mu_w': self.spin_mu_w.value(),
             'mu_o': self.spin_mu_o.value(),
-            'mu_g': self.spin_mu_g.value(),
+            'mu_g': 0.2,
             'cw': self.spin_cw.value(),
             'co': self.spin_co.value(),
-            'cg': self.spin_cg.value(),
+            'cg': 1e-3,
             'p_ref': self.spin_p_ref.value(),
             'swi': self.spin_swi.value(),
             'sor': self.spin_sor.value(),
             'sgc': self.spin_sgc.value()
+        }
+
+
+class GasRealPVTPanel(QWidget):
+    """气相真实气体 PVT 参数面板 - 目前仅做 UI 收纳"""
+    def __init__(self, parent=None, prefix=""):
+        super().__init__(parent)
+        self.prefix = prefix
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        group = QGroupBox("气相真实气体 PVT")
+        group.setStyleSheet(groupbox_style())
+        grid = QGridLayout()
+
+        self.spin_gas_mg = create_double_spinbox(0.0, 1000.0, 16.04, decimals=4)
+        self.spin_gas_tc = create_double_spinbox(0.0, 5000.0, 190.58, decimals=2)
+        self.spin_gas_pc_bar = create_double_spinbox(0.0, 10000.0, 45.44, decimals=2)
+        self.spin_gas_table_pmin_bar = create_double_spinbox(0.0, 1000000.0, 1.0, decimals=2)
+        self.spin_gas_table_pmax_bar = create_double_spinbox(0.0, 1000000.0, 1000.0, decimals=2)
+        self.spin_gas_table_n = create_spinbox(2, 100000, 2000)
+
+        grid.addWidget(QLabel("摩尔质量 Mg:"), 0, 0)
+        grid.addWidget(self.spin_gas_mg, 0, 1)
+        grid.addWidget(QLabel("临界温度 Tc (K):"), 1, 0)
+        grid.addWidget(self.spin_gas_tc, 1, 1)
+        grid.addWidget(QLabel("临界压力 Pc (bar):"), 2, 0)
+        grid.addWidget(self.spin_gas_pc_bar, 2, 1)
+        grid.addWidget(QLabel("PVT表下限 Pmin (bar):"), 3, 0)
+        grid.addWidget(self.spin_gas_table_pmin_bar, 3, 1)
+        grid.addWidget(QLabel("PVT表上限 Pmax (bar):"), 4, 0)
+        grid.addWidget(self.spin_gas_table_pmax_bar, 4, 1)
+        grid.addWidget(QLabel("PVT表点数 n:"), 5, 0)
+        grid.addWidget(self.spin_gas_table_n, 5, 1)
+
+        group.setLayout(grid)
+        layout.addWidget(group)
+
+    def get_values(self):
+        return {
+            'gas_Mg': self.spin_gas_mg.value(),
+            'gas_Tc': self.spin_gas_tc.value(),
+            'gas_Pc_bar': self.spin_gas_pc_bar.value(),
+            'gas_table_Pmin_bar': self.spin_gas_table_pmin_bar.value(),
+            'gas_table_Pmax_bar': self.spin_gas_table_pmax_bar.value(),
+            'gas_table_n': self.spin_gas_table_n.value(),
         }
 
 

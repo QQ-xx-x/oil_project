@@ -23,8 +23,8 @@ import vtk
 # 导入本地模块
 from .data_models import SimulationData, CornerPointCell, CornerPointGridData
 from .input_panel import (
-    MatrixPropertiesPanel, FluidPropertiesPanel, InitialStatePanel,
-    NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
+    MatrixPropertiesPanel, OilWaterPropertiesPanel, GasRealPVTPanel,
+    InitialStatePanel, NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
     SimulationControlPanel, groupbox_style
 )
 from .pvt_plot import PVTPlotWidget
@@ -525,8 +525,15 @@ class MainWindow(QMainWindow):
         tab_layout.setSpacing(5)
         
         self.tab_buttons = {}
-        for tab_name in ["Grid", "PVT", "Wells", "Fractures", "Results"]:
-            btn = QPushButton(tab_name)
+        tab_defs = [
+            ("Grid", "Grid"),
+            ("PVT", "FluidProps"),
+            ("Wells", "Wells"),
+            ("Fractures", "Fractures"),
+            ("Results", "Results"),
+        ]
+        for tab_name, tab_label in tab_defs:
+            btn = QPushButton(tab_label)
             btn.setCheckable(True)
             btn.setFixedHeight(30)
             btn.setStyleSheet("""
@@ -1544,6 +1551,9 @@ class MainWindow(QMainWindow):
         grid_params_group.setLayout(grid_params_layout)
         layout.addWidget(grid_params_group)
 
+        self.corner_initial_state_panel = InitialStatePanel()
+        layout.addWidget(self.corner_initial_state_panel)
+
         self.corner_matrix_panel = MatrixPropertiesPanel()
         layout.addWidget(self.corner_matrix_panel)
 
@@ -1576,11 +1586,11 @@ class MainWindow(QMainWindow):
         self.corner_pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
         layout.addWidget(self.corner_pvt_plot_btn)
 
-        self.corner_initial_state_panel = InitialStatePanel()
-        layout.addWidget(self.corner_initial_state_panel)
+        self.corner_oil_water_panel = OilWaterPropertiesPanel()
+        layout.addWidget(self.corner_oil_water_panel)
 
-        self.corner_fluid_panel = FluidPropertiesPanel()
-        layout.addWidget(self.corner_fluid_panel)
+        self.corner_gas_pvt_panel = GasRealPVTPanel()
+        layout.addWidget(self.corner_gas_pvt_panel)
 
         layout.addStretch()
         scroll.setWidget(content)
@@ -1965,7 +1975,7 @@ class MainWindow(QMainWindow):
         """从当前 UI 页面收集 PVT 曲线所需参数。"""
         if self.current_algorithm == "black_oil_corner_grid":
             initial_state = self.corner_initial_state_panel.get_values()
-            fluid_props = self.corner_fluid_panel.get_values()
+            fluid_props = self.corner_oil_water_panel.get_values()
             return {
                 'sw': float(initial_state['initial_sw']),
                 'sg': float(initial_state['initial_sg']),
