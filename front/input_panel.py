@@ -403,6 +403,7 @@ class GasRealPVTPanel(QWidget):
         group.setStyleSheet(groupbox_style())
         grid = QGridLayout()
 
+        self.spin_gas_t_c = create_double_spinbox(-273.15, 1000.0, 140.0, decimals=2)
         self.spin_gas_mg = create_double_spinbox(0.0, 1000.0, 16.04, decimals=4)
         self.spin_gas_tc = create_double_spinbox(0.0, 5000.0, 190.58, decimals=2)
         self.spin_gas_pc_bar = create_double_spinbox(0.0, 10000.0, 45.44, decimals=2)
@@ -410,24 +411,27 @@ class GasRealPVTPanel(QWidget):
         self.spin_gas_table_pmax_bar = create_double_spinbox(0.0, 1000000.0, 1000.0, decimals=2)
         self.spin_gas_table_n = create_spinbox(2, 100000, 2000)
 
-        grid.addWidget(QLabel("摩尔质量 Mg:"), 0, 0)
-        grid.addWidget(self.spin_gas_mg, 0, 1)
-        grid.addWidget(QLabel("临界温度 Tc (K):"), 1, 0)
-        grid.addWidget(self.spin_gas_tc, 1, 1)
-        grid.addWidget(QLabel("临界压力 Pc (bar):"), 2, 0)
-        grid.addWidget(self.spin_gas_pc_bar, 2, 1)
-        grid.addWidget(QLabel("PVT表下限 Pmin (bar):"), 3, 0)
-        grid.addWidget(self.spin_gas_table_pmin_bar, 3, 1)
-        grid.addWidget(QLabel("PVT表上限 Pmax (bar):"), 4, 0)
-        grid.addWidget(self.spin_gas_table_pmax_bar, 4, 1)
-        grid.addWidget(QLabel("PVT表点数 n:"), 5, 0)
-        grid.addWidget(self.spin_gas_table_n, 5, 1)
+        grid.addWidget(QLabel("地层温度 gas_t_C (°C):"), 0, 0)
+        grid.addWidget(self.spin_gas_t_c, 0, 1)
+        grid.addWidget(QLabel("摩尔质量 Mg:"), 1, 0)
+        grid.addWidget(self.spin_gas_mg, 1, 1)
+        grid.addWidget(QLabel("临界温度 Tc (K):"), 2, 0)
+        grid.addWidget(self.spin_gas_tc, 2, 1)
+        grid.addWidget(QLabel("临界压力 Pc (bar):"), 3, 0)
+        grid.addWidget(self.spin_gas_pc_bar, 3, 1)
+        grid.addWidget(QLabel("PVT表下限 Pmin (bar):"), 4, 0)
+        grid.addWidget(self.spin_gas_table_pmin_bar, 4, 1)
+        grid.addWidget(QLabel("PVT表上限 Pmax (bar):"), 5, 0)
+        grid.addWidget(self.spin_gas_table_pmax_bar, 5, 1)
+        grid.addWidget(QLabel("PVT表点数 n:"), 6, 0)
+        grid.addWidget(self.spin_gas_table_n, 6, 1)
 
         group.setLayout(grid)
         layout.addWidget(group)
 
     def get_values(self):
         return {
+            'gas_t_C': self.spin_gas_t_c.value(),
             'gas_Mg': self.spin_gas_mg.value(),
             'gas_Tc': self.spin_gas_tc.value(),
             'gas_Pc_bar': self.spin_gas_pc_bar.value(),
