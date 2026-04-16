@@ -51,6 +51,37 @@ def convert_grdecl_to_temp_csv(grdecl_path):
     # 【核心升级】：把容错厚度从 0.001米 提升到 1.0米。
     # 彻底杜绝 C++ 读取 CSV 时因为 float32 单精度截断而导致厚度重新归 0 的问题！
     EPSILON = 1.0 
+    BOUNDARY_MARGIN = 0.05
+    PAIR_EPSILON = 0.001
+
+    def get_pillar_z_bounds(i, j):
+        """获取指定 pillar 的顶底标高范围。"""
+        pillar_idx = (j * (nx + 1) + i) * 6
+        _, _, zt, _, _, zb = coord[pillar_idx:pillar_idx + 6]
+        z_top = -zt
+        z_bot = -zb
+
+        if z_top <= z_bot:
+            z_top = z_bot + EPSILON
+
+        return z_bot, z_top
+
+    def clamp_z_to_pillar(i, j, z_value):
+        """把角点 Z 值钳制到对应 pillar 的顶底范围内，避免 LGR 预处理越界。"""
+        z_min, z_max = get_pillar_z_bounds(i, j)
+        return max(z_min, min(z_max, z_value))
+
+    def enforce_top_bottom_order(z_top, z_bottom, i, j):
+        z_min, z_max = get_pillar_z_bounds(i, j)
+        z_top = min(z_top, z_max)
+        z_bottom = max(z_bottom, z_min)
+
+        if z_top <= z_bottom:
+            z_bottom = max(z_min, z_top - PAIR_EPSILON)
+            if z_top <= z_bottom:
+                z_top = min(z_max, z_bottom + PAIR_EPSILON)
+
+        return z_top, z_bottom
     
     with open(coord_csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -87,21 +118,33 @@ def convert_grdecl_to_temp_csv(grdecl_path):
         for k in range(nz):
             for j in range(ny):
                 for i in range(nx):
-                    z1 = get_z(i, j, k, is_bottom=0, is_y_plus=0, is_x_plus=0)
-                    z2 = get_z(i, j, k, is_bottom=0, is_y_plus=0, is_x_plus=1)
-                    z3 = get_z(i, j, k, is_bottom=0, is_y_plus=1, is_x_plus=1)
-                    z4 = get_z(i, j, k, is_bottom=0, is_y_plus=1, is_x_plus=0)
+                    z1 = clamp_z_to_pillar(i, j, get_z(i, j, k, is_bottom=0, is_y_plus=0, is_x_plus=0))
+                    z2 = clamp_z_to_pillar(i + 1, j, get_z(i, j, k, is_bottom=0, is_y_plus=0, is_x_plus=1))
+                    # 这里必须和 C++ Corner/LGR 模块的角点到 pillar 映射保持一致：
+                    # Z3/Z7 对应左上 pillar，Z4/Z8 对应右上 pillar。
+                    z3 = clamp_z_to_pillar(i, j + 1, get_z(i, j, k, is_bottom=0, is_y_plus=1, is_x_plus=1))
+                    z4 = clamp_z_to_pillar(i + 1, j + 1, get_z(i, j, k, is_bottom=0, is_y_plus=1, is_x_plus=0))
                     
-                    z5 = get_z(i, j, k, is_bottom=1, is_y_plus=0, is_x_plus=0)
-                    z6 = get_z(i, j, k, is_bottom=1, is_y_plus=0, is_x_plus=1)
-                    z7 = get_z(i, j, k, is_bottom=1, is_y_plus=1, is_x_plus=1)
-                    z8 = get_z(i, j, k, is_bottom=1, is_y_plus=1, is_x_plus=0)
+                    z5 = clamp_z_to_pillar(i, j, get_z(i, j, k, is_bottom=1, is_y_plus=0, is_x_plus=0))
+                    z6 = clamp_z_to_pillar(i + 1, j, get_z(i, j, k, is_bottom=1, is_y_plus=0, is_x_plus=1))
+                    z7 = clamp_z_to_pillar(i, j + 1, get_z(i, j, k, is_bottom=1, is_y_plus=1, is_x_plus=1))
+                    z8 = clamp_z_to_pillar(i + 1, j + 1, get_z(i, j, k, is_bottom=1, is_y_plus=1, is_x_plus=0))
+
+                    # 进一步向单元内部收一点，避免 C++ LGR 在边界点上因精度和 pillar 映射差异判定越界
+                    z1 -= BOUNDARY_MARGIN
+                    z2 -= BOUNDARY_MARGIN
+                    z3 -= BOUNDARY_MARGIN
+                    z4 -= BOUNDARY_MARGIN
+                    z5 += BOUNDARY_MARGIN
+                    z6 += BOUNDARY_MARGIN
+                    z7 += BOUNDARY_MARGIN
+                    z8 += BOUNDARY_MARGIN
                     
                     # 强行撑开 1 米，绝对不可能再被 C++ 精度抹掉
-                    if z1 <= z5: z1 = z5 + EPSILON
-                    if z2 <= z6: z2 = z6 + EPSILON
-                    if z3 <= z7: z3 = z7 + EPSILON
-                    if z4 <= z8: z4 = z8 + EPSILON
+                    z1, z5 = enforce_top_bottom_order(z1, z5, i, j)
+                    z2, z6 = enforce_top_bottom_order(z2, z6, i + 1, j)
+                    z3, z7 = enforce_top_bottom_order(z3, z7, i, j + 1)
+                    z4, z8 = enforce_top_bottom_order(z4, z8, i + 1, j + 1)
                     
                     writer.writerow([i+1, j+1, k+1, z1, z2, z3, z4, z5, z6, z7, z8])
                     

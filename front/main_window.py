@@ -17,8 +17,6 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QCheckBox, QTableWidgetItem, QLineEdit)
 from PyQt5.QtCore import Qt, QSize, QProcess, QTimer
 from PyQt5.QtGui import QIcon, QFont, QColor, QPixmap, QPainter
-from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-import vtk
 
 # 导入本地模块
 from .data_models import SimulationData, CornerPointCell, CornerPointGridData
@@ -32,7 +30,8 @@ from .grdecl_parser import convert_grdecl_to_temp_csv
 
 # 导入可视化模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from visual.vtk_renderer import VTKRenderer
+from visual.pyvista_view import PyVistaView
+from visual.pyvista_renderer import PyVistaRenderer
 
 
 class AlgorithmSelector(QWidget):
@@ -111,32 +110,6 @@ class AlgorithmSelector(QWidget):
         return pixmap
 
 
-class VTKWidget(QWidget):
-    """VTK渲染窗口 - 与原文件一致"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.vtk_widget = QVTKRenderWindowInteractor(self)
-        self.layout.addWidget(self.vtk_widget)
-        
-        self.renderer = vtk.vtkRenderer()
-        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
-        self.iren = self.vtk_widget.GetRenderWindow().GetInteractor()
-        
-        self.renderer.SetBackground(0.0, 0.0, 0.0)
-        
-        style = vtk.vtkInteractorStyleTrackballCamera()
-        self.iren.SetInteractorStyle(style)
-        
-        self.iren.Initialize()
-    
-    def reset_camera(self):
-        self.renderer.ResetCamera()
-        self.iren.Render()
-
-
 class MainWindow(QMainWindow):
     """主窗口 - 与原文件完全一致"""
     
@@ -166,14 +139,7 @@ class MainWindow(QMainWindow):
         self.corner_selection_mode_active = False
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
-        self.corner_selection_style = None
-        self.corner_selection_style_observer_ids = []
-        self.corner_selection_previous_style = None
         self.corner_selection_saved_camera = None
-        self.corner_selection_cube_source = None
-        self.corner_selection_actor = None
-        self.corner_selection_outline_actor = None
-        self.corner_selection_handle_actor = None
         self.selection_tool_controls = {}
         self.selection_params_by_algorithm = {}
         
@@ -304,15 +270,10 @@ class MainWindow(QMainWindow):
     
     def clear_previous_algorithm_rendering(self):
         """清除前一个算法的所有绘制内容"""
-        if hasattr(self, 'vtk_renderer') and hasattr(self.vtk_renderer, 'renderer'):
-            # 清除VTK渲染器中的所有view props
-            self.vtk_renderer.renderer.RemoveAllViewProps()
-            self.vtk_renderer.vtk_widget.iren.Render()
-        
-        # 清除VTK渲染器缓存
-        if hasattr(self, 'vtk_renderer'):
+        # 仅通过渲染器接口清场/清缓存，避免主窗口直接操作底层渲染对象
+        if hasattr(self, "vtk_renderer"):
             self.vtk_renderer.clear_cache()
-        
+
         print("Previous algorithm rendering cleared")
     
     def generate_mock_corner_point_grid(self, nx=20, ny=10, nz=5, lx=1000.0, ly=500.0, lz=100.0):
@@ -1671,7 +1632,13 @@ class MainWindow(QMainWindow):
         self.check_show_pressure_corner.setStyleSheet("color: #cccccc;")
         self.check_show_pressure_corner.stateChanged.connect(self.toggle_corner_pressure_visibility)
         control_layout.addWidget(self.check_show_pressure_corner)
-        
+
+        self.check_show_lgr_grid_corner = QCheckBox("Show LGR Grid")
+        self.check_show_lgr_grid_corner.setChecked(True)
+        self.check_show_lgr_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_lgr_grid_corner.stateChanged.connect(self.toggle_corner_lgr_grid_visibility)
+        control_layout.addWidget(self.check_show_lgr_grid_corner)
+
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
         
@@ -1784,9 +1751,11 @@ class MainWindow(QMainWindow):
 
     def reset_corner_grid_view(self):
         """复原角点网格视角"""
+        # 仅通过渲染器接口进行相机复位与重绘，主窗口不直接访问底层相机对象
         if self.sim_data.corner_point_grid and self.sim_data.corner_point_grid.cells:
-            self.vtk_renderer.setup_camera_for_corner_grid(self.sim_data.corner_point_grid)
-            self.vtk_renderer.vtk_widget.iren.Render()
+            if hasattr(self, "vtk_renderer"):
+                self.vtk_renderer.setup_camera_for_corner_grid(self.sim_data.corner_point_grid)
+                self.vtk_renderer.render_now()
             self.status_bar.showMessage("View reset")
 
     def hide_corner_fractures(self):
@@ -1936,6 +1905,11 @@ class MainWindow(QMainWindow):
         if hasattr(self.vtk_renderer, 'toggle_pressure_visibility'):
             self.vtk_renderer.toggle_pressure_visibility(state == Qt.Checked)
 
+    def toggle_corner_lgr_grid_visibility(self, state):
+        """切换LGR网格显示"""
+        if hasattr(self.vtk_renderer, 'toggle_corner_lgr_grid_visibility'):
+            self.vtk_renderer.toggle_corner_lgr_grid_visibility(state == Qt.Checked)
+
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
                                   check_show_grid, check_show_fractures):
         """登记各算法 Results 页对应的独立控件引用。"""
@@ -2024,7 +1998,7 @@ class MainWindow(QMainWindow):
         self.center_stack.setStyleSheet("background-color: #000000;")
         self.center_layout.addWidget(self.center_stack)
 
-        self.vtk_widget = VTKWidget()
+        self.vtk_widget = PyVistaView()
         self.center_stack.addWidget(self.vtk_widget)
 
         self.pvt_plot_widget = PVTPlotWidget()
@@ -2032,7 +2006,7 @@ class MainWindow(QMainWindow):
         self.show_vtk_center_view()
         
         # 初始化VTK渲染器
-        self.vtk_renderer = VTKRenderer(self.vtk_widget)
+        self.vtk_renderer = PyVistaRenderer(self.vtk_widget)
 
     def show_vtk_center_view(self):
         """切回中间区域的 VTK 视图。"""
@@ -2166,15 +2140,26 @@ class MainWindow(QMainWindow):
         self.sim_status_text.clear()
     
     def clear_cache(self):
-        """清除VTK缓存 - 清除所有算法的数据和渲染器中的actor"""
-        # 清除VTK渲染器中的所有view props
-        if hasattr(self, 'vtk_renderer') and hasattr(self.vtk_renderer, 'renderer'):
-            self.vtk_renderer.renderer.RemoveAllViewProps()
-            self.vtk_renderer.vtk_widget.iren.Render()
-        
-        # 清除VTK渲染器缓存
-        if hasattr(self, 'vtk_renderer'):
+        """清除渲染缓存 - 清除所有算法的数据和渲染器中的actor"""
+        # 仅通过渲染器接口清场/清缓存，避免主窗口直接操作底层渲染对象
+        if hasattr(self, "vtk_renderer"):
             self.vtk_renderer.clear_cache()
+            if hasattr(self.vtk_renderer, "clear_selection_overlay"):
+                self.vtk_renderer.clear_selection_overlay()
+
+        # 通过视图接口卸载交互与还原光标（不直接访问底层 interactor）
+        view = None
+        if hasattr(self, "center_stack"):
+            try:
+                view = self.center_stack.currentWidget()
+            except Exception:
+                view = None
+
+        if view is not None:
+            if hasattr(view, "uninstall_selection_interaction"):
+                view.uninstall_selection_interaction()
+            if hasattr(view, "set_cross_cursor"):
+                view.set_cross_cursor(False)
         
         # 清除本地缓存
         self.cache['pressure_actor'] = None
@@ -2183,9 +2168,11 @@ class MainWindow(QMainWindow):
         self.cache['grid_lines_actor'] = None
         self.cache['data_hash'] = None
         
-        # 清除corner point grid相关状态
-        self.deactivate_corner_rectangle_selection_mode(restore_camera=False, clear_actor=True)
-        self.clear_corner_selection_overlay(clear_params=False)
+        # 清除 corner 框选相关状态（仅重置主窗口状态，不在这里操作底层 actor）
+        self.corner_selection_mode_active = False
+        self.corner_selection_dragging = False
+        self.corner_selection_start_xy = None
+        self.corner_selection_saved_camera = None
         
         print("Cache cleared")
 
@@ -3142,41 +3129,27 @@ class MainWindow(QMainWindow):
         self.corner_selection_saved_camera = self.capture_camera_state()
         self.configure_corner_selection_camera()
 
-        iren = self.vtk_widget.iren
-        self.corner_selection_previous_style = iren.GetInteractorStyle()
-        self.corner_selection_style = vtk.vtkInteractorStyleUser()
-        self.corner_selection_style_observer_ids = [
-            self.corner_selection_style.AddObserver("LeftButtonPressEvent", self.handle_corner_selection_press),
-            self.corner_selection_style.AddObserver("MouseMoveEvent", self.handle_corner_selection_move),
-            self.corner_selection_style.AddObserver("LeftButtonReleaseEvent", self.handle_corner_selection_release),
-        ]
-        iren.SetInteractorStyle(self.corner_selection_style)
-
         self.corner_selection_mode_active = True
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
         self.set_corner_selection_toggle_button(True)
-        self.vtk_widget.vtk_widget.setCursor(Qt.CrossCursor)
+        # 安装框选交互：由视图负责转发鼠标事件，不在主窗口直接接触底层交互器
+        self.vtk_widget.install_selection_interaction(
+            self.handle_corner_selection_press,
+            self.handle_corner_selection_move,
+            self.handle_corner_selection_release,
+        )
+        self.vtk_widget.set_cross_cursor(True)
         self.update_corner_selection_status("拖拽鼠标框选 XY 区域。")
         self.status_bar.showMessage("Corner Grid rectangle selection enabled")
-        self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
     def deactivate_corner_rectangle_selection_mode(self, restore_camera=True, clear_actor=False):
         """退出 Corner Grid 的矩形框选模式。"""
-        iren = getattr(self, 'vtk_widget', None)
-        if iren is not None:
-            iren = self.vtk_widget.iren
+        # 卸载交互回调并恢复光标：通过视图接口完成
+        self.vtk_widget.uninstall_selection_interaction()
+        self.vtk_widget.set_cross_cursor(False)
 
-        if iren and self.corner_selection_previous_style is not None:
-            iren.SetInteractorStyle(self.corner_selection_previous_style)
-
-        if self.corner_selection_style is not None:
-            for observer_id in self.corner_selection_style_observer_ids:
-                self.corner_selection_style.RemoveObserver(observer_id)
-
-        self.corner_selection_style = None
-        self.corner_selection_style_observer_ids = []
-        self.corner_selection_previous_style = None
         self.corner_selection_mode_active = False
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
@@ -3187,21 +3160,18 @@ class MainWindow(QMainWindow):
 
         if clear_actor or self.get_current_selection_params() is None:
             self.clear_corner_selection_overlay(clear_params=False)
-
-        if hasattr(self, 'vtk_widget'):
-            self.vtk_widget.vtk_widget.unsetCursor()
-            self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
         self.set_corner_selection_toggle_button(False)
         if hasattr(self, 'status_bar'):
             self.status_bar.showMessage("Ready - Click 'Run Simulation' to start")
 
-    def handle_corner_selection_press(self, caller, event):
+    def handle_corner_selection_press(self, caller=None, event=None):
         """开始 Corner Grid 矩形框选。"""
         if not self.corner_selection_mode_active:
             return
 
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         self.corner_selection_start_xy = self.display_to_corner_world_xy(x, y)
         self.corner_selection_dragging = True
         self.update_corner_selection_preview(
@@ -3210,12 +3180,12 @@ class MainWindow(QMainWindow):
             finalized=False,
         )
 
-    def handle_corner_selection_move(self, caller, event):
+    def handle_corner_selection_move(self, caller=None, event=None):
         """更新 Corner Grid 矩形框选预览。"""
         if not (self.corner_selection_mode_active and self.corner_selection_dragging):
             return
 
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         current_xy = self.display_to_corner_world_xy(x, y)
         self.update_corner_selection_preview(
             self.corner_selection_start_xy,
@@ -3223,13 +3193,13 @@ class MainWindow(QMainWindow):
             finalized=False,
         )
 
-    def handle_corner_selection_release(self, caller, event):
+    def handle_corner_selection_release(self, caller=None, event=None):
         """完成 Corner Grid 矩形框选并弹出参数输入窗。"""
         if not (self.corner_selection_mode_active and self.corner_selection_dragging):
             return
 
         self.corner_selection_dragging = False
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         end_xy = self.display_to_corner_world_xy(x, y)
         bounds = self.normalize_corner_xy_bounds(self.corner_selection_start_xy, end_xy)
 
@@ -3256,32 +3226,18 @@ class MainWindow(QMainWindow):
 
     def display_to_corner_world_xy(self, display_x, display_y):
         """将屏幕坐标映射到俯视平行投影视图下的 XY 坐标。"""
-        renderer = self.vtk_widget.renderer
-        render_window = self.vtk_widget.vtk_widget.GetRenderWindow()
-        width, height = render_window.GetSize()
-        if width <= 0 or height <= 0:
+        world_bounds = self.get_corner_selection_world_bounds()
+        world_point = None
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "display_to_world_xy"):
+            world_point = self.vtk_renderer.display_to_world_xy(display_x, display_y, world_bounds)
+        if not world_point:
             return 0.0, 0.0
 
-        viewport = renderer.GetViewport()
-        view_x0 = viewport[0] * width
-        view_y0 = viewport[1] * height
-        view_width = max(1.0, (viewport[2] - viewport[0]) * width)
-        view_height = max(1.0, (viewport[3] - viewport[1]) * height)
-
-        u = max(0.0, min(1.0, (display_x - view_x0) / view_width))
-        v = max(0.0, min(1.0, (display_y - view_y0) / view_height))
-
-        camera = renderer.GetActiveCamera()
-        focal_x, focal_y, _ = camera.GetFocalPoint()
-        world_height = 2.0 * camera.GetParallelScale()
-        world_width = world_height * (view_width / view_height)
-
-        x = focal_x + (u - 0.5) * world_width
-        y = focal_y + (v - 0.5) * world_height
-
-        min_x, max_x, min_y, max_y, _, _ = self.get_corner_selection_world_bounds()
-        x = max(min_x, min(max_x, x))
-        y = max(min_y, min(max_y, y))
+        x = float(world_point[0])
+        y = float(world_point[1])
+        min_x, max_x, min_y, max_y, _, _ = world_bounds
+        x = max(float(min_x), min(float(max_x), x))
+        y = max(float(min_y), min(float(max_y), y))
         return x, y
 
     def normalize_corner_xy_bounds(self, start_xy, end_xy):
@@ -3328,169 +3284,45 @@ class MainWindow(QMainWindow):
 
     def capture_camera_state(self):
         """保存当前相机状态，便于退出框选模式后恢复。"""
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        return {
-            'position': camera.GetPosition(),
-            'focal_point': camera.GetFocalPoint(),
-            'view_up': camera.GetViewUp(),
-            'parallel_projection': camera.GetParallelProjection(),
-            'parallel_scale': camera.GetParallelScale(),
-        }
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "capture_camera_state"):
+            return self.vtk_renderer.capture_camera_state()
+        return None
 
     def restore_camera_state(self, state):
         """恢复进入框选模式前的相机状态。"""
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        camera.SetPosition(*state['position'])
-        camera.SetFocalPoint(*state['focal_point'])
-        camera.SetViewUp(*state['view_up'])
-        if state['parallel_projection']:
-            camera.ParallelProjectionOn()
-        else:
-            camera.ParallelProjectionOff()
-        camera.SetParallelScale(state['parallel_scale'])
-        self.vtk_widget.renderer.ResetCameraClippingRange()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "restore_camera_state"):
+            self.vtk_renderer.restore_camera_state(state)
 
     def configure_corner_selection_camera(self):
         """将相机切到俯视平行投影视图，便于 XY 矩形框选。"""
-        min_x, max_x, min_y, max_y, min_z, max_z = self.get_corner_selection_world_bounds()
-        cx = (min_x + max_x) / 2.0
-        cy = (min_y + max_y) / 2.0
-        cz = (min_z + max_z) / 2.0
-        dx = max_x - min_x
-        dy = max_y - min_y
-        dz = max_z - min_z
-
-        render_window = self.vtk_widget.vtk_widget.GetRenderWindow()
-        width, height = render_window.GetSize()
-        aspect = (width / height) if height else 1.0
-
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        camera.SetFocalPoint(cx, cy, cz)
-        camera.SetPosition(cx, cy, max_z + max(dx, dy, dz, 1.0) * 3.0)
-        camera.SetViewUp(0.0, 1.0, 0.0)
-        camera.ParallelProjectionOn()
-        camera.SetParallelScale(max(dy / 2.0, dx / max(2.0 * aspect, 1e-6), 1.0) * 1.05)
-        self.vtk_widget.renderer.ResetCameraClippingRange()
+        world_bounds = self.get_corner_selection_world_bounds()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "configure_selection_camera"):
+            self.vtk_renderer.configure_selection_camera(world_bounds)
 
     def update_corner_selection_preview(self, start_xy, end_xy, finalized=False):
         """更新 Corner Grid 框选区域的三维可视化预览。"""
-        min_x, min_y, max_x, max_y = self.normalize_corner_xy_bounds(start_xy, end_xy)
-        _, _, _, _, min_z, max_z = self.get_corner_selection_world_bounds()
-
-        if self.corner_selection_cube_source is None:
-            self.corner_selection_cube_source = vtk.vtkCubeSource()
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(self.corner_selection_cube_source.GetOutputPort())
-            self.corner_selection_actor = vtk.vtkActor()
-            self.corner_selection_actor.SetMapper(mapper)
-            self.vtk_widget.renderer.AddActor(self.corner_selection_actor)
-
-        self.corner_selection_cube_source.SetBounds(min_x, max_x, min_y, max_y, min_z, max_z)
-        self.corner_selection_cube_source.Update()
-
-        prop = self.corner_selection_actor.GetProperty()
-        prop.SetEdgeVisibility(1)
-        prop.SetLineWidth(5.5)
-        prop.SetAmbient(0.55)
-        prop.SetDiffuse(0.8)
-        prop.SetSpecular(0.35)
-        prop.SetSpecularPower(18.0)
-        prop.SetInterpolationToFlat()
-        if hasattr(prop, "SetRenderLinesAsTubes"):
-            prop.SetRenderLinesAsTubes(1)
-        if finalized:
-            prop.SetColor(1.0, 0.08, 0.0)
-            prop.SetOpacity(0.58)
-            prop.SetEdgeColor(0.2, 1.0, 0.2)
-        else:
-            prop.SetColor(0.0, 1.0, 1.0)
-            prop.SetOpacity(0.42)
-            prop.SetEdgeColor(1.0, 1.0, 1.0)
-
-        self.update_corner_selection_outline(min_x, max_x, min_y, max_y, min_z, max_z, finalized)
-        self.vtk_widget.iren.Render()
+        # 仅通过渲染器接口创建/更新预览覆盖层，主窗口不直接创建/删除 actor
+        if not start_xy or not end_xy:
+            return
+        world_bounds = self.get_corner_selection_world_bounds()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "show_selection_preview"):
+            self.vtk_renderer.show_selection_preview(
+                start_xy,
+                end_xy,
+                world_bounds,
+                finalized=finalized,
+            )
 
     def update_corner_selection_outline(self, min_x, max_x, min_y, max_y, min_z, max_z, finalized):
-        """用亮色管状轮廓和角点标记增强选区可见性。"""
-        if self.corner_selection_outline_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_outline_actor)
-            self.corner_selection_outline_actor = None
-        if self.corner_selection_handle_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_handle_actor)
-            self.corner_selection_handle_actor = None
-
-        points = vtk.vtkPoints()
-        corners = [
-            (min_x, min_y, min_z),
-            (max_x, min_y, min_z),
-            (max_x, max_y, min_z),
-            (min_x, max_y, min_z),
-            (min_x, min_y, max_z),
-            (max_x, min_y, max_z),
-            (max_x, max_y, max_z),
-            (min_x, max_y, max_z),
-        ]
-        for corner in corners:
-            points.InsertNextPoint(*corner)
-
-        lines = vtk.vtkCellArray()
-        edge_pairs = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
-        ]
-        for p0, p1 in edge_pairs:
-            line = vtk.vtkLine()
-            line.GetPointIds().SetId(0, p0)
-            line.GetPointIds().SetId(1, p1)
-            lines.InsertNextCell(line)
-
-        edge_poly = vtk.vtkPolyData()
-        edge_poly.SetPoints(points)
-        edge_poly.SetLines(lines)
-
-        max_dim = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
-        tube = vtk.vtkTubeFilter()
-        tube.SetInputData(edge_poly)
-        tube.SetRadius(max_dim * (0.010 if finalized else 0.008))
-        tube.SetNumberOfSides(16)
-        tube.CappingOn()
-
-        outline_mapper = vtk.vtkPolyDataMapper()
-        outline_mapper.SetInputConnection(tube.GetOutputPort())
-        self.corner_selection_outline_actor = vtk.vtkActor()
-        self.corner_selection_outline_actor.SetMapper(outline_mapper)
-        outline_prop = self.corner_selection_outline_actor.GetProperty()
-        outline_prop.SetLighting(False)
-        if finalized:
-            outline_prop.SetColor(0.2, 1.0, 0.2)
-        else:
-            outline_prop.SetColor(1.0, 1.0, 1.0)
-        self.vtk_widget.renderer.AddActor(self.corner_selection_outline_actor)
-
-        append_poly = vtk.vtkAppendPolyData()
-        handle_radius = max_dim * (0.018 if finalized else 0.014)
-        top_corners = corners[4:8]
-        for x, y, z in top_corners:
-            sphere = vtk.vtkSphereSource()
-            sphere.SetCenter(x, y, z)
-            sphere.SetRadius(handle_radius)
-            sphere.SetThetaResolution(18)
-            sphere.SetPhiResolution(18)
-            append_poly.AddInputConnection(sphere.GetOutputPort())
-        append_poly.Update()
-
-        handle_mapper = vtk.vtkPolyDataMapper()
-        handle_mapper.SetInputConnection(append_poly.GetOutputPort())
-        self.corner_selection_handle_actor = vtk.vtkActor()
-        self.corner_selection_handle_actor.SetMapper(handle_mapper)
-        handle_prop = self.corner_selection_handle_actor.GetProperty()
-        handle_prop.SetLighting(False)
-        if finalized:
-            handle_prop.SetColor(0.2, 1.0, 0.2)
-        else:
-            handle_prop.SetColor(1.0, 1.0, 1.0)
-        self.vtk_widget.renderer.AddActor(self.corner_selection_handle_actor)
+        """兼容保留：选区轮廓/角点标记已下沉到渲染器内部。"""
+        world_bounds = (min_x, max_x, min_y, max_y, min_z, max_z)
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "show_selection_preview"):
+            self.vtk_renderer.show_selection_preview(
+                (min_x, min_y),
+                (max_x, max_y),
+                world_bounds,
+                finalized=finalized,
+            )
 
     def reapply_corner_selection_overlay(self):
         """在重新渲染后恢复已确认的 Corner Grid 选区高亮。"""
@@ -3506,21 +3338,14 @@ class MainWindow(QMainWindow):
 
     def clear_corner_selection_overlay(self, clear_params=False):
         """清除 Corner Grid 框选区域的可视化高亮。"""
-        if self.corner_selection_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_actor)
-        if self.corner_selection_outline_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_outline_actor)
-        if self.corner_selection_handle_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_handle_actor)
-        self.corner_selection_actor = None
-        self.corner_selection_outline_actor = None
-        self.corner_selection_handle_actor = None
-        self.corner_selection_cube_source = None
+        # 覆盖层的创建/销毁由渲染器统一管理，主窗口只保留业务状态
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "clear_selection_overlay"):
+            self.vtk_renderer.clear_selection_overlay()
+
         if clear_params:
             self.selection_params_by_algorithm.pop(self.current_algorithm, None)
             self.update_corner_selection_status("未选择区域")
-        if hasattr(self, 'vtk_widget'):
-            self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
     def update_corner_selection_status(self, text):
         """更新 Corner Grid 框选工具的状态文字。"""
@@ -3720,15 +3545,16 @@ class MainWindow(QMainWindow):
     def toggle_grid_lines(self, state):
         """切换网格线显示"""
         show = (state == Qt.Checked)
-        if show and self.vtk_renderer.cache['grid_lines_actor'] is None:
-            self.vtk_renderer.create_grid_lines(self.sim_data)
+        if show and hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "ensure_grid_lines"):
+            self.vtk_renderer.ensure_grid_lines(self.sim_data)
         self.vtk_renderer.toggle_grid_lines(show)
     
     def toggle_fractures_visibility(self, state):
         """切换裂缝显示 - 点击时压力图变透明"""
         show = (state == Qt.Checked)
-        if show and not self.vtk_renderer.cache['fracture_actors']:
-            self.render_fractures()
+        if show and hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "has_fractures"):
+            if not self.vtk_renderer.has_fractures():
+                self.render_fractures()
         self.vtk_renderer.toggle_fractures(show)
 
     def load_grdecl_file(self):
