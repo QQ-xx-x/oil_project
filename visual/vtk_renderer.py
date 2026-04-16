@@ -534,8 +534,7 @@ class VTKRenderer:
         
         self.cache['fracture_actors'] = []
         
-        # 从grid_info获取网格范围
-        print(f"[DEBUG] grid_info: {sim_data.grid_info}")
+        # 从 grid_info 获取网格范围
         if sim_data.grid_info:
             Lx = sim_data.grid_info.get('Lx', 1000.0)
             Ly = sim_data.grid_info.get('Ly', 500.0)
@@ -545,7 +544,6 @@ class VTKRenderer:
             grid_min_z, grid_max_z = 0.0, Lz
         else:
             grid_min_x = grid_max_x = grid_min_y = grid_max_y = grid_min_z = grid_max_z = 0.0
-        print(f"[DEBUG] 网格范围: X[{grid_min_x}, {grid_max_x}], Y[{grid_min_y}, {grid_max_y}], Z[{grid_min_z}, {grid_max_z}]")
         
         for frac in sim_data.fractures:
             points = vtk.vtkPoints()
@@ -557,12 +555,6 @@ class VTKRenderer:
             # 检查裂缝的所有顶点是否都在网格范围内
             margin = 1.0  # 边距
             all_points = [p0, p1, p2, p3]
-            
-            # 调试：打印31号裂缝的位置
-            if frac['id'] == 31:
-                print(f"[DEBUG] 裂缝 #31 的4个顶点:")
-                for i, pt in enumerate(all_points):
-                    print(f"  顶点{i}: ({pt[0]:.2f}, {pt[1]:.2f}, {pt[2]:.2f})")
             
             out_of_bounds = False
             for i, pt in enumerate(all_points):

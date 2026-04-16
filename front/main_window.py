@@ -1784,8 +1784,6 @@ class MainWindow(QMainWindow):
             origin_y = cpg.origin_y
             origin_z = cpg.origin_z
         
-        print(f"DEBUG: draw_corner_wells_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
-        
         well = {
             'id': 0,
             'node_idx': 0,
@@ -1832,8 +1830,6 @@ class MainWindow(QMainWindow):
         else:
             # 使用默认范围
             lx, ly, lz = 1000.0, 500.0, 100.0
-        
-        print(f"DEBUG: draw_corner_fractures_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
         
         # 生成随机裂缝
         fractures = []
@@ -2841,8 +2837,6 @@ class MainWindow(QMainWindow):
             origin_y = cpg.origin_y
             origin_z = cpg.origin_z
         
-        print(f"DEBUG: _generate_corner_wells_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
-        
         well = {
             'id': 0,
             'node_idx': 0,
@@ -2880,8 +2874,6 @@ class MainWindow(QMainWindow):
             origin_z = cpg.origin_z
         else:
             lx, ly, lz = 1000.0, 500.0, 100.0
-        
-        print(f"DEBUG: _generate_corner_fractures_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
         
         for i in range(num_natural):
             cx_rel = random.uniform(lx * 0.1, lx * 0.9)

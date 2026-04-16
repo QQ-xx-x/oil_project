@@ -227,44 +227,17 @@ def run_corner_edfm_simulation(params):
     """执行 Corner EDFM 模拟并返回 SimulationData。"""
     refinement_mode = params.get('corner_grid_refinement', '不加密')
     use_lgr_module = refinement_mode == '加密'
-    
-    print(f"[DEBUG] Loading corner module, use_lgr={use_lgr_module}", flush=True)
     edfm_core_corner = load_corner_edfm_lgr_module() if use_lgr_module else load_corner_edfm_module()
-    print(f"[DEBUG] Corner module loaded: {edfm_core_corner}", flush=True)
 
     coord_file = params.get('coord_file', '')
     zcorn_file = params.get('zcorn_file', '')
     if not coord_file or not zcorn_file:
         raise ValueError("Corner EDFM requires both COORD and ZCORN files")
     
-    # Debug: 检查文件是否存在
-    print(f"[DEBUG] COORD file: {coord_file}", flush=True)
-    print(f"[DEBUG] ZCORN file: {zcorn_file}", flush=True)
-    if not os.path.exists(coord_file):
-        raise FileNotFoundError(f"COORD file not found: {coord_file}")
-    if not os.path.exists(zcorn_file):
-        raise FileNotFoundError(f"ZCORN file not found: {zcorn_file}")
-    
-    # Debug: 打印 CSV 文件的前几行
-    print(f"[DEBUG] === COORD CSV first 5 lines ===", flush=True)
-    with open(coord_file, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if i >= 5:
-                break
-            print(f"  {line.rstrip()}", flush=True)
-    
-    print(f"[DEBUG] === ZCORN CSV first 5 lines ===", flush=True)
-    with open(zcorn_file, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if i >= 5:
-                break
-            print(f"  {line.rstrip()}", flush=True)
-    
-    print(f"[DEBUG] Creating EDFMSimulator...", flush=True)
+    # 注意：不再在子进程中加载corner_point_grid，主进程中已经加载了
+
     sim = edfm_core_corner.EDFMSimulator()
-    print(f"[DEBUG] Setting corner point files: {coord_file}, {zcorn_file}", flush=True)
     sim.setCornerPointFiles(coord_file, zcorn_file)
-    print(f"[DEBUG] Setting fracture parameters...", flush=True)
     sim.setFractureParameters(
         int(params.get('num_fracs', 10)),
         float(params.get('min_len', 30.0)),
@@ -304,24 +277,18 @@ def run_corner_edfm_simulation(params):
             int(params.get('lgr_nry', 2)),
             int(params.get('lgr_nrz', 2)),
         )
-    print(f"[DEBUG] Setting simulation parameters: time={params.get('simulation_time', 100.0)}", flush=True)
     sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
 
-    print(f"[DEBUG] Running simulation...", flush=True)
     result = sim.runSimulation()
-    print(f"[DEBUG] Simulation completed, result type: {type(result)}", flush=True)
     
     print("Getting cell geometry with pressure...")
     cell_geometry = sim.getCellGeometryWithPressure()
-    print(f"[DEBUG] Cell geometry shape: {cell_geometry.shape if hasattr(cell_geometry, 'shape') else 'N/A'}", flush=True)
     
     print("Getting fracture vertices...")
     try:
         fracture_vertices = sim.getFractureVertices()
-        print(f"[DEBUG] Got {len(fracture_vertices) if hasattr(fracture_vertices, '__len__') else 0} fracture vertices", flush=True)
     except:
         fracture_vertices = None
-        print("[DEBUG] No fracture vertices available", flush=True)
     
     # 如果是LGR加密模式，获取加密网格几何
     corner_lgr_grid_geometry = None
@@ -332,11 +299,9 @@ def run_corner_edfm_simulation(params):
             corner_lgr_grid_geometry = sim.getLGRGridGeometry()
             corner_lgr_parent_grid_geometry = sim.getParentGridGeometry()
             corner_lgr_refined_grid_geometry = sim.getRefinedGridGeometry()
-            print(f"[DEBUG] LGR geometry loaded", flush=True)
         except Exception as e:
             print(f"Warning: could not get LGR grid geometry: {e}", flush=True)
     
-    print(f"[DEBUG] Loading corner grid info...", flush=True)
     nx, ny, nz, lx, ly, lz = load_corner_grid_info(coord_file, zcorn_file)
 
     sim_data = SimulationData()
