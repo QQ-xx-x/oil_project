@@ -506,7 +506,7 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
-            cmap="coolwarm",
+            cmap="jet",
             clim=[min_p, max_p],
             show_scalar_bar=False,
             opacity=1.0,
@@ -520,8 +520,9 @@ class PyVistaRenderer:
             color="white",
             position_x=0.85,
             position_y=0.15,
-            width=0.12,
-            height=0.6,
+            width=0.08,
+            height=0.4,
+            vertical=True,
             render=False,
         )
 
@@ -929,7 +930,7 @@ class PyVistaRenderer:
                     actor = self.plotter.add_mesh(
                         surface,
                         scalars="Pressure",
-                        cmap="coolwarm",
+                        cmap="jet",
                         clim=[pressure_min, pressure_max],
                         opacity=0.9,
                         show_scalar_bar=False,
@@ -940,11 +941,12 @@ class PyVistaRenderer:
                         "Pressure (bar)",
                         position_x=0.82,
                         position_y=0.15,
-                        width=0.12,
-                        height=0.6,
+                        width=0.08,
+                        height=0.4,
                         label_font_size=10,
                         title_font_size=12,
                         color="white",
+                        vertical=True,
                         render=False,
                     )
 
@@ -966,7 +968,7 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             cloud,
             scalars="Pressure",
-            cmap="coolwarm",
+            cmap="jet",
             point_size=10,
             render_points_as_spheres=True,
             clim=[pressure_min, pressure_max],
@@ -978,11 +980,12 @@ class PyVistaRenderer:
             "Pressure (bar)",
             position_x=0.82,
             position_y=0.15,
-            width=0.12,
-            height=0.6,
+            width=0.08,
+            height=0.4,
             label_font_size=10,
             title_font_size=12,
             color="white",
+            vertical=True,
             render=False,
         )
 
