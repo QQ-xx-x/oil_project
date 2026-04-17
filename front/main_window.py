@@ -17,20 +17,21 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QCheckBox, QTableWidgetItem, QLineEdit)
 from PyQt5.QtCore import Qt, QSize, QProcess, QTimer
 from PyQt5.QtGui import QIcon, QFont, QColor, QPixmap, QPainter
-from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-import vtk
 
 # 导入本地模块
 from .data_models import SimulationData, CornerPointCell, CornerPointGridData
 from .input_panel import (
-    MatrixPropertiesPanel, FluidPropertiesPanel, InitialStatePanel,
-    NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
+    MatrixPropertiesPanel, OilWaterPropertiesPanel, GasRealPVTPanel,
+    InitialStatePanel, NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
     SimulationControlPanel, groupbox_style
 )
+from .pvt_plot import PVTPlotWidget
+from .grdecl_parser import convert_grdecl_to_temp_csv
 
 # 导入可视化模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from visual.vtk_renderer import VTKRenderer
+from visual.pyvista_view import PyVistaView
+from visual.pyvista_renderer import PyVistaRenderer
 
 
 class AlgorithmSelector(QWidget):
@@ -109,32 +110,6 @@ class AlgorithmSelector(QWidget):
         return pixmap
 
 
-class VTKWidget(QWidget):
-    """VTK渲染窗口 - 与原文件一致"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.vtk_widget = QVTKRenderWindowInteractor(self)
-        self.layout.addWidget(self.vtk_widget)
-        
-        self.renderer = vtk.vtkRenderer()
-        self.vtk_widget.GetRenderWindow().AddRenderer(self.renderer)
-        self.iren = self.vtk_widget.GetRenderWindow().GetInteractor()
-        
-        self.renderer.SetBackground(0.0, 0.0, 0.0)
-        
-        style = vtk.vtkInteractorStyleTrackballCamera()
-        self.iren.SetInteractorStyle(style)
-        
-        self.iren.Initialize()
-    
-    def reset_camera(self):
-        self.renderer.ResetCamera()
-        self.iren.Render()
-
-
 class MainWindow(QMainWindow):
     """主窗口 - 与原文件完全一致"""
     
@@ -151,26 +126,20 @@ class MainWindow(QMainWindow):
         self.sim_stop_requested = False
         self.sim_output_buffer = ""
         self.pending_result_path = None
-        self.step_log_interval = 30
+        self.step_log_interval = 10
         self.current_sim_total_days = 100.0
         self.current_progress_days = 0.0
         self.current_progress_step = 0
         self.estimated_total_steps = 700
         self.pending_step_summary = False
+        self.pending_step_log = None
         self.default_grid_type = "corner_point"
         self.show_grid_type_selector = False
         self.current_algorithm = "black_oil"
         self.corner_selection_mode_active = False
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
-        self.corner_selection_style = None
-        self.corner_selection_style_observer_ids = []
-        self.corner_selection_previous_style = None
         self.corner_selection_saved_camera = None
-        self.corner_selection_cube_source = None
-        self.corner_selection_actor = None
-        self.corner_selection_outline_actor = None
-        self.corner_selection_handle_actor = None
         self.selection_tool_controls = {}
         self.selection_params_by_algorithm = {}
         
@@ -301,15 +270,10 @@ class MainWindow(QMainWindow):
     
     def clear_previous_algorithm_rendering(self):
         """清除前一个算法的所有绘制内容"""
-        if hasattr(self, 'vtk_renderer') and hasattr(self.vtk_renderer, 'renderer'):
-            # 清除VTK渲染器中的所有view props
-            self.vtk_renderer.renderer.RemoveAllViewProps()
-            self.vtk_renderer.vtk_widget.iren.Render()
-        
-        # 清除VTK渲染器缓存
-        if hasattr(self, 'vtk_renderer'):
+        # 仅通过渲染器接口清场/清缓存，避免主窗口直接操作底层渲染对象
+        if hasattr(self, "vtk_renderer"):
             self.vtk_renderer.clear_cache()
-        
+
         print("Previous algorithm rendering cleared")
     
     def generate_mock_corner_point_grid(self, nx=20, ny=10, nz=5, lx=1000.0, ly=500.0, lz=100.0):
@@ -522,8 +486,15 @@ class MainWindow(QMainWindow):
         tab_layout.setSpacing(5)
         
         self.tab_buttons = {}
-        for tab_name in ["Grid", "Wells", "Fractures", "Results"]:
-            btn = QPushButton(tab_name)
+        tab_defs = [
+            ("Grid", "Grid"),
+            ("PVT", "FluidProps"),
+            ("Wells", "Wells"),
+            ("Fractures", "Fractures"),
+            ("Results", "Results"),
+        ]
+        for tab_name, tab_label in tab_defs:
+            btn = QPushButton(tab_label)
             btn.setCheckable(True)
             btn.setFixedHeight(30)
             btn.setStyleSheet("""
@@ -561,6 +532,9 @@ class MainWindow(QMainWindow):
         self.grid_page = self.create_grid_page()
         self.param_stack.addWidget(self.grid_page)
         
+        self.pvt_page = self.create_pvt_page()
+        self.param_stack.addWidget(self.pvt_page)
+        
         # Wells参数页面
         self.wells_page = self.create_wells_page()
         self.param_stack.addWidget(self.wells_page)
@@ -579,6 +553,9 @@ class MainWindow(QMainWindow):
 
         self.corner_grid_page = self.create_corner_grid_page()
         self.corner_param_stack.addWidget(self.corner_grid_page)
+
+        self.corner_pvt_page = self.create_corner_pvt_page()
+        self.corner_param_stack.addWidget(self.corner_pvt_page)
 
         self.corner_wells_page = self.create_corner_wells_page()
         self.corner_param_stack.addWidget(self.corner_wells_page)
@@ -639,6 +616,24 @@ class MainWindow(QMainWindow):
         
         return page
 
+    def create_pvt_page(self):
+        """创建 PVT 参数页面，支持加密/不加密两套参数面板切换。"""
+        page = QWidget()
+        page.setStyleSheet("background-color: #2b2b2b;")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self.pvt_param_stack = QStackedWidget()
+        self.pvt_unrefined_page = self.create_unrefined_pvt_params_page()
+        self.pvt_refined_page = self.create_refined_pvt_params_page()
+        self.pvt_param_stack.addWidget(self.pvt_unrefined_page)
+        self.pvt_param_stack.addWidget(self.pvt_refined_page)
+        self.update_pvt_parameter_panel(self.combo_grid_refinement.currentText())
+        layout.addWidget(self.pvt_param_stack, 1)
+        layout.addStretch()
+
+        return page
+
     def create_unrefined_grid_params_page(self):
         """未加密角格参数面板，默认值以源码为准。"""
         content = QWidget()
@@ -670,38 +665,6 @@ class MainWindow(QMainWindow):
             ("Kx (Darcy):", self.basic_spin_perm_x),
             ("Ky (Darcy):", self.basic_spin_perm_y),
             ("Kz (Darcy):", self.basic_spin_perm_z),
-        ]))
-
-        self.basic_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
-        self.basic_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        self.basic_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
-        layout.addWidget(self.create_parameter_group("Initial State", [
-            ("Pressure (bar):", self.basic_spin_initial_pressure),
-            ("Sw:", self.basic_spin_initial_sw),
-            ("Sg:", self.basic_spin_initial_sg),
-        ]))
-
-        self.basic_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
-        self.basic_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
-        self.basic_spin_mu_g = self.create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
-        self.basic_spin_cw = self.create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
-        self.basic_spin_co = self.create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
-        self.basic_spin_cg = self.create_double_spinbox(0.0, 1.0, 1e-3, decimals=6, step=1e-4)
-        self.basic_spin_p_ref = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
-        self.basic_spin_swi = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        self.basic_spin_sor = self.create_double_spinbox(0.0, 1.0, 0.01, decimals=4)
-        self.basic_spin_sgc = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
-        layout.addWidget(self.create_parameter_group("Fluid Properties", [
-            ("mu_w (cP):", self.basic_spin_mu_w),
-            ("mu_o (cP):", self.basic_spin_mu_o),
-            ("mu_g (cP):", self.basic_spin_mu_g),
-            ("cw (1/bar):", self.basic_spin_cw),
-            ("co (1/bar):", self.basic_spin_co),
-            ("cg (1/bar):", self.basic_spin_cg),
-            ("P_ref (bar):", self.basic_spin_p_ref),
-            ("Swi:", self.basic_spin_swi),
-            ("Sor:", self.basic_spin_sor),
-            ("Sgc:", self.basic_spin_sgc),
         ]))
 
         self.basic_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
@@ -766,6 +729,75 @@ class MainWindow(QMainWindow):
             ("Kz (Darcy):", self.refined_spin_perm_z),
         ]))
 
+        self.refined_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
+        self.refined_spin_time_step = self.create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
+        layout.addWidget(self.create_parameter_group("Simulation Control", [
+            ("Simulation Time (days):", self.refined_spin_simulation_time),
+            ("Time Step (days):", self.refined_spin_time_step),
+        ]))
+        layout.addStretch()
+
+        return self.wrap_in_scroll_area(content)
+
+    def create_unrefined_pvt_params_page(self):
+        """未加密 PVT 参数页面。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.pvt_plot_btn = QPushButton("绘图")
+        self.pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.pvt_plot_btn)
+
+        self.basic_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
+        self.basic_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.basic_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
+        layout.addWidget(self.create_parameter_group("Initial State", [
+            ("Pressure (bar):", self.basic_spin_initial_pressure),
+            ("Sw:", self.basic_spin_initial_sw),
+            ("Sg:", self.basic_spin_initial_sg),
+        ]))
+
+        self.basic_spin_mu_w = self.create_double_spinbox(0.0, 1000.0, 1.0, decimals=4)
+        self.basic_spin_mu_o = self.create_double_spinbox(0.0, 1000.0, 5.0, decimals=4)
+        self.basic_spin_mu_g = self.create_double_spinbox(0.0, 1000.0, 0.2, decimals=4)
+        self.basic_spin_cw = self.create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
+        self.basic_spin_co = self.create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
+        self.basic_spin_cg = self.create_double_spinbox(0.0, 1.0, 1e-3, decimals=6, step=1e-4)
+        self.basic_spin_p_ref = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
+        self.basic_spin_swi = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.basic_spin_sor = self.create_double_spinbox(0.0, 1.0, 0.01, decimals=4)
+        self.basic_spin_sgc = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        layout.addWidget(self.create_parameter_group("Fluid Properties", [
+            ("mu_w (cP):", self.basic_spin_mu_w),
+            ("mu_o (cP):", self.basic_spin_mu_o),
+            ("mu_g (cP):", self.basic_spin_mu_g),
+            ("cw (1/bar):", self.basic_spin_cw),
+            ("co (1/bar):", self.basic_spin_co),
+            ("cg (1/bar):", self.basic_spin_cg),
+            ("P_ref (bar):", self.basic_spin_p_ref),
+            ("Swi:", self.basic_spin_swi),
+            ("Sor:", self.basic_spin_sor),
+            ("Sgc:", self.basic_spin_sgc),
+        ]))
+        layout.addStretch()
+
+        return self.wrap_in_scroll_area(content)
+
+    def create_refined_pvt_params_page(self):
+        """加密 PVT 参数页面。"""
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.pvt_plot_btn = QPushButton("绘图")
+        self.pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.pvt_plot_btn)
+
         self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
         self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
         self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
@@ -796,13 +828,6 @@ class MainWindow(QMainWindow):
             ("Swi:", self.refined_spin_swi),
             ("Sor:", self.refined_spin_sor),
             ("Sgc:", self.refined_spin_sgc),
-        ]))
-
-        self.refined_spin_simulation_time = self.create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
-        self.refined_spin_time_step = self.create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
-        layout.addWidget(self.create_parameter_group("Simulation Control", [
-            ("Simulation Time (days):", self.refined_spin_simulation_time),
-            ("Time Step (days):", self.refined_spin_time_step),
         ]))
         layout.addStretch()
 
@@ -857,6 +882,14 @@ class MainWindow(QMainWindow):
             else:
                 self.wells_param_stack.setCurrentWidget(self.wells_unrefined_page)
 
+    def update_pvt_parameter_panel(self, refinement_text):
+        """根据是否加密切换 PVT 参数面板。"""
+        if hasattr(self, 'pvt_param_stack'):
+            if refinement_text == "加密":
+                self.pvt_param_stack.setCurrentWidget(self.pvt_refined_page)
+            else:
+                self.pvt_param_stack.setCurrentWidget(self.pvt_unrefined_page)
+
     def update_fractures_parameter_panel(self, refinement_text):
         """根据是否加密切换 Fractures 参数面板。"""
         if hasattr(self, 'fractures_param_stack'):
@@ -866,8 +899,9 @@ class MainWindow(QMainWindow):
                 self.fractures_param_stack.setCurrentWidget(self.fractures_unrefined_page)
 
     def update_parameter_mode(self, refinement_text):
-        """统一同步 Grid/Wells/Fractures 三个页签的参数面板。"""
+        """统一同步 Grid/PVT/Wells/Fractures 四个页签的参数面板。"""
         self.update_grid_parameter_panel(refinement_text)
+        self.update_pvt_parameter_panel(refinement_text)
         self.update_wells_parameter_panel(refinement_text)
         self.update_fractures_parameter_panel(refinement_text)
 
@@ -1323,6 +1357,34 @@ class MainWindow(QMainWindow):
         self.corner_coord_file_path = ""
         self.corner_zcorn_file_path = ""
 
+         # ================= 新增：一键导入 GRDECL 按钮 =================
+        grid_import_layout = QHBoxLayout()
+        grid_import_btn = QPushButton("一键导入 .GRDECL 网格...")
+        grid_import_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0078D7;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #005A9E;
+            }
+        """)
+        grid_import_btn.clicked.connect(self.load_grdecl_file)
+        grid_import_layout.addWidget(grid_import_btn)
+        file_layout.addLayout(grid_import_layout)
+        
+        # 加一条灰色的横线，将新按钮和下面的 CSV 选项隔开，UI 更清晰
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #555555; margin: 5px 0px;")
+        file_layout.addWidget(line)
+        # ==============================================================
+
+
         coord_layout = QHBoxLayout()
         coord_label = QLabel("COORD:")
         coord_label.setFixedWidth(60)
@@ -1450,17 +1512,46 @@ class MainWindow(QMainWindow):
         grid_params_group.setLayout(grid_params_layout)
         layout.addWidget(grid_params_group)
 
-        self.corner_matrix_panel = MatrixPropertiesPanel()
-        layout.addWidget(self.corner_matrix_panel)
-
         self.corner_initial_state_panel = InitialStatePanel()
         layout.addWidget(self.corner_initial_state_panel)
 
-        self.corner_fluid_panel = FluidPropertiesPanel()
-        layout.addWidget(self.corner_fluid_panel)
+        self.corner_matrix_panel = MatrixPropertiesPanel()
+        layout.addWidget(self.corner_matrix_panel)
 
         self.corner_sim_control_panel = SimulationControlPanel()
         layout.addWidget(self.corner_sim_control_panel)
+
+        layout.addStretch()
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+        return page
+
+    def create_corner_pvt_page(self):
+        """创建 Corner Grid 的 PVT 页面。"""
+        page = QWidget()
+        page.setStyleSheet("background-color: #2b2b2b;")
+        main_layout = QVBoxLayout(page)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        self.corner_pvt_plot_btn = QPushButton("绘图")
+        self.corner_pvt_plot_btn.setStyleSheet(self.action_button_style())
+        self.corner_pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
+        layout.addWidget(self.corner_pvt_plot_btn)
+
+        self.corner_oil_water_panel = OilWaterPropertiesPanel()
+        layout.addWidget(self.corner_oil_water_panel)
+
+        self.corner_gas_pvt_panel = GasRealPVTPanel()
+        layout.addWidget(self.corner_gas_pvt_panel)
 
         layout.addStretch()
         scroll.setWidget(content)
@@ -1541,7 +1632,13 @@ class MainWindow(QMainWindow):
         self.check_show_pressure_corner.setStyleSheet("color: #cccccc;")
         self.check_show_pressure_corner.stateChanged.connect(self.toggle_corner_pressure_visibility)
         control_layout.addWidget(self.check_show_pressure_corner)
-        
+
+        self.check_show_lgr_grid_corner = QCheckBox("Show LGR Grid")
+        self.check_show_lgr_grid_corner.setChecked(True)
+        self.check_show_lgr_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_lgr_grid_corner.stateChanged.connect(self.toggle_corner_lgr_grid_visibility)
+        control_layout.addWidget(self.check_show_lgr_grid_corner)
+
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
         
@@ -1642,6 +1739,7 @@ class MainWindow(QMainWindow):
             self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(50.0, cpg.ly / 4.0))
             self.corner_hydraulic_frac_panel.spin_height.setValue(min(20.0, cpg.lz * 0.4))
 
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
             self.update_corner_grid_statistics()
 
@@ -1653,9 +1751,11 @@ class MainWindow(QMainWindow):
 
     def reset_corner_grid_view(self):
         """复原角点网格视角"""
+        # 仅通过渲染器接口进行相机复位与重绘，主窗口不直接访问底层相机对象
         if self.sim_data.corner_point_grid and self.sim_data.corner_point_grid.cells:
-            self.vtk_renderer.setup_camera_for_corner_grid(self.sim_data.corner_point_grid)
-            self.vtk_renderer.vtk_widget.iren.Render()
+            if hasattr(self, "vtk_renderer"):
+                self.vtk_renderer.setup_camera_for_corner_grid(self.sim_data.corner_point_grid)
+                self.vtk_renderer.render_now()
             self.status_bar.showMessage("View reset")
 
     def hide_corner_fractures(self):
@@ -1683,8 +1783,6 @@ class MainWindow(QMainWindow):
             origin_x = cpg.origin_x
             origin_y = cpg.origin_y
             origin_z = cpg.origin_z
-        
-        print(f"DEBUG: draw_corner_wells_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
         
         well = {
             'id': 0,
@@ -1732,8 +1830,6 @@ class MainWindow(QMainWindow):
         else:
             # 使用默认范围
             lx, ly, lz = 1000.0, 500.0, 100.0
-        
-        print(f"DEBUG: draw_corner_fractures_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
         
         # 生成随机裂缝
         fractures = []
@@ -1805,6 +1901,11 @@ class MainWindow(QMainWindow):
         if hasattr(self.vtk_renderer, 'toggle_pressure_visibility'):
             self.vtk_renderer.toggle_pressure_visibility(state == Qt.Checked)
 
+    def toggle_corner_lgr_grid_visibility(self, state):
+        """切换LGR网格显示"""
+        if hasattr(self.vtk_renderer, 'toggle_corner_lgr_grid_visibility'):
+            self.vtk_renderer.toggle_corner_lgr_grid_visibility(state == Qt.Checked)
+
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
                                   check_show_grid, check_show_fractures):
         """登记各算法 Results 页对应的独立控件引用。"""
@@ -1839,14 +1940,79 @@ class MainWindow(QMainWindow):
         if self.current_algorithm == "black_oil_corner_grid" and hasattr(self, 'corner_param_stack'):
             return self.corner_param_stack
         return self.param_stack
+
+    def get_current_pvt_plot_inputs(self):
+        """从当前 UI 页面收集 PVT 曲线所需参数。"""
+        if self.current_algorithm == "black_oil_corner_grid":
+            initial_state = self.corner_initial_state_panel.get_values()
+            fluid_props = self.corner_oil_water_panel.get_values()
+            return {
+                'sw': float(initial_state['initial_sw']),
+                'sg': float(initial_state['initial_sg']),
+                'swi': float(fluid_props['swi']),
+                'sor': float(fluid_props['sor']),
+                'sgc': float(fluid_props['sgc']),
+            }
+
+        if self.is_refined_grid_mode():
+            return {
+                'sw': float(self.refined_spin_initial_sw.value()),
+                'sg': float(self.refined_spin_initial_sg.value()),
+                'swi': float(self.refined_spin_swi.value()),
+                'sor': float(self.refined_spin_sor.value()),
+                'sgc': float(self.refined_spin_sgc.value()),
+            }
+
+        return {
+            'sw': float(self.basic_spin_initial_sw.value()),
+            'sg': float(self.basic_spin_initial_sg.value()),
+            'swi': float(self.basic_spin_swi.value()),
+            'sor': float(self.basic_spin_sor.value()),
+            'sgc': float(self.basic_spin_sgc.value()),
+        }
+
+    def plot_current_pvt_curve(self):
+        """在中间显示区域绘制当前工况对应的气水截面曲线。"""
+        try:
+            plot_inputs = self.get_current_pvt_plot_inputs()
+            so_fixed = self.pvt_plot_widget.plot_gas_water_section(**plot_inputs)
+            self.show_pvt_center_view()
+            self.append_sim_status(
+                "PVT plot generated: "
+                f"So_fixed={so_fixed:.4f}, "
+                f"Sw={plot_inputs['sw']:.4f}, Sg={plot_inputs['sg']:.4f}, "
+                f"Swi={plot_inputs['swi']:.4f}, Sor={plot_inputs['sor']:.4f}, Sgc={plot_inputs['sgc']:.4f}"
+            )
+            self.status_bar.showMessage("PVT curve generated")
+        except Exception as exc:
+            self.append_sim_status(f"PVT plot error: {exc}")
+            self.status_bar.showMessage("PVT curve failed")
     
     def create_center_panel(self):
         """创建中间VTK视图面板 - 与原文件一致"""
-        self.vtk_widget = VTKWidget()
-        self.center_layout.addWidget(self.vtk_widget)
+        self.center_stack = QStackedWidget()
+        self.center_stack.setStyleSheet("background-color: #000000;")
+        self.center_layout.addWidget(self.center_stack)
+
+        self.vtk_widget = PyVistaView()
+        self.center_stack.addWidget(self.vtk_widget)
+
+        self.pvt_plot_widget = PVTPlotWidget()
+        self.center_stack.addWidget(self.pvt_plot_widget)
+        self.show_vtk_center_view()
         
         # 初始化VTK渲染器
-        self.vtk_renderer = VTKRenderer(self.vtk_widget)
+        self.vtk_renderer = PyVistaRenderer(self.vtk_widget)
+
+    def show_vtk_center_view(self):
+        """切回中间区域的 VTK 视图。"""
+        if hasattr(self, 'center_stack') and hasattr(self, 'vtk_widget'):
+            self.center_stack.setCurrentWidget(self.vtk_widget)
+
+    def show_pvt_center_view(self):
+        """切换到中间区域的 PVT 曲线视图。"""
+        if hasattr(self, 'center_stack') and hasattr(self, 'pvt_plot_widget'):
+            self.center_stack.setCurrentWidget(self.pvt_plot_widget)
     
     def create_bottom_panel(self):
         """创建底部数据面板 - 与原文件一致，3个panel"""
@@ -1924,6 +2090,26 @@ class MainWindow(QMainWindow):
                 color: #cccccc;
             }
         """
+
+    def action_button_style(self):
+        """统一的操作按钮样式。"""
+        return """
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:disabled {
+                background-color: #555555;
+                color: #888888;
+            }
+        """
     
     def switch_tab(self, tab_name):
         """切换标签页 - 与原文件一致"""
@@ -1935,7 +2121,7 @@ class MainWindow(QMainWindow):
         for name, btn in self.tab_buttons.items():
             btn.setChecked(name == tab_name)
         
-        tab_index = {"Grid": 0, "Wells": 1, "Fractures": 2, "Results": 3}
+        tab_index = {"Grid": 0, "PVT": 1, "Wells": 2, "Fractures": 3, "Results": 4}
         self.get_active_param_stack().setCurrentIndex(tab_index.get(tab_name, 0))
         self.sync_selection_tool_status()
     
@@ -1950,15 +2136,26 @@ class MainWindow(QMainWindow):
         self.sim_status_text.clear()
     
     def clear_cache(self):
-        """清除VTK缓存 - 清除所有算法的数据和渲染器中的actor"""
-        # 清除VTK渲染器中的所有view props
-        if hasattr(self, 'vtk_renderer') and hasattr(self.vtk_renderer, 'renderer'):
-            self.vtk_renderer.renderer.RemoveAllViewProps()
-            self.vtk_renderer.vtk_widget.iren.Render()
-        
-        # 清除VTK渲染器缓存
-        if hasattr(self, 'vtk_renderer'):
+        """清除渲染缓存 - 清除所有算法的数据和渲染器中的actor"""
+        # 仅通过渲染器接口清场/清缓存，避免主窗口直接操作底层渲染对象
+        if hasattr(self, "vtk_renderer"):
             self.vtk_renderer.clear_cache()
+            if hasattr(self.vtk_renderer, "clear_selection_overlay"):
+                self.vtk_renderer.clear_selection_overlay()
+
+        # 通过视图接口卸载交互与还原光标（不直接访问底层 interactor）
+        view = None
+        if hasattr(self, "center_stack"):
+            try:
+                view = self.center_stack.currentWidget()
+            except Exception:
+                view = None
+
+        if view is not None:
+            if hasattr(view, "uninstall_selection_interaction"):
+                view.uninstall_selection_interaction()
+            if hasattr(view, "set_cross_cursor"):
+                view.set_cross_cursor(False)
         
         # 清除本地缓存
         self.cache['pressure_actor'] = None
@@ -1967,9 +2164,11 @@ class MainWindow(QMainWindow):
         self.cache['grid_lines_actor'] = None
         self.cache['data_hash'] = None
         
-        # 清除corner point grid相关状态
-        self.deactivate_corner_rectangle_selection_mode(restore_camera=False, clear_actor=True)
-        self.clear_corner_selection_overlay(clear_params=False)
+        # 清除 corner 框选相关状态（仅重置主窗口状态，不在这里操作底层 actor）
+        self.corner_selection_mode_active = False
+        self.corner_selection_dragging = False
+        self.corner_selection_start_xy = None
+        self.corner_selection_saved_camera = None
         
         print("Cache cleared")
 
@@ -1979,6 +2178,7 @@ class MainWindow(QMainWindow):
         self.current_progress_days = 0.0
         self.current_progress_step = 0
         self.pending_step_summary = False
+        self.pending_step_log = None
         self.update_progress_bar(0.0, 0, "准备启动")
 
     def update_progress_bar(self, current_days, step, status_text="运行中"):
@@ -2054,28 +2254,45 @@ class MainWindow(QMainWindow):
             return
 
         # Black Oil算法格式: Step 1 t=0.001 dt=...
-        step_match = re.match(r"^Step\s+(\d+)\s+t=([0-9eE.+-]+)\s+dt=", line)
+        step_match = re.match(r"^Step\s+(\d+)\s+t=([0-9eE.+-]+)\s+dt=([0-9eE.+-]+)", line)
         if step_match:
             step = int(step_match.group(1))
+            current_time = float(step_match.group(2))
+            dt = float(step_match.group(3))
             self.current_progress_step = max(self.current_progress_step, step)
-            should_display = ("ok" in line) and (step % self.step_log_interval == 0)
+            self.current_progress_days = max(self.current_progress_days, current_time)
+            should_display = (step % self.step_log_interval == 0)
             self.pending_step_summary = should_display
+            self.pending_step_log = {
+                "step": step,
+                "time": current_time,
+                "dt": dt,
+            }
+            self.update_progress_bar(self.current_progress_days, self.current_progress_step, "运行中")
             if should_display:
                 self.append_sim_status(line)
             return
 
         # Corner Point Grid算法格式: Step 1 @ T=0.0000 trying dt=0.001 ...
-        corner_step_match = re.match(r"^Step\s+(\d+)\s+@\s+T=([0-9eE.+-]+)\s+trying\s+dt=", line)
+        corner_step_match = re.match(r"^Step\s+(\d+)\s+@\s+T=([0-9eE.+-]+)\s+trying\s+dt=([0-9eE.+-]+)", line)
         if corner_step_match:
             step = int(corner_step_match.group(1))
             current_time = float(corner_step_match.group(2))
+            dt = float(corner_step_match.group(3))
             self.current_progress_step = max(self.current_progress_step, step)
             self.current_progress_days = max(self.current_progress_days, current_time)
             # Corner算法每10步显示一次
             should_display = (step % 10 == 0)
+            self.pending_step_log = {
+                "step": step,
+                "time": current_time,
+                "dt": dt,
+            }
             if should_display:
                 self.update_progress_bar(self.current_progress_days, self.current_progress_step, "Corner Grid 运行中")
                 self.append_sim_status(f"Step {step} @ T={current_time:.4f} days")
+            else:
+                self.update_progress_bar(self.current_progress_days, self.current_progress_step, "Corner Grid 运行中")
             return
 
         summary_match = re.match(r"^\s*t=([0-9eE.+-]+)\s+days,\s+P:", line)
@@ -2086,6 +2303,17 @@ class MainWindow(QMainWindow):
             if self.pending_step_summary:
                 self.append_sim_status(line)
             self.pending_step_summary = False
+            self.pending_step_log = None
+            return
+
+        if line == "ok" or line.startswith("Converged in "):
+            if self.pending_step_log is not None:
+                next_days = self.pending_step_log["time"] + self.pending_step_log["dt"]
+                self.current_progress_days = max(self.current_progress_days, next_days)
+                self.update_progress_bar(self.current_progress_days, self.current_progress_step, "运行中")
+                self.pending_step_log = None
+            self.pending_step_summary = False
+            self.append_sim_status(line)
             return
 
         if line.startswith("Step "):
@@ -2333,6 +2561,7 @@ class MainWindow(QMainWindow):
             self.append_sim_status("  Data Loaded Successfully!")
             self.append_sim_status("=" * 50)
             
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
             self.update_corner_grid_statistics()
             
@@ -2563,7 +2792,8 @@ class MainWindow(QMainWindow):
             self.append_sim_status("  Simulation Completed Successfully!")
             self.append_sim_status("=" * 50)
             
-            # 只渲染压力场、裂缝、井，不重新渲染网格（用户已先点击"绘制"显示网格）
+            # 只渲染压力场、裂缝、井，不重新渲染网格（用户已先点击“绘制”显示网格）
+            self.show_vtk_center_view()
             self.vtk_renderer.render_corner_pressure_field(self.sim_data)
             self.vtk_renderer.render_corner_wells(self.sim_data)
             self.vtk_renderer.render_corner_fractures(self.sim_data)
@@ -2607,8 +2837,6 @@ class MainWindow(QMainWindow):
             origin_y = cpg.origin_y
             origin_z = cpg.origin_z
         
-        print(f"DEBUG: _generate_corner_wells_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
-        
         well = {
             'id': 0,
             'node_idx': 0,
@@ -2646,8 +2874,6 @@ class MainWindow(QMainWindow):
             origin_z = cpg.origin_z
         else:
             lx, ly, lz = 1000.0, 500.0, 100.0
-        
-        print(f"DEBUG: _generate_corner_fractures_from_params - origin: ({origin_x}, {origin_y}, {origin_z})")
         
         for i in range(num_natural):
             cx_rel = random.uniform(lx * 0.1, lx * 0.9)
@@ -2895,41 +3121,27 @@ class MainWindow(QMainWindow):
         self.corner_selection_saved_camera = self.capture_camera_state()
         self.configure_corner_selection_camera()
 
-        iren = self.vtk_widget.iren
-        self.corner_selection_previous_style = iren.GetInteractorStyle()
-        self.corner_selection_style = vtk.vtkInteractorStyleUser()
-        self.corner_selection_style_observer_ids = [
-            self.corner_selection_style.AddObserver("LeftButtonPressEvent", self.handle_corner_selection_press),
-            self.corner_selection_style.AddObserver("MouseMoveEvent", self.handle_corner_selection_move),
-            self.corner_selection_style.AddObserver("LeftButtonReleaseEvent", self.handle_corner_selection_release),
-        ]
-        iren.SetInteractorStyle(self.corner_selection_style)
-
         self.corner_selection_mode_active = True
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
         self.set_corner_selection_toggle_button(True)
-        self.vtk_widget.vtk_widget.setCursor(Qt.CrossCursor)
+        # 安装框选交互：由视图负责转发鼠标事件，不在主窗口直接接触底层交互器
+        self.vtk_widget.install_selection_interaction(
+            self.handle_corner_selection_press,
+            self.handle_corner_selection_move,
+            self.handle_corner_selection_release,
+        )
+        self.vtk_widget.set_cross_cursor(True)
         self.update_corner_selection_status("拖拽鼠标框选 XY 区域。")
         self.status_bar.showMessage("Corner Grid rectangle selection enabled")
-        self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
     def deactivate_corner_rectangle_selection_mode(self, restore_camera=True, clear_actor=False):
         """退出 Corner Grid 的矩形框选模式。"""
-        iren = getattr(self, 'vtk_widget', None)
-        if iren is not None:
-            iren = self.vtk_widget.iren
+        # 卸载交互回调并恢复光标：通过视图接口完成
+        self.vtk_widget.uninstall_selection_interaction()
+        self.vtk_widget.set_cross_cursor(False)
 
-        if iren and self.corner_selection_previous_style is not None:
-            iren.SetInteractorStyle(self.corner_selection_previous_style)
-
-        if self.corner_selection_style is not None:
-            for observer_id in self.corner_selection_style_observer_ids:
-                self.corner_selection_style.RemoveObserver(observer_id)
-
-        self.corner_selection_style = None
-        self.corner_selection_style_observer_ids = []
-        self.corner_selection_previous_style = None
         self.corner_selection_mode_active = False
         self.corner_selection_dragging = False
         self.corner_selection_start_xy = None
@@ -2940,21 +3152,18 @@ class MainWindow(QMainWindow):
 
         if clear_actor or self.get_current_selection_params() is None:
             self.clear_corner_selection_overlay(clear_params=False)
-
-        if hasattr(self, 'vtk_widget'):
-            self.vtk_widget.vtk_widget.unsetCursor()
-            self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
         self.set_corner_selection_toggle_button(False)
         if hasattr(self, 'status_bar'):
             self.status_bar.showMessage("Ready - Click 'Run Simulation' to start")
 
-    def handle_corner_selection_press(self, caller, event):
+    def handle_corner_selection_press(self, caller=None, event=None):
         """开始 Corner Grid 矩形框选。"""
         if not self.corner_selection_mode_active:
             return
 
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         self.corner_selection_start_xy = self.display_to_corner_world_xy(x, y)
         self.corner_selection_dragging = True
         self.update_corner_selection_preview(
@@ -2963,12 +3172,12 @@ class MainWindow(QMainWindow):
             finalized=False,
         )
 
-    def handle_corner_selection_move(self, caller, event):
+    def handle_corner_selection_move(self, caller=None, event=None):
         """更新 Corner Grid 矩形框选预览。"""
         if not (self.corner_selection_mode_active and self.corner_selection_dragging):
             return
 
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         current_xy = self.display_to_corner_world_xy(x, y)
         self.update_corner_selection_preview(
             self.corner_selection_start_xy,
@@ -2976,13 +3185,13 @@ class MainWindow(QMainWindow):
             finalized=False,
         )
 
-    def handle_corner_selection_release(self, caller, event):
+    def handle_corner_selection_release(self, caller=None, event=None):
         """完成 Corner Grid 矩形框选并弹出参数输入窗。"""
         if not (self.corner_selection_mode_active and self.corner_selection_dragging):
             return
 
         self.corner_selection_dragging = False
-        x, y = self.vtk_widget.iren.GetEventPosition()
+        x, y = self.vtk_widget.get_mouse_event_position()
         end_xy = self.display_to_corner_world_xy(x, y)
         bounds = self.normalize_corner_xy_bounds(self.corner_selection_start_xy, end_xy)
 
@@ -3009,32 +3218,18 @@ class MainWindow(QMainWindow):
 
     def display_to_corner_world_xy(self, display_x, display_y):
         """将屏幕坐标映射到俯视平行投影视图下的 XY 坐标。"""
-        renderer = self.vtk_widget.renderer
-        render_window = self.vtk_widget.vtk_widget.GetRenderWindow()
-        width, height = render_window.GetSize()
-        if width <= 0 or height <= 0:
+        world_bounds = self.get_corner_selection_world_bounds()
+        world_point = None
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "display_to_world_xy"):
+            world_point = self.vtk_renderer.display_to_world_xy(display_x, display_y, world_bounds)
+        if not world_point:
             return 0.0, 0.0
 
-        viewport = renderer.GetViewport()
-        view_x0 = viewport[0] * width
-        view_y0 = viewport[1] * height
-        view_width = max(1.0, (viewport[2] - viewport[0]) * width)
-        view_height = max(1.0, (viewport[3] - viewport[1]) * height)
-
-        u = max(0.0, min(1.0, (display_x - view_x0) / view_width))
-        v = max(0.0, min(1.0, (display_y - view_y0) / view_height))
-
-        camera = renderer.GetActiveCamera()
-        focal_x, focal_y, _ = camera.GetFocalPoint()
-        world_height = 2.0 * camera.GetParallelScale()
-        world_width = world_height * (view_width / view_height)
-
-        x = focal_x + (u - 0.5) * world_width
-        y = focal_y + (v - 0.5) * world_height
-
-        min_x, max_x, min_y, max_y, _, _ = self.get_corner_selection_world_bounds()
-        x = max(min_x, min(max_x, x))
-        y = max(min_y, min(max_y, y))
+        x = float(world_point[0])
+        y = float(world_point[1])
+        min_x, max_x, min_y, max_y, _, _ = world_bounds
+        x = max(float(min_x), min(float(max_x), x))
+        y = max(float(min_y), min(float(max_y), y))
         return x, y
 
     def normalize_corner_xy_bounds(self, start_xy, end_xy):
@@ -3081,169 +3276,45 @@ class MainWindow(QMainWindow):
 
     def capture_camera_state(self):
         """保存当前相机状态，便于退出框选模式后恢复。"""
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        return {
-            'position': camera.GetPosition(),
-            'focal_point': camera.GetFocalPoint(),
-            'view_up': camera.GetViewUp(),
-            'parallel_projection': camera.GetParallelProjection(),
-            'parallel_scale': camera.GetParallelScale(),
-        }
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "capture_camera_state"):
+            return self.vtk_renderer.capture_camera_state()
+        return None
 
     def restore_camera_state(self, state):
         """恢复进入框选模式前的相机状态。"""
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        camera.SetPosition(*state['position'])
-        camera.SetFocalPoint(*state['focal_point'])
-        camera.SetViewUp(*state['view_up'])
-        if state['parallel_projection']:
-            camera.ParallelProjectionOn()
-        else:
-            camera.ParallelProjectionOff()
-        camera.SetParallelScale(state['parallel_scale'])
-        self.vtk_widget.renderer.ResetCameraClippingRange()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "restore_camera_state"):
+            self.vtk_renderer.restore_camera_state(state)
 
     def configure_corner_selection_camera(self):
         """将相机切到俯视平行投影视图，便于 XY 矩形框选。"""
-        min_x, max_x, min_y, max_y, min_z, max_z = self.get_corner_selection_world_bounds()
-        cx = (min_x + max_x) / 2.0
-        cy = (min_y + max_y) / 2.0
-        cz = (min_z + max_z) / 2.0
-        dx = max_x - min_x
-        dy = max_y - min_y
-        dz = max_z - min_z
-
-        render_window = self.vtk_widget.vtk_widget.GetRenderWindow()
-        width, height = render_window.GetSize()
-        aspect = (width / height) if height else 1.0
-
-        camera = self.vtk_widget.renderer.GetActiveCamera()
-        camera.SetFocalPoint(cx, cy, cz)
-        camera.SetPosition(cx, cy, max_z + max(dx, dy, dz, 1.0) * 3.0)
-        camera.SetViewUp(0.0, 1.0, 0.0)
-        camera.ParallelProjectionOn()
-        camera.SetParallelScale(max(dy / 2.0, dx / max(2.0 * aspect, 1e-6), 1.0) * 1.05)
-        self.vtk_widget.renderer.ResetCameraClippingRange()
+        world_bounds = self.get_corner_selection_world_bounds()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "configure_selection_camera"):
+            self.vtk_renderer.configure_selection_camera(world_bounds)
 
     def update_corner_selection_preview(self, start_xy, end_xy, finalized=False):
         """更新 Corner Grid 框选区域的三维可视化预览。"""
-        min_x, min_y, max_x, max_y = self.normalize_corner_xy_bounds(start_xy, end_xy)
-        _, _, _, _, min_z, max_z = self.get_corner_selection_world_bounds()
-
-        if self.corner_selection_cube_source is None:
-            self.corner_selection_cube_source = vtk.vtkCubeSource()
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(self.corner_selection_cube_source.GetOutputPort())
-            self.corner_selection_actor = vtk.vtkActor()
-            self.corner_selection_actor.SetMapper(mapper)
-            self.vtk_widget.renderer.AddActor(self.corner_selection_actor)
-
-        self.corner_selection_cube_source.SetBounds(min_x, max_x, min_y, max_y, min_z, max_z)
-        self.corner_selection_cube_source.Update()
-
-        prop = self.corner_selection_actor.GetProperty()
-        prop.SetEdgeVisibility(1)
-        prop.SetLineWidth(5.5)
-        prop.SetAmbient(0.55)
-        prop.SetDiffuse(0.8)
-        prop.SetSpecular(0.35)
-        prop.SetSpecularPower(18.0)
-        prop.SetInterpolationToFlat()
-        if hasattr(prop, "SetRenderLinesAsTubes"):
-            prop.SetRenderLinesAsTubes(1)
-        if finalized:
-            prop.SetColor(1.0, 0.08, 0.0)
-            prop.SetOpacity(0.58)
-            prop.SetEdgeColor(0.2, 1.0, 0.2)
-        else:
-            prop.SetColor(0.0, 1.0, 1.0)
-            prop.SetOpacity(0.42)
-            prop.SetEdgeColor(1.0, 1.0, 1.0)
-
-        self.update_corner_selection_outline(min_x, max_x, min_y, max_y, min_z, max_z, finalized)
-        self.vtk_widget.iren.Render()
+        # 仅通过渲染器接口创建/更新预览覆盖层，主窗口不直接创建/删除 actor
+        if not start_xy or not end_xy:
+            return
+        world_bounds = self.get_corner_selection_world_bounds()
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "show_selection_preview"):
+            self.vtk_renderer.show_selection_preview(
+                start_xy,
+                end_xy,
+                world_bounds,
+                finalized=finalized,
+            )
 
     def update_corner_selection_outline(self, min_x, max_x, min_y, max_y, min_z, max_z, finalized):
-        """用亮色管状轮廓和角点标记增强选区可见性。"""
-        if self.corner_selection_outline_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_outline_actor)
-            self.corner_selection_outline_actor = None
-        if self.corner_selection_handle_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_handle_actor)
-            self.corner_selection_handle_actor = None
-
-        points = vtk.vtkPoints()
-        corners = [
-            (min_x, min_y, min_z),
-            (max_x, min_y, min_z),
-            (max_x, max_y, min_z),
-            (min_x, max_y, min_z),
-            (min_x, min_y, max_z),
-            (max_x, min_y, max_z),
-            (max_x, max_y, max_z),
-            (min_x, max_y, max_z),
-        ]
-        for corner in corners:
-            points.InsertNextPoint(*corner)
-
-        lines = vtk.vtkCellArray()
-        edge_pairs = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
-        ]
-        for p0, p1 in edge_pairs:
-            line = vtk.vtkLine()
-            line.GetPointIds().SetId(0, p0)
-            line.GetPointIds().SetId(1, p1)
-            lines.InsertNextCell(line)
-
-        edge_poly = vtk.vtkPolyData()
-        edge_poly.SetPoints(points)
-        edge_poly.SetLines(lines)
-
-        max_dim = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
-        tube = vtk.vtkTubeFilter()
-        tube.SetInputData(edge_poly)
-        tube.SetRadius(max_dim * (0.010 if finalized else 0.008))
-        tube.SetNumberOfSides(16)
-        tube.CappingOn()
-
-        outline_mapper = vtk.vtkPolyDataMapper()
-        outline_mapper.SetInputConnection(tube.GetOutputPort())
-        self.corner_selection_outline_actor = vtk.vtkActor()
-        self.corner_selection_outline_actor.SetMapper(outline_mapper)
-        outline_prop = self.corner_selection_outline_actor.GetProperty()
-        outline_prop.SetLighting(False)
-        if finalized:
-            outline_prop.SetColor(0.2, 1.0, 0.2)
-        else:
-            outline_prop.SetColor(1.0, 1.0, 1.0)
-        self.vtk_widget.renderer.AddActor(self.corner_selection_outline_actor)
-
-        append_poly = vtk.vtkAppendPolyData()
-        handle_radius = max_dim * (0.018 if finalized else 0.014)
-        top_corners = corners[4:8]
-        for x, y, z in top_corners:
-            sphere = vtk.vtkSphereSource()
-            sphere.SetCenter(x, y, z)
-            sphere.SetRadius(handle_radius)
-            sphere.SetThetaResolution(18)
-            sphere.SetPhiResolution(18)
-            append_poly.AddInputConnection(sphere.GetOutputPort())
-        append_poly.Update()
-
-        handle_mapper = vtk.vtkPolyDataMapper()
-        handle_mapper.SetInputConnection(append_poly.GetOutputPort())
-        self.corner_selection_handle_actor = vtk.vtkActor()
-        self.corner_selection_handle_actor.SetMapper(handle_mapper)
-        handle_prop = self.corner_selection_handle_actor.GetProperty()
-        handle_prop.SetLighting(False)
-        if finalized:
-            handle_prop.SetColor(0.2, 1.0, 0.2)
-        else:
-            handle_prop.SetColor(1.0, 1.0, 1.0)
-        self.vtk_widget.renderer.AddActor(self.corner_selection_handle_actor)
+        """兼容保留：选区轮廓/角点标记已下沉到渲染器内部。"""
+        world_bounds = (min_x, max_x, min_y, max_y, min_z, max_z)
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "show_selection_preview"):
+            self.vtk_renderer.show_selection_preview(
+                (min_x, min_y),
+                (max_x, max_y),
+                world_bounds,
+                finalized=finalized,
+            )
 
     def reapply_corner_selection_overlay(self):
         """在重新渲染后恢复已确认的 Corner Grid 选区高亮。"""
@@ -3259,21 +3330,14 @@ class MainWindow(QMainWindow):
 
     def clear_corner_selection_overlay(self, clear_params=False):
         """清除 Corner Grid 框选区域的可视化高亮。"""
-        if self.corner_selection_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_actor)
-        if self.corner_selection_outline_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_outline_actor)
-        if self.corner_selection_handle_actor is not None:
-            self.vtk_widget.renderer.RemoveActor(self.corner_selection_handle_actor)
-        self.corner_selection_actor = None
-        self.corner_selection_outline_actor = None
-        self.corner_selection_handle_actor = None
-        self.corner_selection_cube_source = None
+        # 覆盖层的创建/销毁由渲染器统一管理，主窗口只保留业务状态
+        if hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "clear_selection_overlay"):
+            self.vtk_renderer.clear_selection_overlay()
+
         if clear_params:
             self.selection_params_by_algorithm.pop(self.current_algorithm, None)
             self.update_corner_selection_status("未选择区域")
-        if hasattr(self, 'vtk_widget'):
-            self.vtk_widget.iren.Render()
+        self.vtk_widget.render_now()
 
     def update_corner_selection_status(self, text):
         """更新 Corner Grid 框选工具的状态文字。"""
@@ -3393,6 +3457,7 @@ class MainWindow(QMainWindow):
         """渲染平滑压力场"""
         # 检查是否切换了算法，如果是则清除前一个算法的绘制
         self.check_and_clear_if_algorithm_switched()
+        self.show_vtk_center_view()
         
         if self.current_algorithm == "black_oil_corner_grid" and self.sim_data.corner_point_grid:
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
@@ -3405,6 +3470,7 @@ class MainWindow(QMainWindow):
         """渲染裂缝"""
         # 检查是否切换了算法，如果是则清除前一个算法的绘制
         self.check_and_clear_if_algorithm_switched()
+        self.show_vtk_center_view()
         
         self.vtk_renderer.render_fractures(self.sim_data)
     
@@ -3471,16 +3537,47 @@ class MainWindow(QMainWindow):
     def toggle_grid_lines(self, state):
         """切换网格线显示"""
         show = (state == Qt.Checked)
-        if show and self.vtk_renderer.cache['grid_lines_actor'] is None:
-            self.vtk_renderer.create_grid_lines(self.sim_data)
+        if show and hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "ensure_grid_lines"):
+            self.vtk_renderer.ensure_grid_lines(self.sim_data)
         self.vtk_renderer.toggle_grid_lines(show)
     
     def toggle_fractures_visibility(self, state):
         """切换裂缝显示 - 点击时压力图变透明"""
         show = (state == Qt.Checked)
-        if show and not self.vtk_renderer.cache['fracture_actors']:
-            self.render_fractures()
+        if show and hasattr(self, "vtk_renderer") and hasattr(self.vtk_renderer, "has_fractures"):
+            if not self.vtk_renderer.has_fractures():
+                self.render_fractures()
         self.vtk_renderer.toggle_fractures(show)
+
+    def load_grdecl_file(self):
+        """导入标准的 ECLIPSE .GRDECL 文件并静默转换为 CSV"""
+        # 1. 弹出文件选择框，只让用户选 .GRDECL 文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "导入网格文件", "", "ECLIPSE Grid Files (*.GRDECL);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                # 界面提示用户正在解析，防止用户以为卡死
+                self.statusBar().showMessage(f"正在解析并转换网格文件: {os.path.basename(file_path)}...")
+                QApplication.processEvents() # 强制刷新UI
+                
+                # 2. 调用转换脚本，静默生成两个 CSV，并拿到它们的临时绝对路径
+                coord_path, zcorn_path = convert_grdecl_to_temp_csv(file_path)
+                
+                # 3. 将这两个临时 CSV 的路径，赋值给现有的数据模型
+                self.sim_data.coord_file_path = coord_path
+                self.sim_data.zcorn_file_path = zcorn_path
+                
+                self.statusBar().showMessage("网格导入并转换成功！", 5000)
+                
+                # 4. 触发 C++ 求解器或 VTK 渲染 (调用你原有的渲染方法)
+                # 如果你之前点击导入后会自动渲染，请在这里加上原来的渲染代码，例如：
+                if hasattr(self, 'vtk_renderer') and self.vtk_renderer:
+                    self.vtk_renderer.render_corner_point_grid(self.sim_data)
+                
+            except Exception as e:
+                self.statusBar().showMessage(f"网格读取或转换失败: {str(e)}")
 
 
 def main():

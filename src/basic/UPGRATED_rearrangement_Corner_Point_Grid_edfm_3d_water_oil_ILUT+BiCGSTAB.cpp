@@ -3354,3 +3354,4 @@ PYBIND11_MODULE(edfm_core_corner, m) {
         .def("getFractureVertices", &Simulator::getFractureVertices)
         .def("getCellGeometryWithPressure", &Simulator::getCellGeometryWithPressure);
 }
+

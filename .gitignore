@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.deps/
 
 # Virtual environments
 venv/
@@ -47,7 +48,9 @@ _deps/
 
 # Build directories
 build/
+build_vs2022/
 build_nmake_release/
+build_nmake/
 Debug/
 Release/
 RelWithDebInfo/
