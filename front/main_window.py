@@ -2601,6 +2601,45 @@ class MainWindow(QMainWindow):
         natural_frac_params = self.corner_natural_frac_panel.get_values()
         hydraulic_frac_params = self.corner_hydraulic_frac_panel.get_values()
         well_params = self.corner_well_panel.get_values()
+        initial_state_params = self.corner_initial_state_panel.get_values()
+        oil_water_params = self.corner_oil_water_panel.get_values()
+        gas_pvt_params = self.corner_gas_pvt_panel.get_values()
+
+        initial_sw = float(initial_state_params['initial_sw'])
+        initial_sg = float(initial_state_params['initial_sg'])
+        if initial_sw + initial_sg > 1.0 + 1e-8:
+            self.append_sim_status("Error: Initial Sw + Sg must be <= 1.0")
+            self.status_bar.showMessage("Invalid initial saturation parameters")
+            return
+
+        swi = float(oil_water_params['swi'])
+        sor = float(oil_water_params['sor'])
+        sgc = float(oil_water_params['sgc'])
+        if swi + sor >= 1.0:
+            self.append_sim_status("Error: Swi + Sor must be < 1.0")
+            self.status_bar.showMessage("Invalid oil-water PVT parameters")
+            return
+        if sgc + swi + sor >= 1.0:
+            self.append_sim_status("Error: Sgc + Swi + Sor must be < 1.0")
+            self.status_bar.showMessage("Invalid oil-water PVT parameters")
+            return
+
+        gas_table_pmin = float(gas_pvt_params['gas_table_Pmin_bar'])
+        gas_table_pmax = float(gas_pvt_params['gas_table_Pmax_bar'])
+        gas_table_n = int(gas_pvt_params['gas_table_n'])
+        gas_temperature_k = float(gas_pvt_params['gas_t_C']) + 273.15
+        if gas_table_pmin <= 0.0 or gas_table_pmax <= gas_table_pmin:
+            self.append_sim_status("Error: Gas PVT table requires 0 < Pmin < Pmax")
+            self.status_bar.showMessage("Invalid gas PVT pressure range")
+            return
+        if gas_table_n < 2:
+            self.append_sim_status("Error: Gas PVT table point count must be >= 2")
+            self.status_bar.showMessage("Invalid gas PVT table point count")
+            return
+        if gas_temperature_k <= 0.0:
+            self.append_sim_status("Error: Gas temperature must correspond to a positive Kelvin value")
+            self.status_bar.showMessage("Invalid gas temperature")
+            return
         
         origin_x = self.sim_data.corner_point_grid.origin_x
         origin_y = self.sim_data.corner_point_grid.origin_y
@@ -2625,6 +2664,25 @@ class MainWindow(QMainWindow):
         self.append_sim_status(f"Well pressure: {well_params['pressure']} bar")
         self.append_sim_status(f"Well radius: {well_params['radius']} m")
         self.append_sim_status(f"Simulation Time: {sim_params['simulation_time']} days")
+        self.append_sim_status(
+            f"Initial state: P={initial_state_params['initial_pressure']} bar, "
+            f"Sw={initial_state_params['initial_sw']}, Sg={initial_state_params['initial_sg']}"
+        )
+        self.append_sim_status(
+            f"Oil-water props: mu_w={oil_water_params['mu_w']}, mu_o={oil_water_params['mu_o']}, "
+            f"cw={oil_water_params['cw']}, co={oil_water_params['co']}, P_ref={oil_water_params['p_ref']}"
+        )
+        self.append_sim_status(
+            f"RelPerm endpoints: Swi={oil_water_params['swi']}, Sor={oil_water_params['sor']}, "
+            f"Sgc={oil_water_params['sgc']}"
+        )
+        self.append_sim_status(
+            f"Gas PVT: T={gas_pvt_params['gas_t_C']} C, Mg={gas_pvt_params['gas_Mg']}, "
+            f"Tc={gas_pvt_params['gas_Tc']} K, Pc={gas_pvt_params['gas_Pc_bar']} bar"
+        )
+        self.append_sim_status(
+            f"Gas table: Pmin={gas_table_pmin} bar, Pmax={gas_table_pmax} bar, n={gas_table_n}"
+        )
         
         rel_well_x = well_params['x'] - origin_x
         rel_well_y = well_params['y'] - origin_y
@@ -2668,6 +2726,27 @@ class MainWindow(QMainWindow):
             'hf_center_z': -1.0 if self.corner_check_enable_hydraulic.isChecked() else -1.0,
             'well_radius': well_params['radius'],
             'well_pressure': well_params['pressure'],
+            'pressure': initial_state_params['initial_pressure'],
+            'sw': initial_state_params['initial_sw'],
+            'sg': initial_state_params['initial_sg'],
+            'mu_w': oil_water_params['mu_w'],
+            'mu_o': oil_water_params['mu_o'],
+            'mu_g': oil_water_params.get('mu_g', 0.2),
+            'cw': oil_water_params['cw'],
+            'co': oil_water_params['co'],
+            'cg': oil_water_params.get('cg', 1e-3),
+            'p_ref': oil_water_params['p_ref'],
+            'swi': oil_water_params['swi'],
+            'sor': oil_water_params['sor'],
+            'sgc': oil_water_params['sgc'],
+            'gas_t_C': gas_pvt_params['gas_t_C'],
+            'gas_Mg': gas_pvt_params['gas_Mg'],
+            'gas_Tc': gas_pvt_params['gas_Tc'],
+            'gas_Pc_bar': gas_pvt_params['gas_Pc_bar'],
+            'gas_Psc_bar': 1.01325,
+            'gas_table_Pmin_bar': gas_pvt_params['gas_table_Pmin_bar'],
+            'gas_table_Pmax_bar': gas_pvt_params['gas_table_Pmax_bar'],
+            'gas_table_n': gas_pvt_params['gas_table_n'],
             'simulation_time': sim_params['simulation_time'],
         }
         
@@ -2678,9 +2757,6 @@ class MainWindow(QMainWindow):
             params['lgr_nrx'] = 2
             params['lgr_nry'] = 2
             params['lgr_nrz'] = 2
-            params['pressure'] = 800.0
-            params['sw'] = 0.05
-            params['sg'] = 0.9
         
         self.append_sim_status(f"=== Full Parameters ===")
         self.append_sim_status(f"num_fracs: {params.get('num_fracs')}")
@@ -2689,6 +2765,15 @@ class MainWindow(QMainWindow):
         self.append_sim_status(f"hf_height: {params.get('hf_height')}")
         self.append_sim_status(f"d_threshold: {params.get('d_threshold')}")
         self.append_sim_status(f"enable_lgr: {params.get('enable_lgr')}")
+        self.append_sim_status(f"pressure: {params.get('pressure')}")
+        self.append_sim_status(f"sw: {params.get('sw')}")
+        self.append_sim_status(f"sg: {params.get('sg')}")
+        self.append_sim_status(f"mu_w: {params.get('mu_w')}, mu_o: {params.get('mu_o')}")
+        self.append_sim_status(f"Swi/Sor/Sgc: {params.get('swi')}/{params.get('sor')}/{params.get('sgc')}")
+        self.append_sim_status(
+            f"gas_t_C: {params.get('gas_t_C')}, gas_Pc_bar: {params.get('gas_Pc_bar')}, "
+            f"gas_table_n: {params.get('gas_table_n')}"
+        )
         
         self.sim_process = QProcess(self)
         self.sim_process.setWorkingDirectory(self.project_root)

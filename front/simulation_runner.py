@@ -223,6 +223,42 @@ def load_corner_grid_info(coord_file, zcorn_file):
     return nx, ny, nz, lx, ly, lz
 
 
+def apply_corner_fluid_properties(sim, params):
+    """If supported by the loaded module, forward oil/water rock-fluid settings."""
+    if not hasattr(sim, 'setOilWaterProperties'):
+        return
+
+    sim.setOilWaterProperties(
+        float(params.get('mu_w', 1.0)),
+        float(params.get('mu_o', 5.0)),
+        float(params.get('cw', 1e-8)),
+        float(params.get('co', 1e-5)),
+        float(params.get('p_ref', 100.0)),
+        float(params.get('swi', 0.05)),
+        float(params.get('sor', 0.01)),
+        float(params.get('sgc', 0.05)),
+        float(params.get('mu_g', 0.2)),
+        float(params.get('cg', 1e-3)),
+    )
+
+
+def apply_corner_gas_pvt_properties(sim, params):
+    """If supported by the loaded module, forward real-gas PVT settings."""
+    if not hasattr(sim, 'setGasPVTParameters'):
+        return
+
+    sim.setGasPVTParameters(
+        float(params.get('gas_t_C', 140.0)),
+        float(params.get('gas_Mg', 16.04)),
+        float(params.get('gas_Tc', 190.58)),
+        float(params.get('gas_Pc_bar', 45.44)),
+        float(params.get('gas_table_Pmin_bar', 1.0)),
+        float(params.get('gas_table_Pmax_bar', 1000.0)),
+        int(params.get('gas_table_n', 2000)),
+        float(params.get('gas_Psc_bar', 1.01325)),
+    )
+
+
 def run_corner_edfm_simulation(params):
     """执行 Corner EDFM 模拟并返回 SimulationData。"""
     refinement_mode = params.get('corner_grid_refinement', '不加密')
@@ -263,6 +299,8 @@ def run_corner_edfm_simulation(params):
         float(params.get('well_radius', 0.05)),
         float(params.get('well_pressure', 50.0)),
     )
+    apply_corner_fluid_properties(sim, params)
+    apply_corner_gas_pvt_properties(sim, params)
     if use_lgr_module and hasattr(sim, 'setInitialStateParameters'):
         sim.setInitialStateParameters(
             float(params.get('pressure', 800.0)),

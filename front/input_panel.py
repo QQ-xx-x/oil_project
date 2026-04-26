@@ -349,8 +349,8 @@ class OilWaterPropertiesPanel(QWidget):
         self.spin_cw = create_double_spinbox(0.0, 1.0, 1e-8, decimals=8, step=1e-8)
         self.spin_co = create_double_spinbox(0.0, 1.0, 1e-5, decimals=8, step=1e-6)
         self.spin_p_ref = create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
-        self.spin_swi = create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
-        self.spin_sor = create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
+        self.spin_swi = create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.spin_sor = create_double_spinbox(0.0, 1.0, 0.01, decimals=4)
         self.spin_sgc = create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
         
         grid.addWidget(QLabel("mu_w (cP):"), 0, 0)

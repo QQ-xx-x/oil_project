@@ -938,28 +938,69 @@ static double computeSegmentEquivalentRadius(const Segment& seg, double rw) {
 typedef Eigen::Matrix<double, 3, 1> Deriv3;
 typedef Eigen::AutoDiffScalar<Deriv3> AD3;
 
+// =============================
+// Migrated gas real-PVT module from PVT_LGR_gas_pvt_migrated.cpp
+// This block replaces the old constant-gas model (constant mu_g / cg / exp Bg).
+// =============================
 struct FluidProps {
+    // ------------------------------
+    // 油水相：仍保持原来的常压缩系数 + 常粘度形式
+    // ------------------------------
     double mu_w = 1.0;
     double mu_o = 5.0;
+
+    // 占位/兼容字段：
+    // 真实气体版本下，不再直接使用常数 mu_g 和常数 cg 作为主计算来源
+    // 这里只保留字段，便于兼容旧代码和后续对照。
     double mu_g = 0.2;
+    double cg   = 1e-3;
+
+    // 压缩系数 (1/bar)
     double cw = 1e-8;
     double co = 1e-5;
-    double cg = 1e-3;
+
+    // 参考压力 (bar)
     double P_ref = 100.0;
+
+    // 相对渗透率端点
     double Swi = 0.05;
     double Sor = 0.01;
     double Sgc = 0.05;
+
+    // ------------------------------
+    // 真实气体 PVT 参数（单位严格按题目约定）
+    // ------------------------------
+    double gas_t_C     = 140.0;   // 摄氏度
+    double gas_T_K     = 413.15;  // K，用于 Z / Cg / mu_g 公式
+    double gas_Mg      = 16.04;   // 甲烷摩尔质量
+    double gas_Tc      = 190.58;  // 甲烷临界温度, K
+    double gas_Pc_bar  = 45.44;   // 甲烷临界压力, bar（用于 Pr = P/Pc）
+    double gas_Psc_bar = 1.01325; // 标准状态压力, bar（用于 Bg 公式）
+                                   // 注意：Psc 是标准状态压力，不是临界压力 Pc
+
+    // 气相 PVT 表范围
+    double gas_table_Pmin_bar = 1.0;
+    double gas_table_Pmax_bar = 1000.0;
+    int    gas_table_n        = 2000;
 };
 
 static FluidProps g_props;
 
 template <typename T>
-static void calcPVT(const T& P, T& Bw, T& Bo, T& Bg, T& dBw_dP, T& dBo_dP, T& dBg_dP) {
+static void calcLiquidPVT(const T& P, T& Bw, T& Bo, T& dBw_dP, T& dBo_dP) {
     T dP = P - g_props.P_ref;
     using std::exp;
     Bw = exp(-g_props.cw * dP);
     Bo = exp(-g_props.co * dP);
-    Bg = exp(-g_props.cg * dP);
+
+    dBw_dP = -g_props.cw * Bw;
+    dBo_dP = -g_props.co * Bo;
+}
+
+template <typename T>
+static void calcLiquidPVT(const T& P, T& Bw, T& Bo) {
+    T dBw_dP, dBo_dP;
+    calcLiquidPVT(P, Bw, Bo, dBw_dP, dBo_dP);
 }
 
 template <typename T>
@@ -988,24 +1029,34 @@ struct StateT {
 template <typename T>
 struct PropertiesT {
     T Bw, Bo, Bg;
+    T Zg, Cg, mu_g;
     T krw, kro, krg;
     T lw, lo, lg;
 };
 
+inline double scalarValue(const double& x) { return x; }
+inline double scalarValue(const AD3& x)    { return x.value(); }
+
+struct GasPVTInterpResult {
+    double y = 0.0;
+    double slope = 0.0;
+};
+
+struct GasPVTTable {
+    std::vector<double> P_bar;
+    std::vector<double> Z;
+    std::vector<double> Cg;
+    std::vector<double> Bg;
+    std::vector<double> mu_g;
+
+    double Pmin_bar = 1.0;
+    double Pmax_bar = 1000.0;
+    int n = 2000;
+    bool ready = false;
+};
+
 typedef StateT<double> State;
 typedef StateT<AD3> StateAD3;
-
-template <typename T>
-PropertiesT<T> getProps(const StateT<T>& s) {
-    PropertiesT<T> p;
-    T dummy;
-    calcPVT(s.P, p.Bw, p.Bo, p.Bg, dummy, dummy, dummy);
-    calcRelPerm(s.Sw, s.Sg, p.krw, p.kro, p.krg);
-    p.lw = p.krw / (g_props.mu_w * p.Bw);
-    p.lo = p.kro / (g_props.mu_o * p.Bo);
-    p.lg = p.krg / (g_props.mu_g * p.Bg);
-    return p;
-}
 
 struct SimulationResult {
     py::array_t<double> pressure_field;
@@ -1058,6 +1109,9 @@ public:
     std::vector<CellOffsets> cell_J_idx;
     std::vector<ConnOffsets> conn_J_idx;
 
+    // Migrated gas real-PVT lookup table (from PVT_LGR_gas_pvt_migrated.cpp)
+    GasPVTTable gas_pvt_table;
+
     std::string coord_file_path{"COORD.csv"};
     std::string zcorn_file_path{"ZCORN.csv"};
     int natural_frac_count{10};
@@ -1097,9 +1151,405 @@ public:
         dz = Lz / Nz;
     }
 
+    void invalidateGasPVTTable() {
+        gas_pvt_table.P_bar.clear();
+        gas_pvt_table.Z.clear();
+        gas_pvt_table.Cg.clear();
+        gas_pvt_table.Bg.clear();
+        gas_pvt_table.mu_g.clear();
+        gas_pvt_table.ready = false;
+    }
+
+
+    // =============================
+    // Migrated gas real-PVT member functions.
+    // These replace the old constant-gas-property path.
+    // =============================
+    static std::array<double, 11> gasDeviationCoeffs() {
+        return {0.3265, -1.07, -0.5339, 0.01569, -0.05165,
+                0.5475, -0.7361, 0.1844, 0.1056, 0.6134, 0.7210};
+    }
+
+    static std::array<double, 16> gasViscosityCoeffs() {
+        return {-2.46211820,  2.97054714,  -0.286264054,  8.05420522e-3,
+                 2.80860949, -3.49803305,   0.360373020, -0.0104432413,
+                -0.793385684, 1.39643306,  -0.149144925,  4.41015512e-3,
+                 0.0839387178,-0.186408848,  0.0203367881,-6.09579263e-4};
+    }
+
+    double clampGasTablePressure(double P_bar) const {
+        if (gas_pvt_table.ready) {
+            return std::max(gas_pvt_table.Pmin_bar, std::min(P_bar, gas_pvt_table.Pmax_bar));
+        }
+        return std::max(g_props.gas_table_Pmin_bar, std::min(P_bar, g_props.gas_table_Pmax_bar));
+    }
+
+    double calcGasZReal(double P_bar) const {
+        const auto A = gasDeviationCoeffs();
+
+        double P_use = std::max(P_bar, 1e-12);
+        double Tr = g_props.gas_T_K / g_props.gas_Tc;
+        double Pr = P_use / g_props.gas_Pc_bar;
+
+        double rhor = std::max(1e-12, 0.27 * Pr / Tr);
+
+        for (int k = 0; k < 100; ++k) {
+            double term2 = (A[0] + A[1]/Tr + A[2]/std::pow(Tr, 3.0) + A[3]/std::pow(Tr, 4.0) + A[4]/std::pow(Tr, 5.0));
+            double term3 = (A[5] + A[6]/Tr + A[7]/(Tr*Tr));
+            double exp_term = std::exp(-A[10] * rhor * rhor);
+
+            double F =
+                -0.27 * Pr / Tr
+                + rhor
+                + term2 * rhor * rhor
+                + term3 * rhor * rhor * rhor
+                - A[8] * (A[6]/Tr + A[7]/(Tr*Tr)) * std::pow(rhor, 6.0)
+                + A[9] * (1.0 + A[10] * rhor * rhor) * (std::pow(rhor, 3.0) / std::pow(Tr, 3.0)) * exp_term;
+
+            double dF =
+                1.0
+                + 2.0 * term2 * rhor
+                + 3.0 * term3 * rhor * rhor
+                - 6.0 * A[8] * (A[6]/Tr + A[7]/(Tr*Tr)) * std::pow(rhor, 5.0)
+                + (A[9] / std::pow(Tr, 3.0))
+                  * (3.0 * rhor * rhor + A[10] * (3.0 * std::pow(rhor, 4.0) - 2.0 * A[10] * std::pow(rhor, 6.0)))
+                  * exp_term;
+
+            if (!std::isfinite(F) || !std::isfinite(dF) || std::abs(dF) < 1e-14) {
+                break;
+            }
+
+            double dr = F / dF;
+            rhor -= dr;
+            rhor = std::max(rhor, 1e-12);
+
+            if (std::abs(F) < 1e-10) {
+                break;
+            }
+        }
+
+        double Z = 0.27 * Pr / std::max(rhor * Tr, 1e-12);
+        if (!std::isfinite(Z) || Z <= 0.0) Z = 1.0;
+        return Z;
+    }
+
+    double calcGasCgReal(double P_bar, double Z) const {
+        const auto A = gasDeviationCoeffs();
+
+        double P_use = std::max(P_bar, 1e-12);
+        double Tr = g_props.gas_T_K / g_props.gas_Tc;
+        double Pr = P_use / g_props.gas_Pc_bar;
+        double Z_use = std::max(Z, 1e-12);
+
+        double rhor = 0.27 * Pr / (Z_use * Tr);
+
+        double Int_A =
+            A[0] + A[1]/Tr + A[2]/std::pow(Tr, 3.0) + A[3]/std::pow(Tr, 4.0) + A[4]/std::pow(Tr, 5.0)
+            + 2.0 * (A[5] + A[6]/Tr + A[7]/(Tr*Tr)) * rhor
+            - 5.0 * A[8] * (A[6]/Tr + A[7]/(Tr*Tr)) * std::pow(rhor, 4.0)
+            + 2.0 * A[9] * (rhor + A[10] * std::pow(rhor, 3.0) - std::pow(A[10], 2.0) * std::pow(rhor, 5.0))
+              * std::exp(-A[10] * rhor * rhor) / std::pow(Tr, 3.0);
+
+        double denom = 1.0 + Pr * Int_A / Z_use;
+        if (std::abs(denom) < 1e-12) {
+            denom = (denom >= 0.0) ? 1e-12 : -1e-12;
+        }
+
+        double Cg = (1.0 / std::max(Pr, 1e-12)
+                    - 0.27 * (Int_A / denom) / (Z_use * Z_use * Tr)) / g_props.gas_Pc_bar;
+
+        if (!std::isfinite(Cg)) Cg = 0.0;
+        return Cg;
+    }
+
+    double calcGasBgReal(double P_bar, double Z) const {
+        const double Tsc_K = 293.15;
+        const double T_K   = 273.15 + g_props.gas_t_C;
+
+        double P_use = std::max(P_bar, 1e-12);
+        double Z_use = std::max(Z, 1e-12);
+
+        double Bg = Z_use * (T_K / Tsc_K) * (g_props.gas_Psc_bar / P_use);
+
+        if (!std::isfinite(Bg) || Bg <= 0.0) {
+            Bg = 1e-12;
+        }
+        return Bg;
+    }
+
+    double calcGasMuReal(double P_bar) const {
+        const auto A = gasViscosityCoeffs();
+
+        double P_use = std::max(P_bar, 1e-12);
+        double gamma = g_props.gas_Mg / 28.97;
+        double Tc = g_props.gas_Tc;
+        double Tr = g_props.gas_T_K / Tc;
+        double Pr = P_use / g_props.gas_Pc_bar;
+
+        double muo1 = (1.709e-5 - 2.062e-6 * gamma) * (1.8 * g_props.gas_T_K + 32.0)
+                    + 8.118e-3 - 6.15e-3 * std::log10(gamma);
+
+        double Int_A =
+            A[0] + A[1]*Pr + A[2]*Pr*Pr + A[3]*Pr*Pr*Pr
+            + Tr * (A[4] + A[5]*Pr + A[6]*Pr*Pr + A[7]*Pr*Pr*Pr)
+            + Tr*Tr * (A[8] + A[9]*Pr + A[10]*Pr*Pr + A[11]*Pr*Pr*Pr)
+            + Tr*Tr*Tr * (A[12] + A[13]*Pr + A[14]*Pr*Pr + A[15]*Pr*Pr*Pr);
+
+        double mu_g_cp = muo1 * std::exp(Int_A) / Tr;
+        if (!std::isfinite(mu_g_cp) || mu_g_cp <= 0.0) {
+            mu_g_cp = std::max(g_props.mu_g, 1e-12);
+        }
+        return mu_g_cp;
+    }
+
+    GasPVTInterpResult interpGasTable1D(const std::vector<double>& x,
+                                        const std::vector<double>& y,
+                                        double xq) const {
+        GasPVTInterpResult r;
+        if (x.empty() || y.empty() || x.size() != y.size()) {
+            return r;
+        }
+        if (x.size() == 1) {
+            r.y = y[0];
+            r.slope = 0.0;
+            return r;
+        }
+
+        if (xq <= x.front()) {
+            r.y = y.front();
+            r.slope = 0.0;
+            return r;
+        }
+        if (xq >= x.back()) {
+            r.y = y.back();
+            r.slope = 0.0;
+            return r;
+        }
+
+        auto it = std::lower_bound(x.begin(), x.end(), xq);
+        size_t i1 = std::distance(x.begin(), it);
+        size_t i0 = i1 - 1;
+
+        double x0 = x[i0], x1 = x[i1];
+        double y0 = y[i0], y1 = y[i1];
+
+        double dx = x1 - x0;
+        if (std::abs(dx) < 1e-14) {
+            r.y = y0;
+            r.slope = 0.0;
+            return r;
+        }
+
+        double t = (xq - x0) / dx;
+        r.y = y0 + (y1 - y0) * t;
+        r.slope = (y1 - y0) / dx;
+        return r;
+    }
+
+    template <typename T>
+    T liftInterpToAD(const T& P, double y_val, double slope) const {
+        double P_val = scalarValue(P);
+        return T(y_val) + T(slope) * (P - T(P_val));
+    }
+
+    template <typename T>
+    void calcGasPVT_fromTable(const T& P, T& Zg, T& Cg, T& Bg, T& mu_g) const {
+        double P_val_raw = scalarValue(P);
+        double P_val = clampGasTablePressure(std::max(P_val_raw, 1e-12));
+
+        GasPVTInterpResult rz  = interpGasTable1D(gas_pvt_table.P_bar, gas_pvt_table.Z,    P_val);
+        GasPVTInterpResult rcg = interpGasTable1D(gas_pvt_table.P_bar, gas_pvt_table.Cg,   P_val);
+        GasPVTInterpResult rbg = interpGasTable1D(gas_pvt_table.P_bar, gas_pvt_table.Bg,   P_val);
+        GasPVTInterpResult rmu = interpGasTable1D(gas_pvt_table.P_bar, gas_pvt_table.mu_g, P_val);
+
+        if (P_val_raw <= gas_pvt_table.Pmin_bar || P_val_raw >= gas_pvt_table.Pmax_bar) {
+            rz.slope = rcg.slope = rbg.slope = rmu.slope = 0.0;
+        }
+
+        Zg   = liftInterpToAD(P, rz.y,  rz.slope);
+        Cg   = liftInterpToAD(P, rcg.y, rcg.slope);
+        Bg   = liftInterpToAD(P, rbg.y, rbg.slope);
+        mu_g = liftInterpToAD(P, rmu.y, rmu.slope);
+    }
+
+    void exportGasPVTTableCSV(const std::string& filename = "gas_pvt_table.csv") const {
+        if (!gas_pvt_table.ready) return;
+
+        std::ofstream fout(filename);
+        fout << "P_bar,Z,Cg_1_per_bar,Bg,mu_g_cp\n";
+        fout << std::setprecision(16);
+        for (size_t i = 0; i < gas_pvt_table.P_bar.size(); ++i) {
+            fout << gas_pvt_table.P_bar[i] << ","
+                 << gas_pvt_table.Z[i] << ","
+                 << gas_pvt_table.Cg[i] << ","
+                 << gas_pvt_table.Bg[i] << ","
+                 << gas_pvt_table.mu_g[i] << "\n";
+        }
+    }
+
+    void buildGasPVTTable() {
+        gas_pvt_table.Pmin_bar = std::max(1e-6, g_props.gas_table_Pmin_bar);
+        gas_pvt_table.Pmax_bar = std::max(gas_pvt_table.Pmin_bar + 1e-6, g_props.gas_table_Pmax_bar);
+        gas_pvt_table.n = std::max(2, g_props.gas_table_n);
+
+        gas_pvt_table.P_bar.resize(gas_pvt_table.n);
+        gas_pvt_table.Z.resize(gas_pvt_table.n);
+        gas_pvt_table.Cg.resize(gas_pvt_table.n);
+        gas_pvt_table.Bg.resize(gas_pvt_table.n);
+        gas_pvt_table.mu_g.resize(gas_pvt_table.n);
+
+        double dP = (gas_pvt_table.Pmax_bar - gas_pvt_table.Pmin_bar) / (double)(gas_pvt_table.n - 1);
+
+        for (int i = 0; i < gas_pvt_table.n; ++i) {
+            double P = gas_pvt_table.Pmin_bar + i * dP;
+
+            double Z  = calcGasZReal(P);
+            double Cg = calcGasCgReal(P, Z);
+            double Bg = calcGasBgReal(P, Z);
+            double mu = calcGasMuReal(P);
+
+            gas_pvt_table.P_bar[i] = P;
+            gas_pvt_table.Z[i] = Z;
+            gas_pvt_table.Cg[i] = Cg;
+            gas_pvt_table.Bg[i] = Bg;
+            gas_pvt_table.mu_g[i] = mu;
+        }
+
+        gas_pvt_table.ready = true;
+        exportGasPVTTableCSV();
+
+        std::cout << "Gas PVT table built: ["
+                  << gas_pvt_table.Pmin_bar << ", "
+                  << gas_pvt_table.Pmax_bar << "] bar, n="
+                  << gas_pvt_table.n << std::endl;
+    }
+
+    template <typename T>
+    PropertiesT<T> getProps(const StateT<T>& s) const {
+        PropertiesT<T> p;
+
+        calcLiquidPVT(s.P, p.Bw, p.Bo);
+        calcGasPVT_fromTable(s.P, p.Zg, p.Cg, p.Bg, p.mu_g);
+        calcRelPerm(s.Sw, s.Sg, p.krw, p.kro, p.krg);
+
+        p.lw = p.krw / (g_props.mu_w * p.Bw);
+        p.lo = p.kro / (g_props.mu_o * p.Bo);
+        p.lg = p.krg / (p.mu_g * p.Bg);
+
+        return p;
+    }
+
     void setCornerPointFiles(const std::string& coord_file, const std::string& zcorn_file) {
         coord_file_path = coord_file;
         zcorn_file_path = zcorn_file;
+    }
+
+    void setOilWaterProperties(double mu_w,
+                               double mu_o,
+                               double cw,
+                               double co,
+                               double p_ref,
+                               double swi,
+                               double sor,
+                               double sgc,
+                               double mu_g = 0.2,
+                               double cg = 1e-3) {
+        if (!(std::isfinite(mu_w) && mu_w > 0.0)) {
+            throw std::invalid_argument("mu_w must be a finite positive value.");
+        }
+        if (!(std::isfinite(mu_o) && mu_o > 0.0)) {
+            throw std::invalid_argument("mu_o must be a finite positive value.");
+        }
+        if (!(std::isfinite(mu_g) && mu_g > 0.0)) {
+            throw std::invalid_argument("mu_g must be a finite positive value.");
+        }
+        if (!(std::isfinite(cw) && cw >= 0.0)) {
+            throw std::invalid_argument("cw must be finite and non-negative.");
+        }
+        if (!(std::isfinite(co) && co >= 0.0)) {
+            throw std::invalid_argument("co must be finite and non-negative.");
+        }
+        if (!(std::isfinite(cg) && cg >= 0.0)) {
+            throw std::invalid_argument("cg must be finite and non-negative.");
+        }
+        if (!std::isfinite(p_ref)) {
+            throw std::invalid_argument("p_ref must be finite.");
+        }
+        if (!(std::isfinite(swi) && swi >= 0.0 && swi <= 1.0)) {
+            throw std::invalid_argument("Swi must lie in [0, 1].");
+        }
+        if (!(std::isfinite(sor) && sor >= 0.0 && sor <= 1.0)) {
+            throw std::invalid_argument("Sor must lie in [0, 1].");
+        }
+        if (!(std::isfinite(sgc) && sgc >= 0.0 && sgc <= 1.0)) {
+            throw std::invalid_argument("Sgc must lie in [0, 1].");
+        }
+        if (swi + sor >= 1.0) {
+            throw std::invalid_argument("Swi + Sor must be smaller than 1.");
+        }
+        if (sgc + swi + sor >= 1.0) {
+            throw std::invalid_argument("Sgc + Swi + Sor must be smaller than 1.");
+        }
+
+        g_props.mu_w = mu_w;
+        g_props.mu_o = mu_o;
+        g_props.mu_g = mu_g;
+        g_props.cw = cw;
+        g_props.co = co;
+        g_props.cg = cg;
+        g_props.P_ref = p_ref;
+        g_props.Swi = swi;
+        g_props.Sor = sor;
+        g_props.Sgc = sgc;
+    }
+
+    void setGasPVTParameters(double gas_t_C,
+                             double gas_Mg,
+                             double gas_Tc,
+                             double gas_Pc_bar,
+                             double gas_table_Pmin_bar,
+                             double gas_table_Pmax_bar,
+                             int gas_table_n,
+                             double gas_Psc_bar = 1.01325) {
+        if (!std::isfinite(gas_t_C)) {
+            throw std::invalid_argument("gas_t_C must be finite.");
+        }
+        const double gas_T_K = gas_t_C + 273.15;
+        if (!(std::isfinite(gas_T_K) && gas_T_K > 0.0)) {
+            throw std::invalid_argument("gas_t_C results in a non-physical absolute temperature.");
+        }
+        if (!(std::isfinite(gas_Mg) && gas_Mg > 0.0)) {
+            throw std::invalid_argument("gas_Mg must be a finite positive value.");
+        }
+        if (!(std::isfinite(gas_Tc) && gas_Tc > 0.0)) {
+            throw std::invalid_argument("gas_Tc must be a finite positive value.");
+        }
+        if (!(std::isfinite(gas_Pc_bar) && gas_Pc_bar > 0.0)) {
+            throw std::invalid_argument("gas_Pc_bar must be a finite positive value.");
+        }
+        if (!(std::isfinite(gas_Psc_bar) && gas_Psc_bar > 0.0)) {
+            throw std::invalid_argument("gas_Psc_bar must be a finite positive value.");
+        }
+        if (!(std::isfinite(gas_table_Pmin_bar) && std::isfinite(gas_table_Pmax_bar))) {
+            throw std::invalid_argument("Gas table pressure limits must be finite.");
+        }
+        if (!(gas_table_Pmin_bar > 0.0 && gas_table_Pmax_bar > gas_table_Pmin_bar)) {
+            throw std::invalid_argument("Require 0 < gas_table_Pmin_bar < gas_table_Pmax_bar.");
+        }
+        if (gas_table_n < 2) {
+            throw std::invalid_argument("gas_table_n must be at least 2.");
+        }
+
+        g_props.gas_t_C = gas_t_C;
+        g_props.gas_T_K = gas_T_K;
+        g_props.gas_Mg = gas_Mg;
+        g_props.gas_Tc = gas_Tc;
+        g_props.gas_Pc_bar = gas_Pc_bar;
+        g_props.gas_Psc_bar = gas_Psc_bar;
+        g_props.gas_table_Pmin_bar = gas_table_Pmin_bar;
+        g_props.gas_table_Pmax_bar = gas_table_Pmax_bar;
+        g_props.gas_table_n = gas_table_n;
+        invalidateGasPVTTable();
     }
 
     void setFractureParameters(int total_fracs,
@@ -1960,7 +2410,7 @@ public:
 
     void generateHydraulicFractures(int total_fracs = 20,
                                     double well_length = 600,
-                                    double hf_len = 120.0,
+                                    double hf_len = 300.0,
                                     double hf_height = 30.0,
                                     double aperture_val = 0.1,
                                     double perm_val = 1000.0,
@@ -2630,6 +3080,8 @@ public:
         }
         return R;
     }
+    //修改了代码
+
 
     struct FluxAD {
         double val[3];
@@ -3096,6 +3548,9 @@ public:
         std::cout << "Grid: Nx=" << Nx << ", Ny=" << Ny << ", Nz=" << Nz << std::endl;
         std::cout << "Grid size: Lx=" << Lx << ", Ly=" << Ly << ", Lz=" << Lz << std::endl;
         
+        // Build gas real-PVT table before the flow solve starts.
+        buildGasPVTTable();
+
         if (!buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path)) return false;
         generateFractures(
             natural_frac_count,
@@ -3177,6 +3632,26 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
     py::class_<SimulatorLGR>(m, "EDFMSimulator")
         .def(py::init<>())
         .def("setCornerPointFiles", &SimulatorLGR::setCornerPointFiles)
+        .def("setOilWaterProperties", &SimulatorLGR::setOilWaterProperties,
+             py::arg("mu_w"),
+             py::arg("mu_o"),
+             py::arg("cw"),
+             py::arg("co"),
+             py::arg("p_ref"),
+             py::arg("swi"),
+             py::arg("sor"),
+             py::arg("sgc"),
+             py::arg("mu_g") = 0.2,
+             py::arg("cg") = 1e-3)
+        .def("setGasPVTParameters", &SimulatorLGR::setGasPVTParameters,
+             py::arg("gas_t_C"),
+             py::arg("gas_Mg"),
+             py::arg("gas_Tc"),
+             py::arg("gas_Pc_bar"),
+             py::arg("gas_table_Pmin_bar"),
+             py::arg("gas_table_Pmax_bar"),
+             py::arg("gas_table_n"),
+             py::arg("gas_Psc_bar") = 1.01325)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
         .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
