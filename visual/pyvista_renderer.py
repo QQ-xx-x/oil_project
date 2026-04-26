@@ -7,23 +7,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
 def _ensure_local_pyvista_site() -> None:
-    """当基础环境无法直接读取时，补充项目内的 PyVista 依赖路径。"""
     project_root = Path(__file__).resolve().parent.parent
     local_site = project_root / ".deps" / "pyvista_site"
     local_site_str = str(local_site)
     if local_site.exists() and local_site_str not in sys.path:
-        # 追加到 sys.path 末尾，优先继续使用当前环境里的基础库，
-        # 避免把 numpy、matplotlib 等整体切换到 .deps 版本。
         sys.path.append(local_site_str)
-
 
 _ensure_local_pyvista_site()
 
 import numpy as np
 import pyvista as pv
-
 
 class PyVistaRenderer:
     """基于 PyVista 的渲染器，并保留对旧 VTK 渲染器接口的兼容面。"""
@@ -34,14 +28,11 @@ class PyVistaRenderer:
         self.renderer = qt_view.renderer
         self.cache = self._new_cache()
 
-        # 命名收口：迁移期仍保留旧字段，但新逻辑优先使用更贴近 PyVista 的命名。
         self.view = qt_view
         self.pv_renderer = qt_view.renderer
         
-        # 全局配置，避免空网格报错
         pv.global_theme.allow_empty_mesh = True
 
-        # 框选 overlay 的内部状态（仅渲染器维护；主窗口不应感知）
         self._selection_overlay_state = {
             "world_bounds": None,
             "handle_radius": None,
@@ -66,7 +57,6 @@ class PyVistaRenderer:
             "original_pressure_opacity": None,
             "corner_lgr_parent_grid_actor": None,
             "corner_lgr_refined_grid_actor": None,
-            # 框选覆盖层（由渲染器内部创建/销毁，主窗口不应直接操控 actor）
             "selection_outline_actor": None,
             "selection_fill_actor": None,
             "selection_handle_actors": [],
@@ -79,11 +69,6 @@ class PyVistaRenderer:
         self._render()
 
     def capture_camera_state(self):
-        """捕获当前相机状态，供主窗口在交互模式切换时保存/恢复。
-
-        这里尽量使用 PyVista 的相机表达方式（camera_position + Camera 属性），
-        避免把 VTK 风格 Get* 调用散落在渲染链路中。
-        """
         cam = self.plotter.camera
         position, focal_point, view_up = self.plotter.camera_position
         return {
@@ -97,7 +82,6 @@ class PyVistaRenderer:
         }
 
     def restore_camera_state(self, state) -> None:
-        """恢复相机状态。"""
         if not state:
             return
         try:
@@ -107,7 +91,6 @@ class PyVistaRenderer:
                 state.get("view_up"),
             )
             cam = self.plotter.camera
-            # 通过 PyVista Camera 属性恢复相机参数
             cam.parallel_projection = bool(state.get("parallel_projection"))
             if "parallel_scale" in state and state["parallel_scale"] is not None:
                 cam.parallel_scale = float(state["parallel_scale"])
@@ -120,10 +103,6 @@ class PyVistaRenderer:
             pass
 
     def configure_selection_camera(self, world_bounds) -> None:
-        """配置框选模式的相机参数。
-
-        目标：让屏幕坐标到世界坐标的映射尽量稳定（典型用法是俯视/正交）。
-        """
         if not world_bounds or len(world_bounds) != 6:
             return
         xmin, xmax, ymin, ymax, zmin, zmax = (float(v) for v in world_bounds)
@@ -132,7 +111,6 @@ class PyVistaRenderer:
         cz = (zmin + zmax) * 0.5
         span = max(xmax - xmin, ymax - ymin, 1.0)
 
-        # 使用 PyVista 的 Camera 属性表达“俯视 + 正交”
         cam = self.plotter.camera
         cam.parallel_projection = True
         cam.parallel_scale = span * 0.55
@@ -144,18 +122,12 @@ class PyVistaRenderer:
         self._render()
 
     def _selection_plane_z(self, world_bounds) -> float:
-        """选区投影平面 Z（默认使用 bounds 顶面）。"""
         if not world_bounds or len(world_bounds) != 6:
             return 0.0
         return float(world_bounds[5])
 
     def _display_world_ray(self, display_x: float, display_y: float):
-        """把显示坐标转换为一条世界坐标射线（近裁剪面->远裁剪面）。
-
-        注意：屏幕到世界的精确转换本质上依赖底层渲染器变换矩阵。
-        这里把必要的底层调用压缩到单一位置，避免扩散到其它逻辑。
-        """
-        renderer = self.pv_renderer
+        renderer = self.plotter.renderer
         renderer.SetDisplayPoint(float(display_x), float(display_y), 0.0)
         renderer.DisplayToWorld()
         w0 = renderer.GetWorldPoint()
@@ -174,7 +146,6 @@ class PyVistaRenderer:
         return (float(x0), float(y0), float(z0)), (float(x1), float(y1), float(z1))
 
     def display_to_world_xy(self, display_x, display_y, world_bounds):
-        """把显示坐标（像素）映射到世界坐标（落在选区投影平面上）。"""
         z_plane = self._selection_plane_z(world_bounds)
         try:
             ray = self._display_world_ray(display_x, display_y)
@@ -199,7 +170,6 @@ class PyVistaRenderer:
         return span * 0.005
 
     def _ensure_selection_overlay(self, world_bounds) -> None:
-        """确保框选 overlay 的对象存在并与当前 world_bounds 匹配。"""
         if not world_bounds or len(world_bounds) != 6:
             return
 
@@ -282,30 +252,25 @@ class PyVistaRenderer:
                 self.cache["selection_handle_actors"].append(actor)
 
     def _apply_selection_overlay_style(self, finalized: bool) -> None:
-        """应用框选 overlay 的样式（finalized/preview 统一在此收口）。"""
         outline_color = (0.2, 1.0, 0.2) if not finalized else (1.0, 0.8, 0.2)
         fill_color = outline_color
         fill_opacity = 0.08 if not finalized else 0.12
 
         outline_actor = self.cache.get("selection_outline_actor")
         if outline_actor is not None:
-            prop = outline_actor.GetProperty()
-            prop.SetColor(*outline_color)
-            prop.SetOpacity(1.0)
+            outline_actor.prop.color = outline_color
+            outline_actor.prop.opacity = 1.0
 
         fill_actor = self.cache.get("selection_fill_actor")
         if fill_actor is not None:
-            prop = fill_actor.GetProperty()
-            prop.SetColor(*fill_color)
-            prop.SetOpacity(float(fill_opacity))
+            fill_actor.prop.color = fill_color
+            fill_actor.prop.opacity = fill_opacity
 
         for actor in self.cache.get("selection_handle_actors", []) or []:
-            prop = actor.GetProperty()
-            prop.SetColor(*outline_color)
-            prop.SetOpacity(0.9)
+            actor.prop.color = outline_color
+            actor.prop.opacity = 0.9
 
     def _update_selection_overlay_geometry(self, xmin, xmax, ymin, ymax, z_plane: float) -> None:
-        """更新框选 overlay 的几何（不重复创建/移除 actor）。"""
         corners = [
             (xmin, ymin, z_plane),
             (xmax, ymin, z_plane),
@@ -330,22 +295,16 @@ class PyVistaRenderer:
                 point_index += 2
             outline_mesh.points = np.array(points, dtype=float)
             outline_mesh.lines = np.array(lines, dtype=np.int64)
-            outline_mesh.Modified()
 
         fill_mesh = self._selection_overlay_state.get("fill_mesh")
         if fill_mesh is not None:
             fill_mesh.points = np.array(corners, dtype=float)
-            fill_mesh.Modified()
 
         handle_actors = self.cache.get("selection_handle_actors") or []
         for actor, pt in zip(handle_actors, corners):
-            actor.SetPosition(float(pt[0]), float(pt[1]), float(pt[2]))
+            actor.position = (float(pt[0]), float(pt[1]), float(pt[2]))
 
     def show_selection_preview(self, start_xy, end_xy, world_bounds, finalized: bool = False) -> None:
-        """显示框选预览（边框 + 半透明填充 + 角点 handle）。
-
-        约定：start_xy / end_xy 为世界坐标系下的 (x, y)，z 由 world_bounds 决定。
-        """
         if not start_xy or not end_xy:
             return
         if not world_bounds or len(world_bounds) != 6:
@@ -366,7 +325,6 @@ class PyVistaRenderer:
         self._render()
 
     def clear_selection_overlay(self) -> None:
-        """清除框选覆盖层（预览/边框/handle）。"""
         self._remove_actor(self.cache.get("selection_outline_actor"))
         self._remove_actor(self.cache.get("selection_fill_actor"))
         self._remove_actor_list(self.cache.get("selection_handle_actors", []))
@@ -415,7 +373,7 @@ class PyVistaRenderer:
         existing = self.cache.get(cache_key)
         if existing is not None:
             try:
-                self.renderer.RemoveActor2D(existing)
+                self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 try:
                     self.plotter.remove_scalar_bar(render=False)
@@ -439,7 +397,6 @@ class PyVistaRenderer:
         return grid, scalars
 
     def _polydata_from_line_segments(self, segments):
-        """把线段列表合并成单一 PolyData，避免大量小对象导致渲染崩溃。"""
         if not segments:
             return None
 
@@ -466,16 +423,15 @@ class PyVistaRenderer:
         return poly_data
 
     def render_mode3_smooth_pressure(self, sim_data):
-        """渲染平滑压力场。"""
         field_data = sim_data.interpolated_pressure or sim_data.pressure_field
         if not field_data:
             return
 
         data_hash = hash((len(field_data), tuple(field_data[0]), tuple(field_data[-1])))
         if self.cache["data_hash"] == data_hash and self.cache["pressure_actor"] is not None:
-            self.cache["pressure_actor"].SetVisibility(True)
+            self.cache["pressure_actor"].visibility = True
             if self.cache["scalar_bar"] is not None:
-                self.cache["scalar_bar"].SetVisibility(True)
+                self.cache["scalar_bar"].visibility = True
             self.setup_camera(sim_data)
             self._render()
             return
@@ -483,7 +439,7 @@ class PyVistaRenderer:
         self._remove_actor(self.cache["pressure_actor"])
         if self.cache["scalar_bar"] is not None:
             try:
-                self.renderer.RemoveActor2D(self.cache["scalar_bar"])
+                self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
             self.cache["scalar_bar"] = None
@@ -506,7 +462,7 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
-            cmap="coolwarm",
+            cmap="jet",
             clim=[min_p, max_p],
             show_scalar_bar=False,
             opacity=1.0,
@@ -520,8 +476,9 @@ class PyVistaRenderer:
             color="white",
             position_x=0.85,
             position_y=0.15,
-            width=0.12,
-            height=0.6,
+            width=0.08,
+            height=0.4,
+            vertical=True,
             render=False,
         )
 
@@ -533,7 +490,6 @@ class PyVistaRenderer:
         self._render()
 
     def render_fractures(self, sim_data):
-        """渲染裂缝。"""
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
 
@@ -573,7 +529,6 @@ class PyVistaRenderer:
         self._render()
 
     def create_grid_lines(self, sim_data):
-        """创建网格线。"""
         self._remove_actor(self.cache["grid_lines_actor"])
         self.cache["grid_lines_actor"] = None
 
@@ -623,27 +578,23 @@ class PyVistaRenderer:
         return actor
 
     def has_grid_lines(self) -> bool:
-        """是否已创建网格线对象。"""
         return self.cache.get("grid_lines_actor") is not None
 
     def ensure_grid_lines(self, sim_data):
-        """确保网格线对象存在（用于主窗口按需显示）。"""
         if self.has_grid_lines():
             return self.cache.get("grid_lines_actor")
         return self.create_grid_lines(sim_data)
 
     def toggle_grid_lines(self, show):
         if self.cache["grid_lines_actor"] is not None:
-            self.cache["grid_lines_actor"].SetVisibility(show)
+            self.cache["grid_lines_actor"].visibility = show
         self._render()
 
     def has_fractures(self) -> bool:
-        """是否已创建裂缝对象。"""
         actors = self.cache.get("fracture_actors") or []
         return len(actors) > 0
 
     def ensure_fractures(self, sim_data) -> bool:
-        """确保裂缝对象存在（用于主窗口按需显示）。"""
         if self.has_fractures():
             return True
         if not getattr(sim_data, "fractures", None):
@@ -653,9 +604,9 @@ class PyVistaRenderer:
 
     def toggle_fractures(self, show):
         if self.cache["pressure_actor"] is not None:
-            self.cache["pressure_actor"].GetProperty().SetOpacity(0.3 if show else 1.0)
+            self.cache["pressure_actor"].prop.opacity = 0.3 if show else 1.0
         for actor in self.cache["fracture_actors"]:
-            actor.SetVisibility(show)
+            actor.visibility = show
         self._render()
 
     def setup_camera(self, sim_data):
@@ -687,9 +638,9 @@ class PyVistaRenderer:
         cpg = sim_data.corner_point_grid
         data_hash = hash((len(cpg.cells), tuple(cpg.cells[0].corners[0]) if cpg.cells else ()))
         if self.cache["corner_grid_hash"] == data_hash and self.cache["corner_actor"] is not None:
-            self.cache["corner_actor"].SetVisibility(True)
+            self.cache["corner_actor"].visibility = True
             if self.cache["corner_surface_actor"] is not None:
-                self.cache["corner_surface_actor"].SetVisibility(True)
+                self.cache["corner_surface_actor"].visibility = True
             self.setup_camera_for_corner_grid(cpg)
             self._render()
             return
@@ -709,7 +660,6 @@ class PyVistaRenderer:
 
         grid = pv.UnstructuredGrid(cell_array, cell_types, points)
         
-        # 提取边和表面，如果为空则不显示
         if grid.n_points > 0 and grid.n_cells > 0:
             edges = grid.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False)
             if edges.n_points > 0:
@@ -833,18 +783,6 @@ class PyVistaRenderer:
             )
             self.cache["fracture_actors"].append(actor)
 
-            center_pos = np.mean(np.array(all_pts, dtype=float), axis=0)
-            label_actor = self.plotter.add_point_labels(
-                np.array([center_pos]),
-                [str(fracture["id"])],
-                point_size=0,
-                font_size=12,
-                text_color="green",
-                always_visible=True,
-                render=False,
-            )
-            self.cache["fracture_actors"].append(label_actor)
-
         self._render()
 
     def hide_fractures(self):
@@ -882,7 +820,7 @@ class PyVistaRenderer:
         self._remove_actor(self.cache["pressure_field_actor"])
         if self.cache["pressure_scalar_bar"] is not None:
             try:
-                self.renderer.RemoveActor2D(self.cache["pressure_scalar_bar"])
+                self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
             self.cache["pressure_scalar_bar"] = None
@@ -896,7 +834,7 @@ class PyVistaRenderer:
         self._remove_actor(self.cache["pressure_field_actor"])
         if self.cache["pressure_scalar_bar"] is not None:
             try:
-                self.renderer.RemoveActor2D(self.cache["pressure_scalar_bar"])
+                self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
             self.cache["pressure_scalar_bar"] = None
@@ -907,9 +845,7 @@ class PyVistaRenderer:
             if n_cells == 0:
                 return
 
-            # 使用 numpy 向量化提取数据
             pressures = cell_data[:, 28].astype(np.float32)
-            # 提取 8 个角点坐标 (列 4-27)
             points = cell_data[:, 4:28].reshape(-1, 3).astype(np.float32)
             
             cell_types = np.full(n_cells, pv.CellType.HEXAHEDRON, dtype=np.uint8)
@@ -929,7 +865,7 @@ class PyVistaRenderer:
                     actor = self.plotter.add_mesh(
                         surface,
                         scalars="Pressure",
-                        cmap="coolwarm",
+                        cmap="jet",
                         clim=[pressure_min, pressure_max],
                         opacity=0.9,
                         show_scalar_bar=False,
@@ -940,11 +876,12 @@ class PyVistaRenderer:
                         "Pressure (bar)",
                         position_x=0.82,
                         position_y=0.15,
-                        width=0.12,
-                        height=0.6,
+                        width=0.08,
+                        height=0.4,
                         label_font_size=10,
                         title_font_size=12,
                         color="white",
+                        vertical=True,
                         render=False,
                     )
 
@@ -966,7 +903,7 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             cloud,
             scalars="Pressure",
-            cmap="coolwarm",
+            cmap="jet",
             point_size=10,
             render_points_as_spheres=True,
             clim=[pressure_min, pressure_max],
@@ -978,11 +915,12 @@ class PyVistaRenderer:
             "Pressure (bar)",
             position_x=0.82,
             position_y=0.15,
-            width=0.12,
-            height=0.6,
+            width=0.08,
+            height=0.4,
             label_font_size=10,
             title_font_size=12,
             color="white",
+            vertical=True,
             render=False,
         )
 
@@ -995,7 +933,7 @@ class PyVistaRenderer:
         self.cache["pressure_field_actor"] = None
         if self.cache["pressure_scalar_bar"] is not None:
             try:
-                self.renderer.RemoveActor2D(self.cache["pressure_scalar_bar"])
+                self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
             self.cache["pressure_scalar_bar"] = None
@@ -1003,49 +941,47 @@ class PyVistaRenderer:
 
     def toggle_grid_visibility(self, visible):
         if self.cache["corner_actor"] is not None:
-            self.cache["corner_actor"].SetVisibility(visible)
+            self.cache["corner_actor"].visibility = visible
         if self.cache["corner_surface_actor"] is not None:
-            self.cache["corner_surface_actor"].SetVisibility(visible)
+            self.cache["corner_surface_actor"].visibility = visible
         self._render()
 
     def toggle_fractures_visibility(self, visible):
         for actor in self.cache["fracture_actors"]:
-            actor.SetVisibility(visible)
+            actor.visibility = visible
 
         if visible:
             if self.cache["corner_actor"] is not None:
-                prop = self.cache["corner_actor"].GetProperty()
                 if self.cache["original_grid_opacity"] is None:
-                    self.cache["original_grid_opacity"] = prop.GetOpacity()
-                prop.SetOpacity(0.1)
+                    self.cache["original_grid_opacity"] = self.cache["corner_actor"].prop.opacity
+                self.cache["corner_actor"].prop.opacity = 0.1
 
             if self.cache["pressure_field_actor"] is not None:
-                prop = self.cache["pressure_field_actor"].GetProperty()
                 if self.cache["original_pressure_opacity"] is None:
-                    self.cache["original_pressure_opacity"] = prop.GetOpacity()
-                prop.SetOpacity(0.1)
+                    self.cache["original_pressure_opacity"] = self.cache["pressure_field_actor"].prop.opacity
+                self.cache["pressure_field_actor"].prop.opacity = 0.1
         else:
             if self.cache["corner_actor"] is not None and self.cache["original_grid_opacity"] is not None:
-                self.cache["corner_actor"].GetProperty().SetOpacity(self.cache["original_grid_opacity"])
+                self.cache["corner_actor"].prop.opacity = self.cache["original_grid_opacity"]
 
             if (
                 self.cache["pressure_field_actor"] is not None
                 and self.cache["original_pressure_opacity"] is not None
             ):
-                self.cache["pressure_field_actor"].GetProperty().SetOpacity(self.cache["original_pressure_opacity"])
+                self.cache["pressure_field_actor"].prop.opacity = self.cache["original_pressure_opacity"]
 
         self._render()
 
     def toggle_wells_visibility(self, visible):
         for actor in self.cache["well_actors"]:
-            actor.SetVisibility(visible)
+            actor.visibility = visible
         self._render()
 
     def toggle_pressure_visibility(self, visible):
         if self.cache["pressure_field_actor"] is not None:
-            self.cache["pressure_field_actor"].SetVisibility(visible)
+            self.cache["pressure_field_actor"].visibility = visible
         if self.cache["pressure_scalar_bar"] is not None:
-            self.cache["pressure_scalar_bar"].SetVisibility(visible)
+            self.cache["pressure_scalar_bar"].visibility = visible
         self._render()
 
     def _create_grid_lines_actor(self, grid_geom, color, line_width, opacity):
@@ -1106,7 +1042,7 @@ class PyVistaRenderer:
 
     def toggle_corner_lgr_grid_visibility(self, visible):
         if self.cache["corner_lgr_parent_grid_actor"] is not None:
-            self.cache["corner_lgr_parent_grid_actor"].SetVisibility(visible)
+            self.cache["corner_lgr_parent_grid_actor"].visibility = visible
         if self.cache["corner_lgr_refined_grid_actor"] is not None:
-            self.cache["corner_lgr_refined_grid_actor"].SetVisibility(visible)
+            self.cache["corner_lgr_refined_grid_actor"].visibility = visible
         self._render()
