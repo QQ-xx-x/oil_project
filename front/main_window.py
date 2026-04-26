@@ -1758,11 +1758,6 @@ class MainWindow(QMainWindow):
                 self.vtk_renderer.render_now()
             self.status_bar.showMessage("View reset")
 
-    def hide_corner_fractures(self):
-        """隐藏裂缝"""
-        self.vtk_renderer.hide_fractures()
-        self.status_bar.showMessage("裂缝已隐藏")
-
     def draw_corner_wells_from_params(self):
         """从参数绘制井"""
         # 检查是否切换了算法，如果是则清除前一个算法的绘制
@@ -1813,9 +1808,10 @@ class MainWindow(QMainWindow):
         import random
         
         # 获取参数
-        num_fracs = self.corner_spin_num_fracs.value()
-        min_len = self.corner_spin_min_len.value()
-        max_len = self.corner_spin_max_len.value()
+        params = self.corner_natural_frac_panel.get_values()
+        num_fracs = params['num_fracs']
+        min_len = params['min_len']
+        max_len = params['max_len']
         
         # 获取网格范围和原点
         origin_x = 0.0
@@ -2440,136 +2436,6 @@ class MainWindow(QMainWindow):
         self.sim_stop_requested = False
         self.set_simulation_buttons_running(True)
         self.sim_process.start()
-    
-    def run_corner_point_grid_simulation(self):
-        """运行角点网格模拟"""
-        self.clear_cache()
-        self.status_bar.showMessage("Corner Point Grid simulation...")
-        self.clear_sim_status()
-        
-        self.append_sim_status("=" * 50)
-        self.append_sim_status("  Corner Point Grid Simulation Starting...")
-        self.append_sim_status("=" * 50)
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("角点网格数据源")
-        dialog.setFixedSize(450, 250)
-        layout = QVBoxLayout(dialog)
-        
-        label = QLabel("请选择角点网格数据来源:")
-        layout.addWidget(label)
-        
-        coord_layout = QHBoxLayout()
-        coord_label = QLabel("COORD文件:")
-        coord_label.setFixedWidth(80)
-        self.coord_path_edit = QLineEdit()
-        self.coord_path_edit.setReadOnly(True)
-        self.coord_path_edit.setPlaceholderText("未选择")
-        coord_btn = QPushButton("浏览...")
-        coord_btn.setFixedWidth(60)
-        coord_btn.clicked.connect(lambda: self._browse_csv_file(self.coord_path_edit, "COORD"))
-        coord_layout.addWidget(coord_label)
-        coord_layout.addWidget(self.coord_path_edit)
-        coord_layout.addWidget(coord_btn)
-        layout.addLayout(coord_layout)
-        
-        zcorn_layout = QHBoxLayout()
-        zcorn_label = QLabel("ZCORN文件:")
-        zcorn_label.setFixedWidth(80)
-        self.zcorn_path_edit = QLineEdit()
-        self.zcorn_path_edit.setReadOnly(True)
-        self.zcorn_path_edit.setPlaceholderText("未选择")
-        zcorn_btn = QPushButton("浏览...")
-        zcorn_btn.setFixedWidth(60)
-        zcorn_btn.clicked.connect(lambda: self._browse_csv_file(self.zcorn_path_edit, "ZCORN"))
-        zcorn_layout.addWidget(zcorn_label)
-        zcorn_layout.addWidget(self.zcorn_path_edit)
-        zcorn_layout.addWidget(zcorn_btn)
-        layout.addLayout(zcorn_layout)
-        
-        btn_layout = QHBoxLayout()
-        btn_draw = QPushButton("绘制")
-        btn_mock = QPushButton("使用模拟数据")
-        btn_cancel = QPushButton("取消")
-        btn_layout.addWidget(btn_draw)
-        btn_layout.addWidget(btn_mock)
-        btn_layout.addWidget(btn_cancel)
-        layout.addLayout(btn_layout)
-        
-        result = [None]
-        
-        def on_draw():
-            coord_path = self.coord_path_edit.text()
-            zcorn_path = self.zcorn_path_edit.text()
-            if coord_path and zcorn_path:
-                result[0] = ('csv', coord_path, zcorn_path)
-                dialog.accept()
-            else:
-                self.status_bar.showMessage("请先选择COORD和ZCORN文件")
-        
-        def on_mock():
-            result[0] = ('mock', None, None)
-            dialog.accept()
-        
-        def on_cancel():
-            dialog.reject()
-        
-        btn_draw.clicked.connect(on_draw)
-        btn_mock.clicked.connect(on_mock)
-        btn_cancel.clicked.connect(on_cancel)
-        
-        if dialog.exec_() != QDialog.Accepted or result[0] is None:
-            self.append_sim_status("Simulation cancelled.")
-            self.status_bar.showMessage("Simulation cancelled")
-            return
-        
-        if result[0][0] == 'csv':
-            self.load_corner_point_grid_from_csv_files(result[0][1], result[0][2])
-        else:
-            self.run_corner_point_grid_simulation()
-    
-    def _browse_csv_file(self, line_edit, file_type):
-        """浏览选择CSV文件"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, f"选择{file_type}文件", self.project_root, "CSV Files (*.csv);;All Files (*)"
-        )
-        if file_path:
-            line_edit.setText(file_path)
-    
-    def load_corner_point_grid_from_csv_files(self, coord_path, zcorn_path):
-        """从CSV文件加载角点网格数据"""
-        from .data_models import load_corner_point_grid_from_csv
-        
-        self.append_sim_status(f"COORD file: {os.path.basename(coord_path)}")
-        self.append_sim_status(f"ZCORN file: {os.path.basename(zcorn_path)}")
-        self.append_sim_status("Loading corner point grid data...")
-        
-        try:
-            cpg = load_corner_point_grid_from_csv(coord_path, zcorn_path)
-            
-            self.sim_data.corner_point_grid = cpg
-            self.sim_data.grid_info = {
-                'nx': cpg.nx, 'ny': cpg.ny, 'nz': cpg.nz,
-                'Lx': cpg.lx, 'Ly': cpg.ly, 'Lz': cpg.lz
-            }
-            
-            self.append_sim_status(f"Loaded {len(cpg.cells)} cells")
-            self.append_sim_status(f"Grid dimensions: {cpg.nx}x{cpg.ny}x{cpg.nz}")
-            self.append_sim_status(f"Pressure range: {cpg.min_pressure:.2f} - {cpg.max_pressure:.2f} bar")
-            self.append_sim_status("")
-            self.append_sim_status("=" * 50)
-            self.append_sim_status("  Data Loaded Successfully!")
-            self.append_sim_status("=" * 50)
-            
-            self.show_vtk_center_view()
-            self.vtk_renderer.render_corner_point_grid(self.sim_data)
-            self.update_corner_grid_statistics()
-            
-            self.status_bar.showMessage("Corner Point Grid loaded from CSV")
-            
-        except Exception as e:
-            self.append_sim_status(f"Error loading CSV files: {str(e)}")
-            self.status_bar.showMessage("Error loading CSV files")
     
     def run_corner_point_grid_simulation(self):
         """运行角点网格模拟 - 通过子进程运行以获取实时step输出"""
@@ -3636,30 +3502,25 @@ class MainWindow(QMainWindow):
 
     def load_grdecl_file(self):
         """导入标准的 ECLIPSE .GRDECL 文件并静默转换为 CSV"""
-        # 1. 弹出文件选择框，只让用户选 .GRDECL 文件
         file_path, _ = QFileDialog.getOpenFileName(
             self, "导入网格文件", "", "ECLIPSE Grid Files (*.GRDECL);;All Files (*)"
         )
         
         if file_path:
             try:
-                # 界面提示用户正在解析，防止用户以为卡死
                 self.statusBar().showMessage(f"正在解析并转换网格文件: {os.path.basename(file_path)}...")
-                QApplication.processEvents() # 强制刷新UI
+                QApplication.processEvents()
                 
-                # 2. 调用转换脚本，静默生成两个 CSV，并拿到它们的临时绝对路径
                 coord_path, zcorn_path = convert_grdecl_to_temp_csv(file_path)
                 
-                # 3. 将这两个临时 CSV 的路径，赋值给现有的数据模型
-                self.sim_data.coord_file_path = coord_path
-                self.sim_data.zcorn_file_path = zcorn_path
+                self.corner_coord_file_path = coord_path
+                self.corner_zcorn_file_path = zcorn_path
+                self.corner_coord_file_label.setText(os.path.basename(coord_path))
+                self.corner_zcorn_file_label.setText(os.path.basename(zcorn_path))
+                
+                self.draw_corner_grid_from_csv()
                 
                 self.statusBar().showMessage("网格导入并转换成功！", 5000)
-                
-                # 4. 触发 C++ 求解器或 VTK 渲染 (调用你原有的渲染方法)
-                # 如果你之前点击导入后会自动渲染，请在这里加上原来的渲染代码，例如：
-                if hasattr(self, 'vtk_renderer') and self.vtk_renderer:
-                    self.vtk_renderer.render_corner_point_grid(self.sim_data)
                 
             except Exception as e:
                 self.statusBar().showMessage(f"网格读取或转换失败: {str(e)}")
