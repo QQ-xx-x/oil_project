@@ -636,7 +636,7 @@ class SimulationControlPanel(QWidget):
         group.setStyleSheet(groupbox_style())
         grid = QGridLayout()
         
-        self.spin_simulation_time = create_double_spinbox(0.0, 1000000, 100.0, decimals=2)
+        self.spin_simulation_time = create_double_spinbox(0.0, 1000000, 100.0, decimals=3, step=0.001)
         self.spin_time_step = create_double_spinbox(0.0, 1000000, 1.0, decimals=4)
         
         grid.addWidget(QLabel("Simulation Time (days):"), 0, 0)
