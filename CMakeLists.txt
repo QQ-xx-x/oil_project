@@ -6,9 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 添加Eigen
 # lxw
-# set(EIGEN3_INCLUDE_DIR "D:/eigen-3.3.8")
+set(EIGEN3_INCLUDE_DIR "D:/eigen-3.4.0")
 # ypw 
-set(EIGEN3_INCLUDE_DIR "D:/mingw64/eigen")
+# set(EIGEN3_INCLUDE_DIR "D:/mingw64/eigen/include/eigen3")
 # wzq
 # set(EIGEN3_INCLUDE_DIR "D:/vtk/vcpkg/installed/x64-windows/include/eigen3")
 
@@ -18,7 +18,7 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 # lxw
 # set(pybind11_DIR "D:/Anaconda/envs/oil/Lib/site-packages/pybind11/share/cmake/pybind11")
 # ypw
-set(pybind11_DIR "D:/anaconda3/envs/transformers/Lib/site-packages/pybind11/share/cmake/pybind11")
+set(pybind11_DIR "C:/Users/OpenCV_Demo/miniconda3/Lib/site-packages/pybind11/share/cmake/pybind11")
 # wzq
 # set(pybind11_DIR "D:/pybind11_site/pybind11/share/cmake/pybind11")
 find_package(pybind11 REQUIRED)
@@ -46,3 +46,35 @@ target_link_libraries(edfm_core_corner PRIVATE pybind11::module)
 
 target_include_directories(edfm_core_corner_lgr PRIVATE ${EIGEN3_INCLUDE_DIR})
 target_link_libraries(edfm_core_corner_lgr PRIVATE pybind11::module)
+<<<<<<< Updated upstream
+=======
+target_compile_definitions(edfm_core_corner_lgr PRIVATE EDFM_CORE_CORNER_LGR_PYBIND)
+# Gas PVT module
+
+pybind11_add_module(gaspvt      src/lgr/PVT_LGR_gas_pvt_migrated.cpp
+)
+
+target_include_directories(gaspvt PRIVATE ${EIGEN3_INCLUDE_DIR})
+target_link_libraries(gaspvt PRIVATE pybind11::module)
+
+
+if(MSVC)
+    check_ipo_supported(RESULT msipo_supported OUTPUT msipo_error LANGUAGES CXX)
+    if(msipo_supported)
+        set_property(TARGET edfm_core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET edfm_core_corner PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET edfm_core_corner_lgr PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    else()
+        message(WARNING "MSVC IPO/LTO is not supported: ${msipo_error}")
+    endif()
+
+    foreach(target_name IN ITEMS edfm_core edfm_core_corner edfm_core_corner_lgr)
+        target_compile_options(${target_name} PRIVATE
+            $<$<CONFIG:Release>:/GL /Oi /Ot /Gy /Gw /arch:AVX2 /fp:precise>
+        )
+        target_link_options(${target_name} PRIVATE
+            $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>
+        )
+    endforeach()
+endif()
+>>>>>>> Stashed changes
