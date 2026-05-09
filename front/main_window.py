@@ -766,9 +766,9 @@ class MainWindow(QMainWindow):
             ("Kz (Darcy):", self.refined_spin_perm_z),
         ]))
 
-        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
-        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
-        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
+        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
         layout.addWidget(self.create_parameter_group("Initial State", [
             ("Pressure (bar):", self.refined_spin_initial_pressure),
             ("Sw:", self.refined_spin_initial_sw),
@@ -1309,6 +1309,7 @@ class MainWindow(QMainWindow):
 
         self.corner_combo_grid_refinement = QComboBox()
         self.corner_combo_grid_refinement.addItems(["不加密", "加密"])
+        self.corner_combo_grid_refinement.setCurrentIndex(1)  # 默认加密，对齐原版C++
         self.corner_combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
@@ -1493,15 +1494,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.corner_check_enable_hydraulic)
         
         self.corner_natural_frac_panel = NaturalFracturesPanel()
-        # 设置corner专用的默认值（不影响black_oil）
-        self.corner_natural_frac_panel.spin_num_fracs.setValue(60)
-        self.corner_natural_frac_panel.spin_aperture.setValue(0.01)
+        # 设置corner专用默认值，对齐原版C++参数（comparison基准）
+        self.corner_natural_frac_panel.spin_num_fracs.setValue(100)
+        self.corner_natural_frac_panel.spin_min_len.setValue(10.0)
+        self.corner_natural_frac_panel.spin_max_len.setValue(20.0)
+        self.corner_natural_frac_panel.spin_aperture.setValue(0.1)
+        self.corner_natural_frac_panel.spin_perm.setValue(100.0)
         layout.addWidget(self.corner_natural_frac_panel)
-        
+
         self.corner_hydraulic_frac_panel = HydraulicFracturesPanel()
-        # 设置corner专用的默认值（不影响black_oil）
-        self.corner_hydraulic_frac_panel.spin_half_len.setValue(120.0)
+        # 设置corner专用默认值，对齐原版C++参数
+        self.corner_hydraulic_frac_panel.spin_num_stages.setValue(20)
+        self.corner_hydraulic_frac_panel.spin_half_len.setValue(60.0)
         self.corner_hydraulic_frac_panel.spin_height.setValue(30.0)
+        self.corner_hydraulic_frac_panel.spin_aperture.setValue(0.1)
         layout.addWidget(self.corner_hydraulic_frac_panel)
         
         layout.addStretch()
@@ -1640,8 +1646,8 @@ class MainWindow(QMainWindow):
             self.corner_well_panel.spin_well_y.setValue(cpg.origin_y + cpg.ly / 2.0)
             self.corner_well_panel.spin_well_z.setValue(cpg.origin_z + cpg.lz / 2.0)
 
-            self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(50.0, cpg.ly / 4.0))
-            self.corner_hydraulic_frac_panel.spin_height.setValue(min(20.0, cpg.lz * 0.4))
+            self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(60.0, cpg.ly / 4.0))
+            self.corner_hydraulic_frac_panel.spin_height.setValue(min(30.0, cpg.lz * 0.4))
 
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
             self.update_corner_grid_statistics()
@@ -2414,27 +2420,35 @@ class MainWindow(QMainWindow):
             'corner_grid_refinement': self.corner_combo_grid_refinement.currentText(),
             'coord_file': self.corner_coord_file_path,
             'zcorn_file': self.corner_zcorn_file_path,
-            'num_fracs': natural_frac_params.get('num_fracs', 60),  # 默认60
-            'min_len': natural_frac_params.get('min_len', 30.0),
-            'max_len': natural_frac_params.get('max_len', 80.0),
+            'num_fracs': natural_frac_params.get('num_fracs', 100),
+            'min_len': natural_frac_params.get('min_len', 10.0),
+            'max_len': natural_frac_params.get('max_len', 20.0),
             'max_dip': 3.14159 / 3.0,
             'min_strike': 0.0,
             'max_strike': 3.14159,
-            'aperture': natural_frac_params.get('aperture', 0.01),  # 默认0.01
-            'frac_perm': natural_frac_params.get('perm', 1000.0),
+            'aperture': natural_frac_params.get('aperture', 0.1),
+            'frac_perm': natural_frac_params.get('perm', 100.0),
             'hf_enabled': self.corner_check_enable_hydraulic.isChecked(),
             'hf_count': hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0,
-            'hf_well_length': 100.0,
-            'hf_length': hydraulic_frac_params.get('half_len', 120.0) * 2.0 if self.corner_check_enable_hydraulic.isChecked() else 240.0,  # 默认120*2
-            'hf_height': hydraulic_frac_params.get('height', 30.0) if self.corner_check_enable_hydraulic.isChecked() else 30.0,  # 默认30
-            'hf_aperture': hydraulic_frac_params.get('aperture', 0.01) if self.corner_check_enable_hydraulic.isChecked() else 0.01,
+            'hf_well_length': 600.0,
+            'hf_length': hydraulic_frac_params.get('half_len', 60.0) * 2.0 if self.corner_check_enable_hydraulic.isChecked() else 120.0,
+            'hf_height': hydraulic_frac_params.get('height', 30.0) if self.corner_check_enable_hydraulic.isChecked() else 30.0,
+            'hf_aperture': hydraulic_frac_params.get('aperture', 0.1) if self.corner_check_enable_hydraulic.isChecked() else 0.1,
             'hf_perm': hydraulic_frac_params['perm'] if self.corner_check_enable_hydraulic.isChecked() else 1000.0,
-            'hf_center_x': -1.0 if self.corner_check_enable_hydraulic.isChecked() else -1.0,  # 自动中心
+            'hf_center_x': -1.0 if self.corner_check_enable_hydraulic.isChecked() else -1.0,
             'hf_center_y': -1.0 if self.corner_check_enable_hydraulic.isChecked() else -1.0,
             'hf_center_z': -1.0 if self.corner_check_enable_hydraulic.isChecked() else -1.0,
             'well_radius': well_params['radius'],
             'well_pressure': well_params['pressure'],
             'simulation_time': sim_params['simulation_time'],
+            'enable_lgr': True,
+            'd_threshold': 5.05,
+            'lgr_nrx': 2,
+            'lgr_nry': 2,
+            'lgr_nrz': 2,
+            'pressure': 800.0,
+            'sw': 0.05,
+            'sg': 0.9,
         }
         
         self.sim_process = QProcess(self)

@@ -409,9 +409,9 @@ class InitialStatePanel(QWidget):
         group.setStyleSheet(groupbox_style())
         grid = QGridLayout()
         
-        self.spin_initial_pressure = create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
-        self.spin_initial_sw = create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
-        self.spin_initial_sg = create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.spin_initial_pressure = create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
+        self.spin_initial_sw = create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.spin_initial_sg = create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
         
         grid.addWidget(QLabel("Pressure (bar):"), 0, 0)
         grid.addWidget(self.spin_initial_pressure, 0, 1)
