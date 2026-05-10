@@ -188,7 +188,7 @@ class MainWindow(QMainWindow):
         self.left_layout = QVBoxLayout(self.left_panel)
         self.left_layout.setContentsMargins(5, 5, 5, 5)
         self.left_panel.setMinimumWidth(200)
-        self.left_panel.setMaximumWidth(500)
+        # self.left_panel.setMaximumWidth(500)
         
         # 中间面板
         self.center_panel = QWidget()
@@ -798,9 +798,9 @@ class MainWindow(QMainWindow):
         self.pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
         layout.addWidget(self.pvt_plot_btn)
 
-        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 200.0, decimals=2)
-        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.2, decimals=4)
-        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.refined_spin_initial_pressure = self.create_double_spinbox(0.0, 1000000, 800.0, decimals=2)
+        self.refined_spin_initial_sw = self.create_double_spinbox(0.0, 1.0, 0.05, decimals=4)
+        self.refined_spin_initial_sg = self.create_double_spinbox(0.0, 1.0, 0.9, decimals=4)
         layout.addWidget(self.create_parameter_group("Initial State", [
             ("Pressure (bar):", self.refined_spin_initial_pressure),
             ("Sw:", self.refined_spin_initial_sw),
@@ -1343,6 +1343,7 @@ class MainWindow(QMainWindow):
 
         self.corner_combo_grid_refinement = QComboBox()
         self.corner_combo_grid_refinement.addItems(["不加密", "加密"])
+        self.corner_combo_grid_refinement.setCurrentIndex(1)  # 默认加密，对齐原版C++
         self.corner_combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
@@ -1584,12 +1585,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.corner_check_enable_hydraulic)
         
         self.corner_natural_frac_panel = NaturalFracturesPanel()
-        self.corner_natural_frac_panel.spin_num_fracs.setValue(10)
-        self.corner_natural_frac_panel.spin_aperture.setValue(0.01)
+        # 设置corner专用默认值，对齐原版C++参数（comparison基准）
+        self.corner_natural_frac_panel.spin_num_fracs.setValue(100)
+        self.corner_natural_frac_panel.spin_min_len.setValue(10.0)
+        self.corner_natural_frac_panel.spin_max_len.setValue(20.0)
+        self.corner_natural_frac_panel.spin_aperture.setValue(0.1)
+        self.corner_natural_frac_panel.spin_perm.setValue(100.0)
         layout.addWidget(self.corner_natural_frac_panel)
-        
+
         self.corner_hydraulic_frac_panel = HydraulicFracturesPanel()
-        self.corner_hydraulic_frac_panel.spin_half_len.setValue(120.0)
+        # 设置corner专用默认值，对齐原版C++参数
+        self.corner_hydraulic_frac_panel.spin_num_stages.setValue(20)
+        self.corner_hydraulic_frac_panel.spin_half_len.setValue(60.0)
         self.corner_hydraulic_frac_panel.spin_height.setValue(30.0)
         self.corner_hydraulic_frac_panel.spin_aperture.setValue(0.1)
         layout.addWidget(self.corner_hydraulic_frac_panel)
@@ -1736,8 +1743,8 @@ class MainWindow(QMainWindow):
             self.corner_well_panel.spin_well_y.setValue(cpg.origin_y + cpg.ly / 2.0)
             self.corner_well_panel.spin_well_z.setValue(cpg.origin_z + cpg.lz / 2.0)
 
-            self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(50.0, cpg.ly / 4.0))
-            self.corner_hydraulic_frac_panel.spin_height.setValue(min(20.0, cpg.lz * 0.4))
+            self.corner_hydraulic_frac_panel.spin_half_len.setValue(min(60.0, cpg.ly / 4.0))
+            self.corner_hydraulic_frac_panel.spin_height.setValue(min(30.0, cpg.lz * 0.4))
 
             self.show_vtk_center_view()
             self.vtk_renderer.render_corner_point_grid(self.sim_data)
@@ -2572,18 +2579,18 @@ class MainWindow(QMainWindow):
             'corner_grid_refinement': self.corner_combo_grid_refinement.currentText(),
             'coord_file': self.corner_coord_file_path,
             'zcorn_file': self.corner_zcorn_file_path,
-            'num_fracs': natural_frac_params.get('num_fracs', 10),
-            'min_len': natural_frac_params.get('min_len', 30.0),
-            'max_len': natural_frac_params.get('max_len', 80.0),
+            'num_fracs': natural_frac_params.get('num_fracs', 100),
+            'min_len': natural_frac_params.get('min_len', 10.0),
+            'max_len': natural_frac_params.get('max_len', 20.0),
             'max_dip': 3.14159 / 3.0,
             'min_strike': 0.0,
             'max_strike': 3.14159,
-            'aperture': natural_frac_params.get('aperture', 0.01),
-            'frac_perm': natural_frac_params.get('perm', 1000.0),
+            'aperture': natural_frac_params.get('aperture', 0.1),
+            'frac_perm': natural_frac_params.get('perm', 100.0),
             'hf_enabled': self.corner_check_enable_hydraulic.isChecked(),
             'hf_count': hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0,
             'hf_well_length': 600.0,
-            'hf_length': hydraulic_frac_params.get('half_len', 120.0) if self.corner_check_enable_hydraulic.isChecked() else 120.0,
+            'hf_length': hydraulic_frac_params.get('half_len', 60.0) * 2.0 if self.corner_check_enable_hydraulic.isChecked() else 120.0,
             'hf_height': hydraulic_frac_params.get('height', 30.0) if self.corner_check_enable_hydraulic.isChecked() else 30.0,
             'hf_aperture': hydraulic_frac_params.get('aperture', 0.1) if self.corner_check_enable_hydraulic.isChecked() else 0.1,
             'hf_perm': hydraulic_frac_params['perm'] if self.corner_check_enable_hydraulic.isChecked() else 1000.0,

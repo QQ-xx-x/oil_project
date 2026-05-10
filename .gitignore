@@ -64,8 +64,9 @@ MinSizeRel/
 *.so
 *.dylib
 
-# CSV files (all CSV files in the project)
+# CSV files (except comparison reference)
 *.csv
+!comparison/output_sim_lgr.csv
 
 # Temporary files
 *.tmp
@@ -81,5 +82,6 @@ Desktop.ini
 *.bak
 *.backup
 
-# Build configuration (user-specific)
-CMakeLists.txt
+# VS / Claude Code
+.vs/
+.claude/
