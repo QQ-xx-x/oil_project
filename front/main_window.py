@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
         self.left_layout = QVBoxLayout(self.left_panel)
         self.left_layout.setContentsMargins(5, 5, 5, 5)
         self.left_panel.setMinimumWidth(200)
-        self.left_panel.setMaximumWidth(500)
+        # self.left_panel.setMaximumWidth(500)
         
         # 中间面板
         self.center_panel = QWidget()

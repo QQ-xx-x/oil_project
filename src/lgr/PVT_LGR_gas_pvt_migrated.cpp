@@ -134,7 +134,7 @@ static bool parseDoubleStrict(const std::string& s, double& v) {
 
 static bool isTopMarker(const std::string& s) {
     std::string t = trim(s);
-    if (t == "顶") return true;
+    if (t == "\xE9\xA1\xB6") return true; // UTF-8 for "顶"
     std::string low = t;
     for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
     return low == "top";
@@ -142,7 +142,7 @@ static bool isTopMarker(const std::string& s) {
 
 static bool isBottomMarker(const std::string& s) {
     std::string t = trim(s);
-    if (t == "底") return true;
+    if (t == "\xE5\xBA\x95") return true; // UTF-8 for "底"
     std::string low = t;
     for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
     return low == "bottom";
@@ -233,6 +233,14 @@ struct Connection {
     int u{}, v{};
     double T{0.0};
     int type{0};
+};
+
+enum ConnectionType {
+    CONN_MM = 0,
+    CONN_EDFM_MF = 1,
+    CONN_EDFM_FF = 2,
+    CONN_WR_MF = 4,
+    CONN_WRF_EDFMF = 5
 };
 
 struct ParentFacePatch {
@@ -668,6 +676,27 @@ static double computeMatrixFractureTransmissibility(const HexCell& cell, const S
     double Tmf = FLOW_BETA *2.0 * seg.area * (Kn / d_avg);
     if (!std::isfinite(Tmf) || Tmf <= EPS) return 0.0;
     return Tmf;
+}
+
+template<typename HexCell>
+static double computeContinuumToExplicitFractureTransmissibility(const HexCell& cell,
+                                                                 const Segment& seg,
+                                                                 int nxs = 2,
+                                                                 int nys = 2,
+                                                                 int nzs = 2) {
+    if (seg.area <= EPS) return 0.0;
+    Point3 n = seg.normal;
+    double nn = n.norm();
+    if (nn < EPS) return 0.0;
+    n = n * (1.0 / nn);
+    double Kn = normalProjectedPerm(cell, n);
+    if (Kn <= EPS) return 0.0;
+    double d_avg = averageDistanceCellToPlane(cell, seg.center, n, nxs, nys, nzs);
+    double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
+    d_avg = std::max(d_avg, 1e-10 * scale);
+    double T = FLOW_BETA *2.0 * seg.area * (Kn / d_avg);
+    if (!std::isfinite(T) || T <= EPS) return 0.0;
+    return T;
 }
 
 static void pushUniquePoint(std::vector<Point3>& pts, const Point3& p, double tol) {
@@ -1196,6 +1225,7 @@ typedef StateT<AD3> StateAD3;
 
 struct SimulationResult {
     py::array_t<double> pressure_field;
+    py::array_t<double> dual_porosity_pressure_field;
     py::array_t<double> temperature_field;
     py::array_t<double> stress_field;
     py::array_t<double> fracture_vertices;
@@ -1230,9 +1260,12 @@ public:
 
     int n_leaf{0};
     int n_seg{0};
+    int n_wr_matrix{0};
     int n_total{0};
 
     std::vector<State> states, states_prev;
+    std::vector<State> wr_matrix_states, wr_matrix_states_prev;
+    std::vector<double> wr_transfer_T;
 
     struct Well { int target_node_idx; double WI; double P_bhp; };
     std::vector<Well> wells;
@@ -1279,6 +1312,19 @@ public:
     double initial_sw{0.05};
     double initial_sg{0.9};
     double simulation_total_days{7300.0};
+
+    bool enable_dual_porosity{false};
+    double phi_matrix{0.04};
+    double phi_fracture{0.4};
+    double k_matrix_x{0.005};
+    double k_matrix_y{0.005};
+    double k_matrix_z{0.005};
+    double k_fracture_x{1.0};
+    double k_fracture_y{1.0};
+    double k_fracture_z{0.1};
+    double matrix_volume_fraction{0.98};
+    double fracture_volume_fraction{0.02};
+    double wr_shape_factor{0.12};
 
     SimulatorLGR() {
         dx = Lx / Nx;
@@ -1373,6 +1419,133 @@ public:
         lgr_Nrx = static_cast<uint16_t>(std::max(1, nrx));
         lgr_Nry = static_cast<uint16_t>(std::max(1, nry));
         lgr_Nrz = static_cast<uint16_t>(std::max(1, nrz));
+    }
+
+    void setDualPorosityParameters(bool enable_dual_porosity_val,
+                                   double phi_matrix_val,
+                                   double phi_fracture_val,
+                                   double k_matrix_x_val,
+                                   double k_matrix_y_val,
+                                   double k_matrix_z_val,
+                                   double k_fracture_x_val,
+                                   double k_fracture_y_val,
+                                   double k_fracture_z_val,
+                                   double matrix_volume_fraction_val,
+                                   double fracture_volume_fraction_val,
+                                   double wr_shape_factor_val) {
+        auto require_positive = [](double v, const char* name) {
+            if (!std::isfinite(v) || v <= 0.0) {
+                std::ostringstream oss;
+                oss << name << " must be finite and positive.";
+                throw std::runtime_error(oss.str());
+            }
+        };
+
+        require_positive(phi_matrix_val, "phi_matrix");
+        require_positive(k_matrix_x_val, "k_matrix_x");
+        require_positive(k_matrix_y_val, "k_matrix_y");
+        require_positive(k_matrix_z_val, "k_matrix_z");
+
+        if (enable_dual_porosity_val) {
+            require_positive(phi_fracture_val, "phi_fracture");
+            require_positive(k_fracture_x_val, "k_fracture_x");
+            require_positive(k_fracture_y_val, "k_fracture_y");
+            require_positive(k_fracture_z_val, "k_fracture_z");
+            require_positive(matrix_volume_fraction_val, "matrix_volume_fraction");
+            require_positive(fracture_volume_fraction_val, "fracture_volume_fraction");
+            require_positive(wr_shape_factor_val, "wr_shape_factor");
+
+            double vf_sum = matrix_volume_fraction_val + fracture_volume_fraction_val;
+            if (!std::isfinite(vf_sum) || std::abs(vf_sum - 1.0) > 1e-8) {
+                std::ostringstream oss;
+                oss << "matrix_volume_fraction + fracture_volume_fraction must equal 1.0, current sum = "
+                    << std::setprecision(16) << vf_sum;
+                throw std::runtime_error(oss.str());
+            }
+        }
+
+        enable_dual_porosity = enable_dual_porosity_val;
+        phi_matrix = phi_matrix_val;
+        phi_fracture = phi_fracture_val;
+        k_matrix_x = k_matrix_x_val;
+        k_matrix_y = k_matrix_y_val;
+        k_matrix_z = k_matrix_z_val;
+        k_fracture_x = k_fracture_x_val;
+        k_fracture_y = k_fracture_y_val;
+        k_fracture_z = k_fracture_z_val;
+        matrix_volume_fraction = matrix_volume_fraction_val;
+        fracture_volume_fraction = fracture_volume_fraction_val;
+        wr_shape_factor = wr_shape_factor_val;
+    }
+
+    void validateDualPorosityParameters() const {
+        auto require_positive = [](double v, const char* name) {
+            if (!std::isfinite(v) || v <= 0.0) {
+                std::ostringstream oss;
+                oss << name << " must be finite and positive.";
+                throw std::runtime_error(oss.str());
+            }
+        };
+
+        require_positive(phi_matrix, "phi_matrix");
+        require_positive(k_matrix_x, "k_matrix_x");
+        require_positive(k_matrix_y, "k_matrix_y");
+        require_positive(k_matrix_z, "k_matrix_z");
+
+        if (!enable_dual_porosity) return;
+
+        require_positive(phi_fracture, "phi_fracture");
+        require_positive(k_fracture_x, "k_fracture_x");
+        require_positive(k_fracture_y, "k_fracture_y");
+        require_positive(k_fracture_z, "k_fracture_z");
+        require_positive(matrix_volume_fraction, "matrix_volume_fraction");
+        require_positive(fracture_volume_fraction, "fracture_volume_fraction");
+        require_positive(wr_shape_factor, "wr_shape_factor");
+
+        double vf_sum = matrix_volume_fraction + fracture_volume_fraction;
+        if (!std::isfinite(vf_sum) || std::abs(vf_sum - 1.0) > 1e-8) {
+            std::ostringstream oss;
+            oss << "matrix_volume_fraction + fracture_volume_fraction must equal 1.0, current sum = "
+                << std::setprecision(16) << vf_sum;
+            throw std::runtime_error(oss.str());
+        }
+    }
+
+    void applyRockProperties(ParentCell& pc) const {
+        if (enable_dual_porosity) {
+            double vf = std::max(fracture_volume_fraction, 1e-12);
+            pc.phi = phi_fracture;
+            pc.K[0] = k_fracture_x * vf;
+            pc.K[1] = k_fracture_y * vf;
+            pc.K[2] = k_fracture_z * vf;
+        } else {
+            pc.phi = phi_matrix;
+            pc.K[0] = k_matrix_x;
+            pc.K[1] = k_matrix_y;
+            pc.K[2] = k_matrix_z;
+        }
+    }
+
+    int wrMatrixBase() const {
+        return n_leaf + n_seg;
+    }
+
+    int wrMatrixNodeOfLeaf(int leaf_id) const {
+        return wrMatrixBase() + leaf_id;
+    }
+
+    bool isLeafNode(int node) const {
+        return node >= 0 && node < n_leaf;
+    }
+
+    bool isSegmentNode(int node) const {
+        return node >= n_leaf && node < n_leaf + n_seg;
+    }
+
+    bool isWRMatrixNode(int node) const {
+        return enable_dual_porosity &&
+               node >= wrMatrixBase() &&
+               node < wrMatrixBase() + n_wr_matrix;
     }
 
 
@@ -2014,10 +2187,7 @@ public:
                         pc.corners[6] = interpolateOnPillar(p_ur, z[3]); // Z4
                         pc.corners[7] = interpolateOnPillar(p_ul, z[2]); // Z3
 
-                        pc.phi = 0.04;
-                        pc.K[0] = 0.005;
-                        pc.K[1] = 0.005;
-                        pc.K[2] = 0.005;
+                        applyRockProperties(pc);
                         pc.face_ids = {{-1,-1,-1,-1,-1,-1}};
                         pc.refined = false;
                         pc.leaf_base = -1;
@@ -2350,8 +2520,7 @@ public:
                     ParentCell pc;
                     pc.parent_id = pid;
                     pc.ix = i; pc.iy = j; pc.iz = k;
-                    pc.phi = 0.04;
-                    pc.K[0] = 0.005; pc.K[1] = 0.005; pc.K[2] = 0.005;
+                    applyRockProperties(pc);
                     pc.refined = false;
                     pc.leaf_base = -1;
                     pc.Nrx = lgr_Nrx; pc.Nry = lgr_Nry; pc.Nrz = lgr_Nrz;
@@ -2626,7 +2795,7 @@ public:
             if (T <= EPS) continue;
             int a = std::min(u, v);
             int b = std::max(u, v);
-            mm_out.push_back({a, b, T, 0});
+            mm_out.push_back({a, b, T, CONN_MM});
             leaf_neighbors[u].push_back(v);
             leaf_neighbors[v].push_back(u);
         }
@@ -2691,7 +2860,12 @@ public:
                             seg.aperture = frac.aperture;
                             seg.perm = frac.perm;
                             seg.poly = poly;
-                            seg.T_mf = computeMatrixFractureTransmissibility(lc, seg, 2, 2, 2);
+                            if (enable_dual_porosity) {
+                                seg.T_mf = computeContinuumToExplicitFractureTransmissibility(
+                                    lc, seg, 2, 2, 2);
+                            } else {
+                                seg.T_mf = computeMatrixFractureTransmissibility(lc, seg, 2, 2, 2);
+                            }
                             fillSegmentFaceGeom(seg, lc, mm_faces);
 
                             segments.push_back(seg);
@@ -2732,12 +2906,21 @@ public:
                       << " zeroVol=" << zero_vol << " zeroArea=" << zero_area << " zeroApt=" << zero_apt << std::endl;
         }
         mf_out.reserve(n_seg);
+        int edfm_coupling_type = enable_dual_porosity ? CONN_WRF_EDFMF : CONN_EDFM_MF;
         for (int s = 0; s < n_seg; ++s) {
             int u = segments[s].matrix_leaf_id;
             int v = n_leaf + s;
-            if (segments[s].T_mf > EPS) mf_out.push_back({std::min(u, v), std::max(u, v), segments[s].T_mf, 1});
+            if (segments[s].T_mf > EPS) {
+                mf_out.push_back({std::min(u, v), std::max(u, v), segments[s].T_mf, edfm_coupling_type});
+            }
         }
-        std::cout << "MF edges built: " << mf_out.size() << std::endl;
+        if (enable_dual_porosity) {
+            std::cout << "WR equivalent-fracture continuum to EDFM explicit-fracture edges built: "
+                      << mf_out.size()
+                      << ", vf=" << fracture_volume_fraction << std::endl;
+        } else {
+            std::cout << "MF edges built: " << mf_out.size() << std::endl;
+        }
     }
 
     void buildFFConnections(std::vector<Connection>& ff_out) {
@@ -2784,7 +2967,7 @@ public:
 
                     int u = n_leaf + s1;
                     int v = n_leaf + s2;
-                    ff_out.push_back({std::min(u, v), std::max(u, v), Tff, 2});
+                    ff_out.push_back({std::min(u, v), std::max(u, v), Tff, CONN_EDFM_FF});
                 }
             }
         }
@@ -2810,12 +2993,40 @@ public:
                     if (T_cross <= EPS) continue;
                     int u = n_leaf + s1;
                     int v = n_leaf + s2;
-                    ff_out.push_back({std::min(u, v), std::max(u, v), T_cross, 2});
+                    ff_out.push_back({std::min(u, v), std::max(u, v), T_cross, CONN_EDFM_FF});
                 }
             }
         }
 
         std::cout << "FF edges built (real-geometry): " << ff_out.size() << std::endl;
+    }
+
+    double matrixPermForWarrenRootTransfer() const {
+        return (k_matrix_x + k_matrix_y + k_matrix_z) / 3.0;
+    }
+
+    void buildDualPorosityTransferConnections(std::vector<Connection>& wr_mf_out) {
+        wr_mf_out.clear();
+        wr_transfer_T.assign(n_leaf, 0.0);
+        n_wr_matrix = enable_dual_porosity ? n_leaf : 0;
+        if (!enable_dual_porosity) return;
+
+        validateDualPorosityParameters();
+
+        double k_eff = matrixPermForWarrenRootTransfer();
+        int n_local_wr = 0;
+        for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            double T_wr = FLOW_BETA
+                        * wr_shape_factor
+                        * k_eff
+                        * std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
+            if (!std::isfinite(T_wr) || T_wr <= EPS) continue;
+            wr_transfer_T[leaf] = T_wr;
+            n_local_wr++;
+        }
+
+        std::cout << "Warren-Root local transfer terms built: " << n_local_wr
+                  << " (matrix states eliminated locally, no global WR nodes)" << std::endl;
     }
 
     struct ConnKey {
@@ -2839,7 +3050,9 @@ public:
 
     void buildAllConnections(const std::vector<Connection>& mm,
                              const std::vector<Connection>& mf,
-                             const std::vector<Connection>& ff) {
+                             const std::vector<Connection>& ff,
+                             const std::vector<Connection>& wr_mf) {
+        n_wr_matrix = enable_dual_porosity ? n_leaf : 0;
         n_total = n_leaf + n_seg;
         connections.clear();
         connections.reserve(mm.size() + mf.size() + ff.size());
@@ -2849,19 +3062,28 @@ public:
         auto push_unique = [&](const Connection& c) {
             int u = std::min(c.u, c.v);
             int v = std::max(c.u, c.v);
+            if (u < 0 || v < 0 || u >= n_total || v >= n_total) return;
             ConnKey key{c.type, u, v};
             if (seen.insert(key).second) connections.push_back({u, v, c.T, c.type});
         };
         for (const auto& c : mm) push_unique(c);
         for (const auto& c : mf) push_unique(c);
         for (const auto& c : ff) push_unique(c);
+        (void)wr_mf;
 
         adj.assign(n_total, {});
         for (const auto& c : connections) {
             adj[c.u].push_back({c.v, c.T, c.type});
             adj[c.v].push_back({c.u, c.T, c.type});
         }
-        std::cout << "Connections built (unique): " << connections.size() << std::endl;
+        if (enable_dual_porosity) {
+            std::cout << "Connections built (unique): " << connections.size()
+                      << ", n_leaf=" << n_leaf
+                      << ", n_seg=" << n_seg
+                      << ", n_wr_matrix=" << n_wr_matrix << std::endl;
+        } else {
+            std::cout << "Connections built (unique): " << connections.size() << std::endl;
+        }
     }
 
     void setupWells() {
@@ -2919,13 +3141,25 @@ public:
 
     void initState() {
         states.assign(n_total, {});
-        states_prev = states;
         for (int i=0; i<n_total; ++i) {
             states[i].P = initial_pressure;
             states[i].Sw = initial_sw;
             states[i].Sg = initial_sg;
         }
         states_prev = states;
+
+        if (enable_dual_porosity) {
+            wr_matrix_states.assign(n_leaf, {});
+            for (int i = 0; i < n_leaf; ++i) {
+                wr_matrix_states[i].P = initial_pressure;
+                wr_matrix_states[i].Sw = initial_sw;
+                wr_matrix_states[i].Sg = initial_sg;
+            }
+            wr_matrix_states_prev = wr_matrix_states;
+        } else {
+            wr_matrix_states.clear();
+            wr_matrix_states_prev.clear();
+        }
     }
 
     void buildJacobianPattern() {
@@ -2995,6 +3229,47 @@ public:
         }
     }
 
+    double rawNodeVolume(int i) const {
+        if (isLeafNode(i)) {
+            double vf = enable_dual_porosity ? fracture_volume_fraction : 1.0;
+            return leaves[i].vol * vf;
+        }
+
+        if (isSegmentNode(i)) {
+            int s = i - n_leaf;
+            return segments[s].area * segments[s].aperture;
+        }
+
+        if (isWRMatrixNode(i)) {
+            int leaf = i - wrMatrixBase();
+            return leaves[leaf].vol * matrix_volume_fraction;
+        }
+
+        return 0.0;
+    }
+
+    double nodeVolume(int i) const {
+        double v = rawNodeVolume(i);
+        if (!std::isfinite(v) || v <= 0.0) return 1e-12;
+        return std::max(v, 1e-12);
+    }
+
+    double nodePhi(int i) const {
+        if (isLeafNode(i)) {
+            return enable_dual_porosity ? phi_fracture : leaves[i].phi;
+        }
+
+        if (isSegmentNode(i)) {
+            return phi_frac;
+        }
+
+        if (isWRMatrixNode(i)) {
+            return phi_matrix;
+        }
+
+        return 1e-12;
+    }
+
     Eigen::Matrix<AD3, 3, 1> computeAccumulation_AD(double dt, const State& s_old_val, const StateAD3& s_new,
                                                     const PropertiesT<AD3>& p_new, double vol, double phi) const {
         StateAD3 s_old;
@@ -3062,10 +3337,129 @@ public:
         return res;
     }
 
+    void makeStateAD(const State& s, StateAD3& sad) const {
+        sad.P.value() = s.P;    sad.P.derivatives()  = Eigen::Vector3d::Unit(0);
+        sad.Sw.value() = s.Sw;  sad.Sw.derivatives() = Eigen::Vector3d::Unit(1);
+        sad.Sg.value() = s.Sg;  sad.Sg.derivatives() = Eigen::Vector3d::Unit(2);
+    }
+
+    void evalLocalWRMatrixEquation(int leaf, double dt,
+                                   const State& leaf_state,
+                                   const State& matrix_state,
+                                   Eigen::Vector3d* Rm,
+                                   Eigen::Matrix3d* Jm,
+                                   Eigen::Vector3d* flux,
+                                   Eigen::Matrix3d* dF_leaf,
+                                   Eigen::Matrix3d* dF_matrix) const {
+        StateAD3 leaf_ad, matrix_ad;
+        makeStateAD(leaf_state, leaf_ad);
+        makeStateAD(matrix_state, matrix_ad);
+
+        auto props_leaf = getProps(leaf_ad);
+        auto props_matrix = getProps(matrix_ad);
+        double matrix_vol = std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
+        auto R_acc = computeAccumulation_AD(
+            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol, phi_matrix);
+        auto F_lm = computeFlux_FastAD(
+            wr_transfer_T[leaf], leaf_ad, matrix_ad, props_leaf, props_matrix);
+
+        for (int eq = 0; eq < 3; ++eq) {
+            if (Rm) (*Rm)(eq) = R_acc(eq).value() - F_lm.val[eq];
+            if (flux) (*flux)(eq) = F_lm.val[eq];
+            for (int var = 0; var < 3; ++var) {
+                if (Jm) (*Jm)(eq, var) = R_acc(eq).derivatives()(var) - F_lm.d_dv[eq](var);
+                if (dF_leaf) (*dF_leaf)(eq, var) = F_lm.d_du[eq](var);
+                if (dF_matrix) (*dF_matrix)(eq, var) = F_lm.d_dv[eq](var);
+            }
+        }
+    }
+
+    bool solveLocalWRMatrixState(int leaf, double dt, const State& leaf_state, State& matrix_state) const {
+        if (!enable_dual_porosity || leaf < 0 || leaf >= n_leaf) return true;
+        if (leaf >= (int)wr_transfer_T.size() || wr_transfer_T[leaf] <= EPS) {
+            matrix_state = wr_matrix_states_prev[leaf];
+            return true;
+        }
+
+        if (!std::isfinite(matrix_state.P) || matrix_state.P <= 0.0) matrix_state = wr_matrix_states_prev[leaf];
+
+        for (int it = 0; it < 12; ++it) {
+            Eigen::Vector3d Rm;
+            Eigen::Matrix3d Jm;
+            evalLocalWRMatrixEquation(leaf, dt, leaf_state, matrix_state, &Rm, &Jm, nullptr, nullptr, nullptr);
+            if (Rm.lpNorm<Eigen::Infinity>() < 1e-6) return true;
+
+            Eigen::FullPivLU<Eigen::Matrix3d> lu(Jm);
+            if (!lu.isInvertible()) return false;
+            Eigen::Vector3d delta = lu.solve(-Rm);
+            if (!delta.allFinite()) return false;
+
+            double omega = 1.0;
+            const double MAX_DP = 50.0;
+            const double MAX_DS = 0.20;
+            if (std::abs(delta(0)) > MAX_DP) omega = std::min(omega, MAX_DP / std::abs(delta(0)));
+            if (std::abs(delta(1)) > MAX_DS) omega = std::min(omega, MAX_DS / std::abs(delta(1)));
+            if (std::abs(delta(2)) > MAX_DS) omega = std::min(omega, MAX_DS / std::abs(delta(2)));
+
+            matrix_state.P  += omega * delta(0);
+            matrix_state.Sw += omega * delta(1);
+            matrix_state.Sg += omega * delta(2);
+            matrix_state.P = std::max(14.7, matrix_state.P);
+            matrix_state.Sw = clamp01(matrix_state.Sw);
+            matrix_state.Sg = clamp01(matrix_state.Sg);
+            if (matrix_state.Sw + matrix_state.Sg > 1.0 - 1e-6) {
+                double ssum = matrix_state.Sw + matrix_state.Sg;
+                matrix_state.Sw /= ssum;
+                matrix_state.Sg /= ssum;
+            }
+        }
+
+        Eigen::Vector3d Rm;
+        evalLocalWRMatrixEquation(leaf, dt, leaf_state, matrix_state, &Rm, nullptr, nullptr, nullptr, nullptr);
+        return Rm.lpNorm<Eigen::Infinity>() < 1e-4;
+    }
+
+    bool assembleLocalWRContributions(double dt, VectorXd& Rg) {
+        if (!enable_dual_porosity) return true;
+        if ((int)wr_matrix_states.size() != n_leaf ||
+            (int)wr_matrix_states_prev.size() != n_leaf ||
+            (int)wr_transfer_T.size() != n_leaf) {
+            return false;
+        }
+
+        for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            if (wr_transfer_T[leaf] <= EPS) continue;
+
+            State matrix_state = wr_matrix_states[leaf];
+            if (!solveLocalWRMatrixState(leaf, dt, states[leaf], matrix_state)) return false;
+            wr_matrix_states[leaf] = matrix_state;
+
+            Eigen::Vector3d flux;
+            Eigen::Matrix3d Jm, dF_leaf, dF_matrix;
+            evalLocalWRMatrixEquation(leaf, dt, states[leaf], matrix_state,
+                                      nullptr, &Jm, &flux, &dF_leaf, &dF_matrix);
+
+            Eigen::FullPivLU<Eigen::Matrix3d> lu(Jm);
+            if (!lu.isInvertible()) return false;
+            Eigen::Matrix3d dm_dleaf = lu.solve(dF_leaf);
+            if (!dm_dleaf.allFinite()) return false;
+            Eigen::Matrix3d dQ = dF_leaf + dF_matrix * dm_dleaf;
+
+            for (int eq = 0; eq < 3; ++eq) {
+                Rg(3 * leaf + eq) += flux(eq);
+                for (int var = 0; var < 3; ++var) {
+                    J.valuePtr()[cell_J_idx[leaf].diag[eq][var]] += dQ(eq, var);
+                }
+            }
+        }
+        return true;
+    }
+
     bool solveStep(double dt, double& step_oil, double& step_water, double& step_gas, int& actual_iter) {
         const int max_iter = 15;
         const double tol = 1e-3;
         std::vector<State> backup = states;
+        std::vector<State> wr_backup = wr_matrix_states;
         std::vector<StateAD3> states_ad(n_total);
         std::vector<PropertiesT<AD3>> props_ad(n_total);
 
@@ -3076,15 +3470,13 @@ public:
             std::fill(J.valuePtr(), J.valuePtr() + J.nonZeros(), 0.0);
 
             for (int i = 0; i < n_total; ++i) {
-                states_ad[i].P.value() = states[i].P;    states_ad[i].P.derivatives()  = Eigen::Vector3d::Unit(0);
-                states_ad[i].Sw.value() = states[i].Sw;  states_ad[i].Sw.derivatives() = Eigen::Vector3d::Unit(1);
-                states_ad[i].Sg.value() = states[i].Sg;  states_ad[i].Sg.derivatives() = Eigen::Vector3d::Unit(2);
+                makeStateAD(states[i], states_ad[i]);
                 props_ad[i] = getProps(states_ad[i]);
             }
 
             for (int i=0; i<n_total; ++i) {
-                double vol = (i < n_leaf) ? std::max(leaves[i].vol, 1e-12) : std::max(segments[i - n_leaf].area * segments[i - n_leaf].aperture, 1e-12);
-                double phi = (i < n_leaf) ? leaves[i].phi : phi_frac;
+                double vol = nodeVolume(i);
+                double phi = nodePhi(i);
                 auto R_acc = computeAccumulation_AD(dt, states_prev[i], states_ad[i], props_ad[i], vol, phi);
 
                 auto it = well_map.find(i);
@@ -3123,6 +3515,12 @@ public:
                 }
             }
 
+            if (enable_dual_porosity && !assembleLocalWRContributions(dt, Rg)) {
+                states = backup;
+                wr_matrix_states = wr_backup;
+                return false;
+            }
+
             double max_res = Rg.lpNorm<Infinity>();
             if (max_res < tol) {
                 for (const auto& w : wells) {
@@ -3138,52 +3536,63 @@ public:
                 return true;
             }
 
-            if (iter == 0) {
-                std::ofstream jac_file("jacobian_sparsity.csv");
-                jac_file << "row,col,val\n";
-                for (int k = 0; k < J.outerSize(); ++k) {
-                    for (SparseMatrix<double>::InnerIterator it(J, k); it; ++it) {
-                        if (std::abs(it.value()) > 1e-12) jac_file << it.row() << "," << it.col() << "," << it.value() << "\n";
-                    }
-                }
-                jac_file.close();
-            }
 
             // --- 诊断: 检查对角元 + 细胞体积 ---
             {
                 double diag_min = 1e100, diag_max = 0.0;
-                int zero_diag = 0, zero_leaf = 0, zero_seg = 0;
-                int zero_vol_leaf = 0, zero_vol_seg = 0;
+                int zero_diag = 0, zero_leaf = 0, zero_seg = 0, zero_wr = 0;
+                int zero_vol_leaf = 0, zero_vol_seg = 0, zero_vol_wr = 0;
                 for (int rr = 0; rr < 3 * n_total; ++rr) {
                     double d = std::abs(J.coeff(rr, rr));
                     if (d < 1e-15) {
                         zero_diag++;
                         int ci = rr / 3;
-                        if (ci < n_leaf) zero_leaf++;
-                        else zero_seg++;
+                        if (isLeafNode(ci)) zero_leaf++;
+                        else if (isSegmentNode(ci)) zero_seg++;
+                        else if (isWRMatrixNode(ci)) zero_wr++;
                     } else { diag_min = std::min(diag_min, d); diag_max = std::max(diag_max, d); }
                 }
                 for (int i = 0; i < n_leaf; ++i) {
-                    if (leaves[i].vol < 1e-15) zero_vol_leaf++;
+                    if (rawNodeVolume(i) < 1e-15) zero_vol_leaf++;
                 }
                 for (int i = 0; i < n_seg; ++i) {
-                    double svol = segments[i].area * segments[i].aperture;
-                    if (svol < 1e-15) zero_vol_seg++;
+                    if (rawNodeVolume(n_leaf + i) < 1e-15) zero_vol_seg++;
                 }
-                std::cout << "\n      [DIAG] min=" << diag_min << " max=" << diag_max
-                          << " zero=" << zero_diag << " n=" << 3*n_total
-                          << " nLeaf=" << n_leaf << " nSeg=" << n_seg
-                          << "\n      zero_leaf=" << zero_leaf << " zero_seg=" << zero_seg
-                          << " zeroVolLeaf=" << zero_vol_leaf << " zeroVolSeg=" << zero_vol_seg << std::endl;
+                for (int i = 0; i < n_wr_matrix; ++i) {
+                    if (rawNodeVolume(wrMatrixBase() + i) < 1e-15) zero_vol_wr++;
+                }
+                if (enable_dual_porosity) {
+                    std::cout << "\n      [DIAG] min=" << diag_min << " max=" << diag_max
+                              << " zero=" << zero_diag << " n=" << 3*n_total
+                              << " nLeaf=" << n_leaf << " nSeg=" << n_seg
+                              << " nWRMatrix=" << n_wr_matrix
+                              << "\n      zero_leaf=" << zero_leaf << " zero_seg=" << zero_seg
+                              << " zero_wr=" << zero_wr
+                              << " zeroVolLeaf=" << zero_vol_leaf << " zeroVolSeg=" << zero_vol_seg
+                              << " zeroVolWR=" << zero_vol_wr << std::endl;
+                } else {
+                    std::cout << "\n      [DIAG] min=" << diag_min << " max=" << diag_max
+                              << " zero=" << zero_diag << " n=" << 3*n_total
+                              << " nLeaf=" << n_leaf << " nSeg=" << n_seg
+                              << "\n      zero_leaf=" << zero_leaf << " zero_seg=" << zero_seg
+                              << " zeroVolLeaf=" << zero_vol_leaf << " zeroVolSeg=" << zero_vol_seg << std::endl;
+                }
                 if (zero_diag > 0 && zero_diag < 30) {
                     for (int rr = 0; rr < 3 * n_total; ++rr) {
                         if (std::abs(J.coeff(rr, rr)) < 1e-15) {
                             int ci = rr / 3;
                             int eq = rr % 3;
-                            double vol = (ci < n_leaf) ? leaves[ci].vol : (segments[ci - n_leaf].area * segments[ci - n_leaf].aperture);
-                            double phi = (ci < n_leaf) ? leaves[ci].phi : 1.0;
+                            double vol = enable_dual_porosity
+                                ? rawNodeVolume(ci)
+                                : ((ci < n_leaf) ? leaves[ci].vol : (segments[ci - n_leaf].area * segments[ci - n_leaf].aperture));
+                            double phi = enable_dual_porosity
+                                ? nodePhi(ci)
+                                : ((ci < n_leaf) ? leaves[ci].phi : 1.0);
+                            const char* node_type = enable_dual_porosity
+                                ? (isLeafNode(ci) ? "L" : (isSegmentNode(ci) ? "S" : (isWRMatrixNode(ci) ? "WRM" : "UNKNOWN")))
+                                : ((ci < n_leaf) ? "L" : "S");
                             std::cout << "        zero diag row=" << rr << " ci=" << ci
-                                      << " type=" << (ci < n_leaf ? "L" : "S") << " eq=" << eq
+                                      << " type=" << node_type << " eq=" << eq
                                       << " vol=" << vol << " phi=" << phi << std::endl;
                         }
                     }
@@ -3201,6 +3610,7 @@ public:
             if (solver.info() != Success) {
                 std::cout << " ILU分解失败!" << std::endl;
                 states = backup;
+                wr_matrix_states = wr_backup;
                 return false;
             }
 
@@ -3209,6 +3619,7 @@ public:
             if (solver.info() != Success) {
                 std::cout << " 求解失败! (迭代次数: " << solver.iterations() << ")" << std::endl;
                 states = backup;
+                wr_matrix_states = wr_backup;
                 return false;
             } else {
                 std::cout << "成功! (迭代次数: " << solver.iterations() << ", 误差: " << solver.error() << ")" << std::endl;
@@ -3274,6 +3685,7 @@ public:
         }
 
         states = backup;
+        wr_matrix_states = wr_backup;
         return false;
     }
 
@@ -3471,6 +3883,31 @@ public:
         return result;
     }
 
+    py::array_t<double> getDualPorosityPressureData() const {
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 11});
+        auto r = result.mutable_unchecked<2>();
+        for (int i = 0; i < n_leaf; ++i) {
+            const State& fracture_state = states[i];
+            const State* matrix_state = &states[i];
+            if (enable_dual_porosity && (int)wr_matrix_states.size() == n_leaf) {
+                matrix_state = &wr_matrix_states[i];
+            }
+
+            r(i, 0) = static_cast<double>(leaves[i].leaf_id);
+            r(i, 1) = static_cast<double>(leaves[i].parent_id);
+            r(i, 2) = leaves[i].center.x;
+            r(i, 3) = leaves[i].center.y;
+            r(i, 4) = leaves[i].center.z;
+            r(i, 5) = fracture_state.P;
+            r(i, 6) = fracture_state.Sw;
+            r(i, 7) = fracture_state.Sg;
+            r(i, 8) = matrix_state->P;
+            r(i, 9) = matrix_state->Sw;
+            r(i, 10) = matrix_state->Sg;
+        }
+        return result;
+    }
+
     py::array_t<double> getFractureVertices() const {
         py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(fractures.size()) * 4, 4});
         auto r = result.mutable_unchecked<2>();
@@ -3521,6 +3958,9 @@ public:
 
         SimulationResult result;
         result.pressure_field = getPressureData();
+        if (enable_dual_porosity) {
+            result.dual_porosity_pressure_field = getDualPorosityPressureData();
+        }
         result.fracture_vertices = getFractureVertices();
         return result;
     }
@@ -3560,6 +4000,7 @@ public:
 
             t += dt_try;
             states_prev = states;
+            if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
             tot_o += so; tot_w += sw; tot_g += sg;
             double avgP = 0.0;
             for (int i = 0; i < n_leaf; ++i) avgP += states[i].P;
@@ -3581,16 +4022,23 @@ public:
         file.close();
 
         std::ofstream field("final_field_lgr.csv");
-        field << "leaf_id,parent_id,x,y,z,P,Sw,Sg\n";
+        field << "leaf_id,parent_id,x,y,z,P,Sw,Sg";
+        if (enable_dual_porosity) field << ",P_matrix,Sw_matrix,Sg_matrix";
+        field << "\n";
         for (int i=0;i<n_leaf;++i) {
             field << i << "," << leaves[i].parent_id << ","
                   << leaves[i].center.x << "," << leaves[i].center.y << "," << leaves[i].center.z << ","
-                  << states[i].P << "," << states[i].Sw << "," << states[i].Sg << "\n";
+                  << states[i].P << "," << states[i].Sw << "," << states[i].Sg;
+            if (enable_dual_porosity && (int)wr_matrix_states.size() == n_leaf) {
+                field << "," << wr_matrix_states[i].P << "," << wr_matrix_states[i].Sw << "," << wr_matrix_states[i].Sg;
+            }
+            field << "\n";
         }
         field.close();
     }
 
     bool preprocess() {
+        if (enable_dual_porosity) validateDualPorosityParameters();
         buildGasPVTTable();
         if (!buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path)) return false;
         generateFractures(
@@ -3621,11 +4069,17 @@ public:
         buildParentFaceCoverage();
         buildLeafInterfaceFaces();
 
-        std::vector<Connection> mm, mf, ff;
+        std::vector<Connection> mm, mf, ff, wr_mf;
         buildMMConnections(mm);
         buildSegmentsAndMF(mf);
         buildFFConnections(ff);
-        buildAllConnections(mm, mf, ff);
+        if (enable_dual_porosity) {
+            buildDualPorosityTransferConnections(wr_mf);
+        } else {
+            n_wr_matrix = 0;
+            wr_transfer_T.clear();
+        }
+        buildAllConnections(mm, mf, ff, wr_mf);
 
         setupWells();
         initState();
@@ -3657,6 +4111,7 @@ int main() {
 PYBIND11_MODULE(edfm_core_corner_lgr, m) {
     py::class_<SimulationResult>(m, "SimulationResult")
         .def_readwrite("pressure_field", &SimulationResult::pressure_field)
+        .def_readwrite("dual_porosity_pressure_field", &SimulationResult::dual_porosity_pressure_field)
         .def_readwrite("temperature_field", &SimulationResult::temperature_field)
         .def_readwrite("stress_field", &SimulationResult::stress_field)
         .def_readwrite("fracture_vertices", &SimulationResult::fracture_vertices)
@@ -3681,8 +4136,22 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("setInitialStateParameters", &SimulatorLGR::setInitialStateParameters)
         .def("setSimulationParameters", &SimulatorLGR::setSimulationParameters)
         .def("setLGRParameters", &SimulatorLGR::setLGRParameters)
+        .def("setDualPorosityParameters", &SimulatorLGR::setDualPorosityParameters,
+             py::arg("enable_dual_porosity") = false,
+             py::arg("phi_matrix") = 0.04,
+             py::arg("phi_fracture") = 0.4,
+             py::arg("k_matrix_x") = 0.005,
+             py::arg("k_matrix_y") = 0.005,
+             py::arg("k_matrix_z") = 0.005,
+             py::arg("k_fracture_x") = 1.0,
+             py::arg("k_fracture_y") = 1.0,
+             py::arg("k_fracture_z") = 0.1,
+             py::arg("matrix_volume_fraction") = 0.98,
+             py::arg("fracture_volume_fraction") = 0.02,
+             py::arg("wr_shape_factor") = 0.12)
         .def("runSimulation", &SimulatorLGR::runSimulation)
         .def("getPressureData", &SimulatorLGR::getPressureData)
+        .def("getDualPorosityPressureData", &SimulatorLGR::getDualPorosityPressureData)
         .def("getFractureVertices", &SimulatorLGR::getFractureVertices)
         .def("getCellGeometryWithPressure", &SimulatorLGR::getCellGeometryWithPressure);
 }
