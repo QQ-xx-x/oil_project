@@ -10,41 +10,24 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CheckIPOSupported)
 
-set(EIGEN3_INCLUDE_DIR "" CACHE PATH "Path to Eigen3 include directory")
-if(NOT EIGEN3_INCLUDE_DIR)
-    find_path(EIGEN3_INCLUDE_DIR
-        NAMES Eigen/Core
-        PATHS
-            "D:/vtk/vcpkg/installed/x64-windows/include/eigen3"
-            "D:/eigen-3.4.0"
-            "D:/mingw64/eigen"
-            "D:/eigen-3.3.8"
-    )
-endif()
+# 添加Eigen
+# lxw
+# set(EIGEN3_INCLUDE_DIR "D:/eigen-3.3.8")
+# ypw
+# set(EIGEN3_INCLUDE_DIR "D:/mingw64/eigen")
+# wzq
+set(EIGEN3_INCLUDE_DIR "D:/vtk/vcpkg/installed/x64-windows/include/eigen3")
 
-if(NOT EIGEN3_INCLUDE_DIR)
-    message(FATAL_ERROR "Eigen3 headers not found. Set EIGEN3_INCLUDE_DIR to your Eigen include path.")
-endif()
+include_directories(${EIGEN3_INCLUDE_DIR})
 
-set(pybind11_DIR "" CACHE PATH "Path to pybind11 CMake config directory")
-if(NOT pybind11_DIR)
-    set(_PYBIND11_CANDIDATE_DIRS
-        "D:/pybind11_site/pybind11/share/cmake/pybind11"
-        "C:/Users/OpenCV_Demo/miniconda3/Lib/site-packages/pybind11/share/cmake/pybind11"
-        "D:/anaconda3/envs/transformers/Lib/site-packages/pybind11/share/cmake/pybind11"
-        "D:/Anaconda/envs/oil/Lib/site-packages/pybind11/share/cmake/pybind11"
-    )
-    foreach(_candidate IN LISTS _PYBIND11_CANDIDATE_DIRS)
-        if(EXISTS "${_candidate}")
-            set(pybind11_DIR "${_candidate}")
-            break()
-        endif()
-    endforeach()
-    unset(_candidate)
-    unset(_PYBIND11_CANDIDATE_DIRS)
-endif()
-
-find_package(pybind11 CONFIG REQUIRED)
+# pybind11
+# lxw
+# set(pybind11_DIR "D:/Anaconda/envs/oil/Lib/site-packages/pybind11/share/cmake/pybind11")
+# ypw
+# set(pybind11_DIR "D:/anaconda3/envs/transformers/Lib/site-packages/pybind11/share/cmake/pybind11")
+# wzq
+set(pybind11_DIR "D:/pybind11_site/pybind11/share/cmake/pybind11")
+find_package(pybind11 REQUIRED)
 
 pybind11_add_module(edfm_core
     src/lgr/edfm_3d_blackoil_lgr.cpp

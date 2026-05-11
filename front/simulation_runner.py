@@ -315,6 +315,27 @@ def run_corner_edfm_simulation(params):
             int(params.get('lgr_nry', 2)),
             int(params.get('lgr_nrz', 2)),
         )
+    if use_lgr_module and hasattr(sim, 'setDualPorosityParameters'):
+        enable_dp = bool(params.get('enable_dual_porosity', False))
+        if enable_dp:
+            print("Setting dual porosity parameters (Warren-Root)...", flush=True)
+        sim.setDualPorosityParameters(
+            enable_dp,
+            float(params.get('phi_matrix', 0.04)),
+            float(params.get('phi_fracture', 0.4)),
+            float(params.get('k_matrix_x', 0.005)),
+            float(params.get('k_matrix_y', 0.005)),
+            float(params.get('k_matrix_z', 0.005)),
+            float(params.get('k_fracture_x', 1.0)),
+            float(params.get('k_fracture_y', 1.0)),
+            float(params.get('k_fracture_z', 0.1)),
+            float(params.get('matrix_volume_fraction', 0.98)),
+            float(params.get('fracture_volume_fraction', 0.02)),
+            float(params.get('wr_shape_factor', 0.12)),
+        )
+    elif use_lgr_module and not hasattr(sim, 'setDualPorosityParameters'):
+        print("Note: loaded module does not expose setDualPorosityParameters; dual porosity skipped.", flush=True)
+
     sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
 
     result = sim.runSimulation()
@@ -348,6 +369,20 @@ def run_corner_edfm_simulation(params):
     sim_data.corner_lgr_grid_geometry = corner_lgr_grid_geometry
     sim_data.corner_lgr_parent_grid_geometry = corner_lgr_parent_grid_geometry
     sim_data.corner_lgr_refined_grid_geometry = corner_lgr_refined_grid_geometry
+
+    dual_porosity_pressure = None
+    if use_lgr_module and hasattr(sim, 'getDualPorosityPressureData'):
+        try:
+            dual_porosity_pressure = sim.getDualPorosityPressureData()
+            if dual_porosity_pressure is not None and hasattr(dual_porosity_pressure, '__len__'):
+                print(f"Got dual porosity pressure data: {len(dual_porosity_pressure)} entries", flush=True)
+            else:
+                print("Dual porosity pressure data is empty or None.", flush=True)
+        except Exception as e:
+            print(f"Warning: getDualPorosityPressureData failed: {e}", flush=True)
+    if dual_porosity_pressure is not None:
+        sim_data.dual_porosity_pressure_field = dual_porosity_pressure
+    sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
     
     # 插值由C++算法完成，不再在Python中做插值
     return sim_data

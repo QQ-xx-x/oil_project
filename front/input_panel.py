@@ -329,6 +329,98 @@ class MatrixPropertiesPanel(QWidget):
         }
 
 
+class DualPorosityPanel(QWidget):
+    """WR / Dual Porosity 参数面板 — 配合 MatrixPropertiesPanel 使用。
+
+    Matrix 侧参数 (phi_matrix, k_matrix_x/y/z) 由 MatrixPropertiesPanel 提供，
+    本面板只包含裂缝侧及 WR 形状因子参数。
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        group = QGroupBox("Dual Porosity (Warren-Root)")
+        group.setStyleSheet(groupbox_style())
+        grid = QGridLayout()
+
+        self.check_enable = QCheckBox("Enable Dual Porosity")
+        self.check_enable.setChecked(False)
+
+        self.spin_phi_fracture = create_double_spinbox(0.0, 1.0, 0.4, decimals=4)
+        self.spin_k_fx = create_double_spinbox(0.0, 1000000, 1.0, decimals=6)
+        self.spin_k_fy = create_double_spinbox(0.0, 1000000, 1.0, decimals=6)
+        self.spin_k_fz = create_double_spinbox(0.0, 1000000, 0.1, decimals=6)
+        self.spin_matrix_vol_frac = create_double_spinbox(0.0, 1.0, 0.98, decimals=4)
+        self.spin_fracture_vol_frac = create_double_spinbox(0.0, 1.0, 0.02, decimals=4)
+        self.spin_wr_shape_factor = create_double_spinbox(0.0, 1000.0, 0.12, decimals=4)
+
+        self.label_phi_fracture = QLabel("phi_fracture:")
+        self.label_k_fx = QLabel("K_fx (Darcy):")
+        self.label_k_fy = QLabel("K_fy (Darcy):")
+        self.label_k_fz = QLabel("K_fz (Darcy):")
+        self.label_matrix_vol_frac = QLabel("Matrix Vol Frac:")
+        self.label_fracture_vol_frac = QLabel("Fracture Vol Frac:")
+        self.label_wr_shape_factor = QLabel("WR Shape Factor:")
+
+        self.dual_porosity_widgets = [
+            self.label_phi_fracture,
+            self.spin_phi_fracture,
+            self.label_k_fx,
+            self.spin_k_fx,
+            self.label_k_fy,
+            self.spin_k_fy,
+            self.label_k_fz,
+            self.spin_k_fz,
+            self.label_matrix_vol_frac,
+            self.spin_matrix_vol_frac,
+            self.label_fracture_vol_frac,
+            self.spin_fracture_vol_frac,
+            self.label_wr_shape_factor,
+            self.spin_wr_shape_factor,
+        ]
+
+        grid.addWidget(self.check_enable, 0, 0, 1, 2)
+        grid.addWidget(self.label_phi_fracture, 1, 0)
+        grid.addWidget(self.spin_phi_fracture, 1, 1)
+        grid.addWidget(self.label_k_fx, 2, 0)
+        grid.addWidget(self.spin_k_fx, 2, 1)
+        grid.addWidget(self.label_k_fy, 3, 0)
+        grid.addWidget(self.spin_k_fy, 3, 1)
+        grid.addWidget(self.label_k_fz, 4, 0)
+        grid.addWidget(self.spin_k_fz, 4, 1)
+        grid.addWidget(self.label_matrix_vol_frac, 5, 0)
+        grid.addWidget(self.spin_matrix_vol_frac, 5, 1)
+        grid.addWidget(self.label_fracture_vol_frac, 6, 0)
+        grid.addWidget(self.spin_fracture_vol_frac, 6, 1)
+        grid.addWidget(self.label_wr_shape_factor, 7, 0)
+        grid.addWidget(self.spin_wr_shape_factor, 7, 1)
+
+        group.setLayout(grid)
+        layout.addWidget(group)
+        self.check_enable.toggled.connect(self.set_dual_porosity_controls_enabled)
+        self.set_dual_porosity_controls_enabled(self.check_enable.isChecked())
+
+    def set_dual_porosity_controls_enabled(self, enabled):
+        for widget in self.dual_porosity_widgets:
+            widget.setEnabled(enabled)
+
+    def get_values(self):
+        return {
+            'enable_dual_porosity': self.check_enable.isChecked(),
+            'phi_fracture': self.spin_phi_fracture.value(),
+            'k_fracture_x': self.spin_k_fx.value(),
+            'k_fracture_y': self.spin_k_fy.value(),
+            'k_fracture_z': self.spin_k_fz.value(),
+            'matrix_volume_fraction': self.spin_matrix_vol_frac.value(),
+            'fracture_volume_fraction': self.spin_fracture_vol_frac.value(),
+            'wr_shape_factor': self.spin_wr_shape_factor.value(),
+        }
+
+
 class OilWaterPropertiesPanel(QWidget):
     """油水相基础参数面板 - Corner Grid FluidProps 页使用"""
     def __init__(self, parent=None, prefix=""):

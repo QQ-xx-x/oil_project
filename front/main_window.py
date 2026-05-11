@@ -23,7 +23,7 @@ from .data_models import SimulationData, CornerPointCell, CornerPointGridData
 from .input_panel import (
     MatrixPropertiesPanel, OilWaterPropertiesPanel, GasRealPVTPanel,
     InitialStatePanel, NaturalFracturesPanel, HydraulicFracturesPanel, WellParametersPanel,
-    SimulationControlPanel, groupbox_style
+    SimulationControlPanel, DualPorosityPanel, groupbox_style
 )
 from .pvt_plot import PVTPlotWidget
 from .grdecl_parser import convert_grdecl_to_temp_csv
@@ -1519,6 +1519,9 @@ class MainWindow(QMainWindow):
         self.corner_matrix_panel = MatrixPropertiesPanel()
         layout.addWidget(self.corner_matrix_panel)
 
+        self.corner_dual_porosity_panel = DualPorosityPanel()
+        layout.addWidget(self.corner_dual_porosity_panel)
+
         self.corner_sim_control_panel = SimulationControlPanel()
         layout.addWidget(self.corner_sim_control_panel)
 
@@ -1648,7 +1651,31 @@ class MainWindow(QMainWindow):
 
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
-        
+
+        # --- 压力场显示模式切换 ---
+        self.corner_pressure_mode_label = QLabel("Pressure Display Mode:")
+        self.corner_pressure_mode_label.setStyleSheet("color: #cccccc;")
+        layout.addWidget(self.corner_pressure_mode_label)
+
+        self.corner_pressure_mode_combo = QComboBox()
+        self.corner_pressure_mode_combo.addItems([
+            "Fracture / Leaf Pressure",
+            "Matrix Pressure (WR)",
+        ])
+        self.corner_pressure_mode_combo.setStyleSheet(
+            "color: #cccccc; background-color: #3d3d3d;"
+        )
+        self.corner_pressure_mode_combo.setCurrentIndex(0)
+        self.corner_pressure_mode_combo.currentIndexChanged.connect(
+            self._on_corner_pressure_mode_changed
+        )
+        layout.addWidget(self.corner_pressure_mode_combo)
+
+        self.corner_pressure_mode_status = QLabel("")
+        self.corner_pressure_mode_status.setStyleSheet("color: #888888; font-size: 10px;")
+        self.corner_pressure_mode_status.setWordWrap(True)
+        layout.addWidget(self.corner_pressure_mode_status)
+
         layout.addStretch()
         return page
 
@@ -1908,6 +1935,91 @@ class MainWindow(QMainWindow):
         """切换LGR网格显示"""
         if hasattr(self.vtk_renderer, 'toggle_corner_lgr_grid_visibility'):
             self.vtk_renderer.toggle_corner_lgr_grid_visibility(state == Qt.Checked)
+
+    def _on_corner_pressure_mode_changed(self, index):
+        """Corner 压力场显示模式切换回调。
+
+        0 → Fracture / Leaf Pressure (现有路径)
+        1 → Matrix Pressure (WR)
+        """
+        if index == 1:
+            self._apply_dual_porosity_pressure_mode()
+        else:
+            self._apply_leaf_pressure_mode()
+
+    def _update_corner_pressure_mode_status(self):
+        """根据当前 sim_data 更新压力场模式状态标签文字。"""
+        if not hasattr(self, 'corner_pressure_mode_status'):
+            return
+        dp_field = getattr(self.sim_data, 'dual_porosity_pressure_field', None)
+        has_dp = getattr(self.sim_data, 'has_dual_porosity', False)
+        dp_len = len(dp_field) if dp_field is not None and hasattr(dp_field, '__len__') else 0
+        if has_dp and dp_len > 0:
+            self.corner_pressure_mode_status.setText(
+                f"WR data available ({dp_len} entries). Select mode above."
+            )
+            self.corner_pressure_mode_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+        elif has_dp:
+            self.corner_pressure_mode_status.setText(
+                "WR was enabled but no matrix pressure data was generated."
+            )
+            self.corner_pressure_mode_status.setStyleSheet("color: #FF9800; font-size: 10px;")
+        else:
+            self.corner_pressure_mode_status.setText("")
+
+    def _apply_leaf_pressure_mode(self):
+        """切回 Fracture / Leaf 压力场模式。"""
+        self.corner_pressure_mode_status.setText("")
+        if self.sim_data is None:
+            return
+        cell_geometry = self.sim_data.cell_geometry_with_pressure
+        if cell_geometry is None or (hasattr(cell_geometry, '__len__') and len(cell_geometry) == 0):
+            return
+        try:
+            self.vtk_renderer.render_corner_pressure_field(self.sim_data)
+        except Exception as e:
+            self.append_sim_status(f"Leaf pressure render failed: {e}")
+
+    def _apply_dual_porosity_pressure_mode(self):
+        """切换到 Matrix Pressure (WR) 模式。"""
+        dp_field = getattr(self.sim_data, 'dual_porosity_pressure_field', None)
+        if dp_field is None or (hasattr(dp_field, '__len__') and len(dp_field) == 0):
+            self.corner_pressure_mode_status.setText(
+                "Matrix Pressure (WR) data is unavailable. Please enable Dual Porosity "
+                "in Grid settings and re-run the simulation."
+            )
+            self.corner_pressure_mode_status.setStyleSheet("color: #FF9800; font-size: 10px;")
+            self.status_bar.showMessage("WR matrix pressure data not available")
+            return
+
+        has_dp = getattr(self.sim_data, 'has_dual_porosity', False)
+        if not has_dp:
+            self.corner_pressure_mode_status.setText(
+                "Dual Porosity was not enabled for this simulation. "
+                "Switch to Fracture / Leaf Pressure or re-run with WR enabled."
+            )
+            self.corner_pressure_mode_status.setStyleSheet("color: #FF9800; font-size: 10px;")
+            self.status_bar.showMessage("WR was not enabled in this simulation")
+            return
+
+        # 有 WR 数据且确认启用 WR — 尝试复用现有渲染路径
+        dp_len = len(dp_field) if hasattr(dp_field, '__len__') else 0
+        self.corner_pressure_mode_status.setText(
+            f"Matrix Pressure (WR): {dp_len} entries loaded. "
+            "Full WR visualization requires renderer support (see status log)."
+        )
+        self.corner_pressure_mode_status.setStyleSheet("color: #4CAF50; font-size: 10px;")
+        self.append_sim_status(
+            f"WR Matrix Pressure mode: {dp_len} entries available. "
+            "Renderer showing leaf pressure — dedicated WR mesh render pending."
+        )
+        self.status_bar.showMessage(f"Matrix Pressure (WR): {dp_len} entries")
+        # 再切回 0 模式时不意外跳过；当前仍用 cell_geometry 渲染 leaf pressure
+        try:
+            if self.sim_data.cell_geometry_with_pressure is not None:
+                self.vtk_renderer.render_corner_pressure_field(self.sim_data)
+        except Exception:
+            pass
 
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
                                   check_show_grid, check_show_fractures):
@@ -2477,6 +2589,8 @@ class MainWindow(QMainWindow):
         initial_state_params = self.corner_initial_state_panel.get_values()
         oil_water_params = self.corner_oil_water_panel.get_values()
         gas_pvt_params = self.corner_gas_pvt_panel.get_values()
+        matrix_params = self.corner_matrix_panel.get_values()
+        dual_porosity_params = self.corner_dual_porosity_panel.get_values()
 
         initial_sw = float(initial_state_params['initial_sw'])
         initial_sg = float(initial_state_params['initial_sg'])
@@ -2556,6 +2670,22 @@ class MainWindow(QMainWindow):
         self.append_sim_status(
             f"Gas table: Pmin={gas_table_pmin} bar, Pmax={gas_table_pmax} bar, n={gas_table_n}"
         )
+        self.append_sim_status(
+            f"Matrix props: phi={matrix_params['porosity']}, "
+            f"K=({matrix_params['perm_x']}, {matrix_params['perm_y']}, {matrix_params['perm_z']}) Dar"
+        )
+        if dual_porosity_params['enable_dual_porosity']:
+            self.append_sim_status(
+                f"Dual Porosity: phi_f={dual_porosity_params['phi_fracture']}, "
+                f"K_f=({dual_porosity_params['k_fracture_x']}, {dual_porosity_params['k_fracture_y']}, {dual_porosity_params['k_fracture_z']}) Dar, "
+                f"shape_factor={dual_porosity_params['wr_shape_factor']}"
+            )
+            self.append_sim_status(
+                f"  Vol frac: matrix={dual_porosity_params['matrix_volume_fraction']}, "
+                f"fracture={dual_porosity_params['fracture_volume_fraction']}"
+            )
+        else:
+            self.append_sim_status("Dual Porosity: disabled")
         
         rel_well_x = well_params['x'] - origin_x
         rel_well_y = well_params['y'] - origin_y
@@ -2621,6 +2751,18 @@ class MainWindow(QMainWindow):
             'gas_table_Pmax_bar': gas_pvt_params['gas_table_Pmax_bar'],
             'gas_table_n': gas_pvt_params['gas_table_n'],
             'simulation_time': sim_params['simulation_time'],
+            'phi_matrix': matrix_params['porosity'],
+            'k_matrix_x': matrix_params['perm_x'],
+            'k_matrix_y': matrix_params['perm_y'],
+            'k_matrix_z': matrix_params['perm_z'],
+            'enable_dual_porosity': dual_porosity_params['enable_dual_porosity'],
+            'phi_fracture': dual_porosity_params['phi_fracture'],
+            'k_fracture_x': dual_porosity_params['k_fracture_x'],
+            'k_fracture_y': dual_porosity_params['k_fracture_y'],
+            'k_fracture_z': dual_porosity_params['k_fracture_z'],
+            'matrix_volume_fraction': dual_porosity_params['matrix_volume_fraction'],
+            'fracture_volume_fraction': dual_porosity_params['fracture_volume_fraction'],
+            'wr_shape_factor': dual_porosity_params['wr_shape_factor'],
         }
         
         # 如果是加密模式，添加LGR参数
@@ -2643,6 +2785,10 @@ class MainWindow(QMainWindow):
         self.append_sim_status(f"sg: {params.get('sg')}")
         self.append_sim_status(f"mu_w: {params.get('mu_w')}, mu_o: {params.get('mu_o')}")
         self.append_sim_status(f"Swi/Sor/Sgc: {params.get('swi')}/{params.get('sor')}/{params.get('sgc')}")
+        self.append_sim_status(f"Matrix: phi={params.get('phi_matrix')}, K=({params.get('k_matrix_x')}, {params.get('k_matrix_y')}, {params.get('k_matrix_z')})")
+        if params.get('enable_dual_porosity'):
+            self.append_sim_status(f"Dual porosity: enabled, phi_f={params.get('phi_fracture')}, K_f=({params.get('k_fracture_x')}, {params.get('k_fracture_y')}, {params.get('k_fracture_z')})")
+            self.append_sim_status(f"  Vol frac: m={params.get('matrix_volume_fraction')}, f={params.get('fracture_volume_fraction')}, shape_factor={params.get('wr_shape_factor')}")
         self.append_sim_status(
             f"gas_t_C: {params.get('gas_t_C')}, gas_Pc_bar: {params.get('gas_Pc_bar')}, "
             f"gas_table_n: {params.get('gas_table_n')}"
@@ -2703,6 +2849,8 @@ class MainWindow(QMainWindow):
             self.sim_data.corner_lgr_grid_geometry = sim_data.corner_lgr_grid_geometry
             self.sim_data.corner_lgr_parent_grid_geometry = sim_data.corner_lgr_parent_grid_geometry
             self.sim_data.corner_lgr_refined_grid_geometry = sim_data.corner_lgr_refined_grid_geometry
+            self.sim_data.dual_porosity_pressure_field = sim_data.dual_porosity_pressure_field
+            self.sim_data.has_dual_porosity = sim_data.has_dual_porosity
             # 只在corner_point_grid不存在时才设置
             if self.sim_data.corner_point_grid is None:
                 self.sim_data.corner_point_grid = sim_data.corner_point_grid
@@ -2745,6 +2893,15 @@ class MainWindow(QMainWindow):
             self.append_sim_status(f"Pressure field points: {len(self.sim_data.pressure_field)}")
             self.append_sim_status(f"Fractures: {len(self.sim_data.fractures)}")
             self.append_sim_status(f"Wells: {len(self.sim_data.wells)}")
+            dp_field = self.sim_data.dual_porosity_pressure_field
+            dp_len = len(dp_field) if dp_field is not None and hasattr(dp_field, '__len__') else 0
+            dp_enabled = self.sim_data.has_dual_porosity
+            if dp_enabled:
+                self.append_sim_status(
+                    f"Dual Porosity (WR): enabled, matrix pressure entries = {dp_len}"
+                )
+            else:
+                self.append_sim_status("Dual Porosity (WR): disabled")
             self.append_sim_status("")
             self.append_sim_status("=" * 50)
             self.append_sim_status("  Simulation Completed Successfully!")
@@ -2762,6 +2919,13 @@ class MainWindow(QMainWindow):
             
             self.update_corner_grid_statistics()
             self.clear_corner_selection_overlay(clear_params=False)
+
+            # 重置压力场显示模式到默认 (Fracture / Leaf Pressure)
+            if hasattr(self, 'corner_pressure_mode_combo'):
+                self.corner_pressure_mode_combo.blockSignals(True)
+                self.corner_pressure_mode_combo.setCurrentIndex(0)
+                self.corner_pressure_mode_combo.blockSignals(False)
+                self._update_corner_pressure_mode_status()
             
             # 默认显示裂缝，网格和压力场变透明
             if hasattr(self, 'check_show_fractures_corner') and self.check_show_fractures_corner.isChecked():

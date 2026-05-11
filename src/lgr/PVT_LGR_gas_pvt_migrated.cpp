@@ -1399,6 +1399,93 @@ public:
         well_pressure = pressure;
     }
 
+    void setOilWaterProperties(double mu_w,
+                               double mu_o,
+                               double cw,
+                               double co,
+                               double p_ref,
+                               double swi,
+                               double sor,
+                               double sgc,
+                               double mu_g = 0.2,
+                               double cg = 1e-3) {
+        if (!(std::isfinite(mu_w) && mu_w > 0.0))
+            throw std::invalid_argument("mu_w must be a finite positive value.");
+        if (!(std::isfinite(mu_o) && mu_o > 0.0))
+            throw std::invalid_argument("mu_o must be a finite positive value.");
+        if (!(std::isfinite(mu_g) && mu_g > 0.0))
+            throw std::invalid_argument("mu_g must be a finite positive value.");
+        if (!(std::isfinite(cw) && cw >= 0.0))
+            throw std::invalid_argument("cw must be finite and non-negative.");
+        if (!(std::isfinite(co) && co >= 0.0))
+            throw std::invalid_argument("co must be finite and non-negative.");
+        if (!(std::isfinite(cg) && cg >= 0.0))
+            throw std::invalid_argument("cg must be finite and non-negative.");
+        if (!std::isfinite(p_ref))
+            throw std::invalid_argument("p_ref must be finite.");
+        if (!(std::isfinite(swi) && swi >= 0.0 && swi <= 1.0))
+            throw std::invalid_argument("Swi must lie in [0, 1].");
+        if (!(std::isfinite(sor) && sor >= 0.0 && sor <= 1.0))
+            throw std::invalid_argument("Sor must lie in [0, 1].");
+        if (!(std::isfinite(sgc) && sgc >= 0.0 && sgc <= 1.0))
+            throw std::invalid_argument("Sgc must lie in [0, 1].");
+        if (swi + sor >= 1.0)
+            throw std::invalid_argument("Swi + Sor must be smaller than 1.");
+        if (sgc + swi + sor >= 1.0)
+            throw std::invalid_argument("Sgc + Swi + Sor must be smaller than 1.");
+
+        g_props.mu_w = mu_w;
+        g_props.mu_o = mu_o;
+        g_props.mu_g = mu_g;
+        g_props.cw = cw;
+        g_props.co = co;
+        g_props.cg = cg;
+        g_props.P_ref = p_ref;
+        g_props.Swi = swi;
+        g_props.Sor = sor;
+        g_props.Sgc = sgc;
+    }
+
+    void setGasPVTParameters(double gas_t_C,
+                             double gas_Mg,
+                             double gas_Tc,
+                             double gas_Pc_bar,
+                             double gas_table_Pmin_bar,
+                             double gas_table_Pmax_bar,
+                             int gas_table_n,
+                             double gas_Psc_bar = 1.01325) {
+        if (!std::isfinite(gas_t_C))
+            throw std::invalid_argument("gas_t_C must be finite.");
+        const double gas_T_K = gas_t_C + 273.15;
+        if (!(std::isfinite(gas_T_K) && gas_T_K > 0.0))
+            throw std::invalid_argument("gas_t_C results in a non-physical absolute temperature.");
+        if (!(std::isfinite(gas_Mg) && gas_Mg > 0.0))
+            throw std::invalid_argument("gas_Mg must be a finite positive value.");
+        if (!(std::isfinite(gas_Tc) && gas_Tc > 0.0))
+            throw std::invalid_argument("gas_Tc must be a finite positive value.");
+        if (!(std::isfinite(gas_Pc_bar) && gas_Pc_bar > 0.0))
+            throw std::invalid_argument("gas_Pc_bar must be a finite positive value.");
+        if (!(std::isfinite(gas_Psc_bar) && gas_Psc_bar > 0.0))
+            throw std::invalid_argument("gas_Psc_bar must be a finite positive value.");
+        if (!(std::isfinite(gas_table_Pmin_bar) && std::isfinite(gas_table_Pmax_bar)))
+            throw std::invalid_argument("Gas table pressure limits must be finite.");
+        if (!(gas_table_Pmin_bar > 0.0 && gas_table_Pmax_bar > gas_table_Pmin_bar))
+            throw std::invalid_argument("Require 0 < gas_table_Pmin_bar < gas_table_Pmax_bar.");
+        if (gas_table_n < 2)
+            throw std::invalid_argument("gas_table_n must be at least 2.");
+
+        g_props.gas_t_C = gas_t_C;
+        g_props.gas_T_K = gas_T_K;
+        g_props.gas_Mg = gas_Mg;
+        g_props.gas_Tc = gas_Tc;
+        g_props.gas_Pc_bar = gas_Pc_bar;
+        g_props.gas_Psc_bar = gas_Psc_bar;
+        g_props.gas_table_Pmin_bar = gas_table_Pmin_bar;
+        g_props.gas_table_Pmax_bar = gas_table_Pmax_bar;
+        g_props.gas_table_n = gas_table_n;
+        invalidateGasPVTTable();
+    }
+
     void setInitialStateParameters(double pressure, double sw, double sg) {
         initial_pressure = pressure;
         initial_sw = sw;
@@ -1780,6 +1867,15 @@ public:
                  << gas_pvt_table.Bg[i] << ","
                  << gas_pvt_table.mu_g[i] << "\n";
         }
+    }
+
+    void invalidateGasPVTTable() {
+        gas_pvt_table.P_bar.clear();
+        gas_pvt_table.Z.clear();
+        gas_pvt_table.Cg.clear();
+        gas_pvt_table.Bg.clear();
+        gas_pvt_table.mu_g.clear();
+        gas_pvt_table.ready = false;
     }
 
     void buildGasPVTTable() {
@@ -3943,6 +4039,69 @@ public:
         return result;
     }
 
+    py::array_t<double> getLGRGridGeometry() const {
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 24});
+        auto r = result.mutable_unchecked<2>();
+        for (int i = 0; i < n_leaf; ++i) {
+            const auto& c = leaves[i];
+            for (int j = 0; j < 8; ++j) {
+                r(i, j*3 + 0) = c.corners[j].x;
+                r(i, j*3 + 1) = c.corners[j].y;
+                r(i, j*3 + 2) = c.corners[j].z;
+            }
+        }
+        return result;
+    }
+
+    py::array_t<double> getParentGridGeometry() const {
+        int n_parent_cells = 0;
+        for (const auto& p : parents) {
+            if (!p.refined) n_parent_cells++;
+        }
+
+        py::array_t<double> result(std::vector<py::ssize_t>{n_parent_cells, 24});
+        auto r = result.mutable_unchecked<2>();
+        int idx = 0;
+        for (const auto& p : parents) {
+            if (p.refined) continue;
+            for (int j = 0; j < 8; ++j) {
+                r(idx, j*3 + 0) = p.corners[j].x;
+                r(idx, j*3 + 1) = p.corners[j].y;
+                r(idx, j*3 + 2) = p.corners[j].z;
+            }
+            idx++;
+        }
+        return result;
+    }
+
+    py::array_t<double> getRefinedGridGeometry() const {
+        int n_refined_cells = 0;
+        for (const auto& p : parents) {
+            if (p.refined) {
+                n_refined_cells += p.Nrx * p.Nry * p.Nrz;
+            }
+        }
+
+        py::array_t<double> result(std::vector<py::ssize_t>{n_refined_cells, 24});
+        auto r = result.mutable_unchecked<2>();
+        int idx = 0;
+        for (const auto& p : parents) {
+            if (!p.refined) continue;
+            int nsub = p.Nrx * p.Nry * p.Nrz;
+            for (int off = 0; off < nsub; ++off) {
+                int lid = p.leaf_base + off;
+                const auto& c = leaves[lid];
+                for (int j = 0; j < 8; ++j) {
+                    r(idx, j*3 + 0) = c.corners[j].x;
+                    r(idx, j*3 + 1) = c.corners[j].y;
+                    r(idx, j*3 + 2) = c.corners[j].z;
+                }
+                idx++;
+            }
+        }
+        return result;
+    }
+
     SimulationResult runSimulation() {
         if (coord_file_path.empty() || zcorn_file_path.empty()) {
             throw std::runtime_error("Corner-point input files are not set. Call setCornerPointFiles(coord, zcorn) first.");
@@ -4149,9 +4308,32 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("matrix_volume_fraction") = 0.98,
              py::arg("fracture_volume_fraction") = 0.02,
              py::arg("wr_shape_factor") = 0.12)
+        .def("setOilWaterProperties", &SimulatorLGR::setOilWaterProperties,
+             py::arg("mu_w"),
+             py::arg("mu_o"),
+             py::arg("cw"),
+             py::arg("co"),
+             py::arg("p_ref"),
+             py::arg("swi"),
+             py::arg("sor"),
+             py::arg("sgc"),
+             py::arg("mu_g") = 0.2,
+             py::arg("cg") = 1e-3)
+        .def("setGasPVTParameters", &SimulatorLGR::setGasPVTParameters,
+             py::arg("gas_t_C"),
+             py::arg("gas_Mg"),
+             py::arg("gas_Tc"),
+             py::arg("gas_Pc_bar"),
+             py::arg("gas_table_Pmin_bar"),
+             py::arg("gas_table_Pmax_bar"),
+             py::arg("gas_table_n"),
+             py::arg("gas_Psc_bar") = 1.01325)
         .def("runSimulation", &SimulatorLGR::runSimulation)
         .def("getPressureData", &SimulatorLGR::getPressureData)
         .def("getDualPorosityPressureData", &SimulatorLGR::getDualPorosityPressureData)
         .def("getFractureVertices", &SimulatorLGR::getFractureVertices)
-        .def("getCellGeometryWithPressure", &SimulatorLGR::getCellGeometryWithPressure);
+        .def("getCellGeometryWithPressure", &SimulatorLGR::getCellGeometryWithPressure)
+        .def("getLGRGridGeometry", &SimulatorLGR::getLGRGridGeometry)
+        .def("getParentGridGeometry", &SimulatorLGR::getParentGridGeometry)
+        .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry);
 }

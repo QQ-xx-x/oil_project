@@ -148,11 +148,16 @@ class SimulationData:
         self.corner_lgr_grid_geometry = None  # Corner Point Grid LGR加密网格几何数据
         self.corner_lgr_parent_grid_geometry = None  # 父网格几何（未加密）
         self.corner_lgr_refined_grid_geometry = None  # 加密后的子网格几何
-        
+        self.dual_porosity_pressure_field = None      # WR dual porosity 压力场
+        self.has_dual_porosity = False                # 本次模拟是否启用了 WR
+
     def generate_from_cpp(self, sim_result, nx, ny, nz, lx, ly, lz, grid_lines=None, interpolated_pressure=None):
         """从C++结果生成数据"""
         self.grid_info = {'nx': nx, 'ny': ny, 'nz': nz, 'Lx': lx, 'Ly': ly, 'Lz': lz}
         self.pressure_field = _safe_to_list(getattr(sim_result, 'pressure_field', []))
+        self.dual_porosity_pressure_field = _safe_to_list(
+            getattr(sim_result, 'dual_porosity_pressure_field', None)
+        )
         self.temperature_field = _safe_to_list(getattr(sim_result, 'temperature_field', None))
         self.stress_field = _safe_to_list(getattr(sim_result, 'stress_field', None))
         self.grid_lines = _safe_to_list(grid_lines)
@@ -240,7 +245,11 @@ class SimulationData:
         refined_geom_list = None
         if self.corner_lgr_refined_grid_geometry is not None and isinstance(self.corner_lgr_refined_grid_geometry, np.ndarray):
             refined_geom_list = self.corner_lgr_refined_grid_geometry.tolist()
-        
+
+        dual_poro_list = None
+        if self.dual_porosity_pressure_field is not None:
+            dual_poro_list = [list(point) for point in self.dual_porosity_pressure_field]
+
         return {
             'grid_info': dict(self.grid_info),
             'pressure_field': [list(point) for point in self.pressure_field],
@@ -261,6 +270,8 @@ class SimulationData:
             'corner_lgr_grid_geometry': lgr_geom_list,
             'corner_lgr_parent_grid_geometry': parent_geom_list,
             'corner_lgr_refined_grid_geometry': refined_geom_list,
+            'dual_porosity_pressure_field': dual_poro_list,
+            'has_dual_porosity': self.has_dual_porosity,
         }
 
     def load_dict(self, payload):
@@ -312,6 +323,14 @@ class SimulationData:
             self.corner_lgr_refined_grid_geometry = np.array(refined_geom_list, dtype=np.float64)
         else:
             self.corner_lgr_refined_grid_geometry = None
+
+        dual_poro_list = payload.get('dual_porosity_pressure_field')
+        if dual_poro_list is not None:
+            self.dual_porosity_pressure_field = np.array(dual_poro_list, dtype=np.float64)
+        else:
+            self.dual_porosity_pressure_field = None
+
+        self.has_dual_porosity = bool(payload.get('has_dual_porosity', False))
 
     def save_json(self, output_path):
         """将模拟结果写入JSON文件。"""
