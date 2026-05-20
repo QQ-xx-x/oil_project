@@ -651,6 +651,7 @@ class HydraulicFracturesPanel(QWidget):
         grid = QGridLayout()
         
         self.spin_num_stages = create_spinbox(1, 50, 20)
+        self.spin_spacing_x = create_double_spinbox(0.0, 100000.0, 31.58, decimals=2)
         self.spin_half_len = create_double_spinbox(0.0, 10000.0, 120.0, decimals=2)
         self.spin_height = create_double_spinbox(0.0, 1000.0, 30.0, decimals=2)
         self.spin_aperture = create_double_spinbox(0.0, 10.0, 0.1, decimals=4)
@@ -660,25 +661,28 @@ class HydraulicFracturesPanel(QWidget):
         self.label_hint.setWordWrap(True)
         self.hydraulic_inputs = [
             self.spin_num_stages,
+            self.spin_spacing_x,
             self.spin_half_len,
             self.spin_height,
             self.spin_aperture,
             self.spin_perm,
             self.spin_conductivity,
         ]
-        
+
         grid.addWidget(QLabel("压裂段数:"), 0, 0)
         grid.addWidget(self.spin_num_stages, 0, 1)
-        grid.addWidget(QLabel("半缝长 (m):"), 1, 0)
-        grid.addWidget(self.spin_half_len, 1, 1)
-        grid.addWidget(QLabel("缝高 (m):"), 2, 0)
-        grid.addWidget(self.spin_height, 2, 1)
-        grid.addWidget(QLabel("Aperture (m):"), 3, 0)
-        grid.addWidget(self.spin_aperture, 3, 1)
-        grid.addWidget(QLabel("Permeability (D):"), 4, 0)
-        grid.addWidget(self.spin_perm, 4, 1)
-        grid.addWidget(QLabel("Conductivity (D·m):"), 5, 0)
-        grid.addWidget(self.spin_conductivity, 5, 1)
+        grid.addWidget(QLabel("裂缝间距 Fracture Spacing (m):"), 1, 0)
+        grid.addWidget(self.spin_spacing_x, 1, 1)
+        grid.addWidget(QLabel("半缝长 (m):"), 2, 0)
+        grid.addWidget(self.spin_half_len, 2, 1)
+        grid.addWidget(QLabel("缝高 (m):"), 3, 0)
+        grid.addWidget(self.spin_height, 3, 1)
+        grid.addWidget(QLabel("Aperture (m):"), 4, 0)
+        grid.addWidget(self.spin_aperture, 4, 1)
+        grid.addWidget(QLabel("Permeability (D):"), 5, 0)
+        grid.addWidget(self.spin_perm, 5, 1)
+        grid.addWidget(QLabel("Conductivity (D·m):"), 6, 0)
+        grid.addWidget(self.spin_conductivity, 6, 1)
         
         group.setLayout(grid)
         self.hydraulic_group = group
@@ -710,6 +714,7 @@ class HydraulicFracturesPanel(QWidget):
     def get_values(self):
         return {
             'num_stages': self.spin_num_stages.value(),
+            'spacing_x': self.spin_spacing_x.value(),
             'half_len': self.spin_half_len.value(),
             'height': self.spin_height.value(),
             'aperture': self.spin_aperture.value(),

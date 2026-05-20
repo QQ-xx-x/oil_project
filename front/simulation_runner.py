@@ -284,9 +284,11 @@ def run_corner_edfm_simulation(params):
         float(params.get('aperture', 0.1)),
         float(params.get('frac_perm', 100.0)),
     )
+    hf_count = int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0
+    hf_spacing = float(params.get('hf_spacing_x', 0.0))
     sim.setHydraulicFractureParameters(
-        int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0,
-        float(params.get('hf_well_length', 600.0)),
+        hf_count,
+        hf_spacing,
         float(params.get('hf_length', 120.0)),
         float(params.get('hf_height', 30.0)),
         float(params.get('hf_aperture', 0.1)),

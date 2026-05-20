@@ -4,6 +4,7 @@
 """
 import sys
 import os
+import subprocess
 import json
 import math
 import re
@@ -1022,7 +1023,7 @@ class MainWindow(QMainWindow):
         self.basic_check_enable_hf = QCheckBox("启用人工裂缝")
         self.basic_check_enable_hf.setChecked(True)
         self.basic_spin_hf_count = self.create_spinbox(0, 200, 20)
-        self.basic_spin_hf_well_length = self.create_double_spinbox(0.0, 100000.0, 2000.0, decimals=2)
+        self.basic_spin_hf_spacing_x = self.create_double_spinbox(0.0, 100000.0, 31.58, decimals=2)
         self.basic_spin_hf_length = self.create_double_spinbox(0.0, 100000.0, 120.0, decimals=2)
         self.basic_spin_hf_height = self.create_double_spinbox(0.0, 100000.0, 40.0, decimals=2)
         self.basic_spin_hf_aperture = self.create_double_spinbox(0.0, 10.0, 0.01, decimals=4)
@@ -1037,8 +1038,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.basic_check_enable_hf, 0, 0, 1, 2)
         layout.addWidget(QLabel("裂缝数量:"), 1, 0)
         layout.addWidget(self.basic_spin_hf_count, 1, 1)
-        layout.addWidget(QLabel("Well Length (m):"), 2, 0)
-        layout.addWidget(self.basic_spin_hf_well_length, 2, 1)
+        layout.addWidget(QLabel("裂缝间距 Fracture Spacing (m):"), 2, 0)
+        layout.addWidget(self.basic_spin_hf_spacing_x, 2, 1)
         layout.addWidget(QLabel("裂缝长度 (m):"), 3, 0)
         layout.addWidget(self.basic_spin_hf_length, 3, 1)
         layout.addWidget(QLabel("裂缝高度 (m):"), 4, 0)
@@ -1080,8 +1081,7 @@ class MainWindow(QMainWindow):
         return self.wrap_in_scroll_area(content)
 
     def collect_unrefined_wells_params(self):
-        hf_count = self.basic_spin_hf_count.value()
-        hf_well_length = self.basic_spin_hf_well_length.value()
+        hf_spacing_x = self.basic_spin_hf_spacing_x.value()
         return {
             'well_x': self.basic_spin_well_x.value(),
             'well_y': self.basic_spin_well_y.value(),
@@ -1089,12 +1089,11 @@ class MainWindow(QMainWindow):
             'well_pressure': self.basic_spin_well_pressure.value(),
             'well_radius': self.basic_spin_well_radius.value(),
             'hf_enabled': self.basic_check_enable_hf.isChecked(),
-            'hf_count': hf_count,
-            'hf_well_length': hf_well_length,
+            'hf_count': self.basic_spin_hf_count.value(),
+            'hf_spacing_x': hf_spacing_x,
             'hf_center_x': self.basic_spin_hf_center_x.value(),
             'hf_center_y': self.basic_spin_hf_center_y.value(),
             'hf_center_z': self.basic_spin_hf_center_z.value(),
-            'hf_spacing_x': (hf_well_length / (hf_count - 1)) if hf_count > 1 else 0.0,
             'hf_length': self.basic_spin_hf_length.value(),
             'hf_height': self.basic_spin_hf_height.value(),
             'hf_aperture': self.basic_spin_hf_aperture.value(),
@@ -1110,7 +1109,6 @@ class MainWindow(QMainWindow):
             'well_radius': self.refined_spin_well_radius.value(),
             'hf_enabled': False,
             'hf_count': 0,
-            'hf_well_length': 0.0,
             'hf_center_x': self.refined_spin_well_x.value(),
             'hf_center_y': self.refined_spin_well_y.value(),
             'hf_center_z': self.refined_spin_well_z.value(),
@@ -1547,10 +1545,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        self.corner_pvt_plot_btn = QPushButton("绘图")
+        self.corner_pvt_plot_btn = QPushButton("相对渗透率曲线绘制")
         self.corner_pvt_plot_btn.setStyleSheet(self.action_button_style())
         self.corner_pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
         layout.addWidget(self.corner_pvt_plot_btn)
+
+        self.corner_blasingame_plot_btn = QPushButton("blasingame的绘制")
+        self.corner_blasingame_plot_btn.setStyleSheet(self.action_button_style())
+        self.corner_blasingame_plot_btn.clicked.connect(self.plot_blasingame_script)
+        layout.addWidget(self.corner_blasingame_plot_btn)
 
         self.corner_oil_water_panel = OilWaterPropertiesPanel()
         layout.addWidget(self.corner_oil_water_panel)
@@ -1600,6 +1603,7 @@ class MainWindow(QMainWindow):
         self.corner_hydraulic_frac_panel = HydraulicFracturesPanel()
         # 设置corner专用默认值，对齐原版C++参数
         self.corner_hydraulic_frac_panel.spin_num_stages.setValue(20)
+        self.corner_hydraulic_frac_panel.spin_spacing_x.setValue(600.0 / 19.0)
         self.corner_hydraulic_frac_panel.spin_half_len.setValue(60.0)
         self.corner_hydraulic_frac_panel.spin_height.setValue(30.0)
         self.corner_hydraulic_frac_panel.spin_aperture.setValue(0.1)
@@ -1682,6 +1686,40 @@ class MainWindow(QMainWindow):
         self.corner_pressure_mode_status.setStyleSheet("color: #5c6670; font-size: 10px;")
         self.corner_pressure_mode_status.setWordWrap(True)
         layout.addWidget(self.corner_pressure_mode_status)
+
+        # --- 分层渲染控制 ---
+        self.check_enable_corner_layer_render = QCheckBox("Enable Layer Rendering")
+        self.check_enable_corner_layer_render.setChecked(False)
+        self.check_enable_corner_layer_render.setStyleSheet("color: #1f2328;")
+        self.check_enable_corner_layer_render.stateChanged.connect(
+            self._on_corner_layer_render_toggled
+        )
+        layout.addWidget(self.check_enable_corner_layer_render)
+
+        layer_row = QHBoxLayout()
+        self.corner_layer_label = QLabel("K Layer:")
+        self.corner_layer_label.setStyleSheet("color: #1f2328;")
+        layer_row.addWidget(self.corner_layer_label)
+
+        self.corner_layer_spin = QSpinBox()
+        self.corner_layer_spin.setMinimum(1)
+        self.corner_layer_spin.setMaximum(9999)
+        self.corner_layer_spin.setValue(1)
+        self.corner_layer_spin.setEnabled(False)
+        self.corner_layer_spin.setStyleSheet(
+            "color: #1f2328; background-color: #f3f4f6;"
+        )
+        self.corner_layer_spin.valueChanged.connect(
+            self._on_corner_layer_changed
+        )
+        layer_row.addWidget(self.corner_layer_spin)
+        layer_row.addStretch()
+        layout.addLayout(layer_row)
+
+        self.corner_layer_info = QLabel("")
+        self.corner_layer_info.setStyleSheet("color: #5c6670; font-size: 10px;")
+        self.corner_layer_info.setWordWrap(True)
+        layout.addWidget(self.corner_layer_info)
 
         layout.addStretch()
         return page
@@ -1949,10 +1987,7 @@ class MainWindow(QMainWindow):
         0 → Fracture / Leaf Pressure (现有路径)
         1 → Matrix Pressure (WR)
         """
-        if index == 1:
-            self._apply_dual_porosity_pressure_mode()
-        else:
-            self._apply_leaf_pressure_mode()
+        self._apply_corner_render_mode()
 
     def _update_corner_pressure_mode_status(self):
         """根据当前 sim_data 更新压力场模式状态标签文字。"""
@@ -2027,6 +2062,125 @@ class MainWindow(QMainWindow):
                 self.vtk_renderer.render_corner_pressure_field(self.sim_data)
         except Exception:
             pass
+
+    def _update_corner_layer_controls(self):
+        """根据当前 sim_data 初始化分层渲染控件的范围和可用性。"""
+        if not hasattr(self, 'corner_layer_spin'):
+            return
+        nz = 0
+        if self.sim_data and self.sim_data.corner_point_grid:
+            nz = int(self.sim_data.grid_info.get("nz", 0))
+        if nz <= 0:
+            self.corner_layer_info.setText("")
+            return
+        self.corner_layer_spin.setRange(1, nz)
+        if self.corner_layer_spin.value() > nz:
+            self.corner_layer_spin.setValue(1)
+        self.corner_layer_info.setText(f"Available layers: 1 - {nz}")
+
+    def _on_corner_layer_render_toggled(self, state):
+        """勾选/取消分层渲染。"""
+        enabled = (state == Qt.Checked)
+        self.corner_layer_spin.setEnabled(enabled)
+        if enabled and hasattr(self, 'corner_layer_info'):
+            self.corner_layer_info.setText(
+                "Layer rendering currently supports Fracture / Leaf Pressure only."
+            )
+        self._apply_corner_render_mode()
+
+    def _on_corner_layer_changed(self, value):
+        """K Layer 层号变化时刷新分层显示。"""
+        if hasattr(self, 'check_enable_corner_layer_render') and \
+                self.check_enable_corner_layer_render.isChecked():
+            self._apply_corner_render_mode()
+
+    def _reapply_corner_visibility_controls(self, layer_mode=False):
+        """Re-apply current checkbox states after render mode switches."""
+        if layer_mode:
+            if hasattr(self.vtk_renderer, 'apply_layer_visibility'):
+                self.vtk_renderer.apply_layer_visibility(
+                    getattr(self, 'check_show_grid_corner', None).isChecked()
+                    if hasattr(self, 'check_show_grid_corner') else True,
+                    getattr(self, 'check_show_fractures_corner', None).isChecked()
+                    if hasattr(self, 'check_show_fractures_corner') else True,
+                    getattr(self, 'check_show_wells_corner', None).isChecked()
+                    if hasattr(self, 'check_show_wells_corner') else True,
+                    getattr(self, 'check_show_pressure_corner', None).isChecked()
+                    if hasattr(self, 'check_show_pressure_corner') else True,
+                )
+            if hasattr(self, 'check_show_lgr_grid_corner'):
+                if hasattr(self.vtk_renderer, 'toggle_corner_lgr_grid_visibility'):
+                    self.vtk_renderer.toggle_corner_lgr_grid_visibility(False)
+                self.check_show_lgr_grid_corner.setEnabled(False)
+            return
+
+        if hasattr(self, 'check_show_grid_corner'):
+            self.toggle_corner_grid_visibility(
+                Qt.Checked if self.check_show_grid_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_fractures_corner'):
+            self.toggle_corner_fractures_visibility(
+                Qt.Checked if self.check_show_fractures_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_wells_corner'):
+            self.toggle_corner_wells_visibility(
+                Qt.Checked if self.check_show_wells_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_pressure_corner'):
+            self.toggle_corner_pressure_visibility(
+                Qt.Checked if self.check_show_pressure_corner.isChecked() else Qt.Unchecked
+            )
+
+        if hasattr(self, 'check_show_lgr_grid_corner'):
+            self.check_show_lgr_grid_corner.setEnabled(True)
+            self.toggle_corner_lgr_grid_visibility(
+                Qt.Checked if self.check_show_lgr_grid_corner.isChecked() else Qt.Unchecked
+            )
+
+    def _apply_corner_render_mode(self):
+        """Corner 渲染调度：分层 render 优先，否则按 pressure mode 分发。"""
+        if hasattr(self, 'check_enable_corner_layer_render') and \
+                self.check_enable_corner_layer_render.isChecked():
+            # 分层模式下强制切回 Fracture / Leaf Pressure
+            if hasattr(self, 'corner_pressure_mode_combo'):
+                self.corner_pressure_mode_combo.blockSignals(True)
+                self.corner_pressure_mode_combo.setCurrentIndex(0)
+                self.corner_pressure_mode_combo.setEnabled(False)
+                self.corner_pressure_mode_combo.blockSignals(False)
+            self._update_corner_layer_controls()
+            k_index = self.corner_layer_spin.value() - 1
+            try:
+                if hasattr(self.vtk_renderer, 'set_full_corner_result_visibility'):
+                    self.vtk_renderer.set_full_corner_result_visibility(False)
+                self.vtk_renderer.render_corner_grid_by_layer_k(
+                    self.sim_data, k_index
+                )
+                self._reapply_corner_visibility_controls(layer_mode=True)
+            except Exception as e:
+                self.append_sim_status(f"Layer render failed: {e}")
+            return
+
+        # 未启用分层渲染时，恢复 pressure mode combo
+        if hasattr(self, 'corner_pressure_mode_combo'):
+            self.corner_pressure_mode_combo.setEnabled(True)
+        if hasattr(self, 'corner_layer_info'):
+            self.corner_layer_info.setText("")
+        self._update_corner_layer_controls()
+        if hasattr(self.vtk_renderer, 'clear_layer_render'):
+            self.vtk_renderer.clear_layer_render()
+        if hasattr(self.vtk_renderer, 'set_full_corner_result_visibility'):
+            self.vtk_renderer.set_full_corner_result_visibility(True)
+
+        if not hasattr(self, 'corner_pressure_mode_combo'):
+            self._apply_leaf_pressure_mode()
+            self._reapply_corner_visibility_controls(layer_mode=False)
+            return
+        index = self.corner_pressure_mode_combo.currentIndex()
+        if index == 1:
+            self._apply_dual_porosity_pressure_mode()
+        else:
+            self._apply_leaf_pressure_mode()
+        self._reapply_corner_visibility_controls(layer_mode=False)
 
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
                                   check_show_grid, check_show_fractures):
@@ -2109,7 +2263,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_sim_status(f"PVT plot error: {exc}")
             self.status_bar.showMessage("PVT curve failed")
-    
+
+    def plot_blasingame_script(self):
+        """启动 Blasingame 绘图脚本（独立进程，弹出 Matplotlib 图窗）。"""
+        script_path = os.path.join(self.project_root, "plot_blasingame.py")
+        if not os.path.exists(script_path):
+            self.append_sim_status(f"Blasingame plot script not found: {script_path}")
+            self.status_bar.showMessage("Blasingame plot script not found")
+            return
+        try:
+            self.append_sim_status("Launching Blasingame plot script...")
+            subprocess.Popen([sys.executable, script_path], cwd=self.project_root)
+            self.append_sim_status("Blasingame plot script started")
+            self.status_bar.showMessage("Blasingame plot script started")
+        except Exception as exc:
+            self.append_sim_status(f"Blasingame plot script failed: {exc}")
+            self.status_bar.showMessage("Blasingame plot script failed")
+
     def create_center_panel(self):
         """创建中间VTK视图面板 - 与原文件一致"""
         self.center_stack = QStackedWidget()
@@ -2717,13 +2887,16 @@ class MainWindow(QMainWindow):
             self.append_sim_status(f"Well relative coords: ({rel_well_x}, {rel_well_y}, {rel_well_z})")
             self.append_sim_status(f"Hydraulic frac params: half_len={half_len}, height={height}")
             self.append_sim_status(f"hf_length (passed to C++): {half_len * 2.0}, hf_height: {height}")
-        
+            self.append_sim_status(f"hf_spacing_x (passed to C++): {hydraulic_frac_params['spacing_x']}")
+
         tmp_dir = os.path.join(self.project_root, '.tmp')
         os.makedirs(tmp_dir, exist_ok=True)
         fd, self.pending_result_path = tempfile.mkstemp(prefix='corner_simulation_result_', suffix='.json', dir=tmp_dir)
         os.close(fd)
         self.sim_output_buffer = ""
-        
+
+        hf_count = hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0
+
         params = {
             'algorithm': 'corner_edfm',
             'corner_grid_refinement': self.corner_combo_grid_refinement.currentText(),
@@ -2738,8 +2911,8 @@ class MainWindow(QMainWindow):
             'aperture': natural_frac_params.get('aperture', 0.1),
             'frac_perm': natural_frac_params.get('perm', 100.0),
             'hf_enabled': self.corner_check_enable_hydraulic.isChecked(),
-            'hf_count': hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0,
-            'hf_well_length': 600.0,
+            'hf_count': hf_count,
+            'hf_spacing_x': hydraulic_frac_params.get('spacing_x', 0.0) if self.corner_check_enable_hydraulic.isChecked() else 0.0,
             'hf_length': hydraulic_frac_params.get('half_len', 60.0) * 2.0 if self.corner_check_enable_hydraulic.isChecked() else 120.0,
             'hf_height': hydraulic_frac_params.get('height', 30.0) if self.corner_check_enable_hydraulic.isChecked() else 30.0,
             'hf_aperture': hydraulic_frac_params.get('aperture', 0.1) if self.corner_check_enable_hydraulic.isChecked() else 0.1,
@@ -2946,7 +3119,17 @@ class MainWindow(QMainWindow):
                 self.corner_pressure_mode_combo.setCurrentIndex(0)
                 self.corner_pressure_mode_combo.blockSignals(False)
                 self._update_corner_pressure_mode_status()
-            
+
+            # 初始化分层渲染控件范围，默认不启用
+            self._update_corner_layer_controls()
+            if hasattr(self, 'check_enable_corner_layer_render'):
+                self.check_enable_corner_layer_render.blockSignals(True)
+                self.check_enable_corner_layer_render.setChecked(False)
+                self.check_enable_corner_layer_render.blockSignals(False)
+                self.corner_layer_spin.setEnabled(False)
+            if hasattr(self, 'corner_layer_info'):
+                self.corner_layer_info.setText("")
+
             # 默认显示裂缝，网格和压力场变透明
             if hasattr(self, 'check_show_fractures_corner') and self.check_show_fractures_corner.isChecked():
                 self.toggle_corner_fractures_visibility(Qt.Checked)

@@ -7,6 +7,23 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+def get_bright_jet_cmap():
+    from matplotlib.colors import LinearSegmentedColormap
+    bright_jet_colors = [
+        (0.0, 0.0, 0.4),   
+        (0.0, 0.0, 0.6),   # 深蓝
+        (0.0, 0.2, 0.8),   # 中蓝
+        (0.0, 0.6, 1.0),   # 亮蓝
+        (0.0, 1.0, 1.0),   # 青
+        (0.2, 1.0, 0.4),   # 绿青
+        (0.8, 1.0, 0.2),   # 黄绿
+        (1.0, 1.0, 0.0),   # 黄
+        (1.0, 0.6, 0.0),   # 橙
+        (1.0, 0.1, 0.0),   # 橙红
+        
+    ]
+    return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=512)
+
 def _ensure_local_pyvista_site() -> None:
     project_root = Path(__file__).resolve().parent.parent
     local_site = project_root / ".deps" / "pyvista_site"
@@ -30,8 +47,16 @@ class PyVistaRenderer:
 
         self.view = qt_view
         self.pv_renderer = qt_view.renderer
-        
+
         pv.global_theme.allow_empty_mesh = True
+
+        self.plotter.enable_anti_aliasing()
+        self.plotter.enable_depth_peeling()
+
+        ren = self.renderer
+        light = ren.GetLights().GetItemAsObject(0)
+        if light:
+            light.SetIntensity(1.6)
 
         self._selection_overlay_state = {
             "world_bounds": None,
@@ -60,6 +85,11 @@ class PyVistaRenderer:
             "selection_outline_actor": None,
             "selection_fill_actor": None,
             "selection_handle_actors": [],
+            "layer_pressure_actor": None,
+            "layer_pressure_scalar_bar": None,
+            "layer_coarse_grid_actor": None,
+            "layer_frac_actors": [],
+            "layer_well_actors": [],
         }
 
     def _render(self):
@@ -338,30 +368,54 @@ class PyVistaRenderer:
         self._render()
 
     def clear_scene(self):
-        self.plotter.clear_actors()
-        self.cache["selection_outline_actor"] = None
-        self.cache["selection_fill_actor"] = None
-        self.cache["selection_handle_actors"] = []
-        self._selection_overlay_state["outline_mesh"] = None
-        self._selection_overlay_state["fill_mesh"] = None
-        self._selection_overlay_state["world_bounds"] = None
-        self._selection_overlay_state["handle_radius"] = None
+
+        self._remove_actor(self.cache.get("pressure_actor"))
+        self._remove_actor(self.cache.get("pressure_field_actor"))
+
+        self._remove_actor(self.cache.get("corner_actor"))
+        self._remove_actor(self.cache.get("corner_surface_actor"))
+
+        self._remove_actor(self.cache.get("grid_lines_actor"))
+
+        self._remove_actor(self.cache.get("corner_lgr_parent_grid_actor"))
+        self._remove_actor(self.cache.get("corner_lgr_refined_grid_actor"))
+
+        self._remove_actor(self.cache.get("selection_outline_actor"))
+        self._remove_actor(self.cache.get("selection_fill_actor"))
+
+        self._remove_actor_list(self.cache.get("fracture_actors", []))
+        self._remove_actor_list(self.cache.get("well_actors", []))
+        self._remove_actor_list(self.cache.get("selection_handle_actors", []))
+
+        try:
+            self.plotter.remove_scalar_bar(render=False)
+        except Exception:
+            pass
+
+        self.cache = self._new_cache()
+
         self._render()
 
     def clear_cache(self):
-        self.plotter.clear_actors()
+        self.plotter.clear()  # 彻底清空所有actor
         self.cache = self._new_cache()
-        self._selection_overlay_state["outline_mesh"] = None
-        self._selection_overlay_state["fill_mesh"] = None
-        self._selection_overlay_state["world_bounds"] = None
-        self._selection_overlay_state["handle_radius"] = None
+        self._selection_overlay_state = {
+            "world_bounds": None,
+            "handle_radius": None,
+            "outline_mesh": None,
+            "fill_mesh": None,
+        }
         self._render()
+    # ========================================================================
 
     def _remove_actor(self, actor):
         if actor is None:
             return
         try:
-            self.plotter.remove_actor(actor, render=False)
+            self.plotter.remove_actor(
+                actor,
+                render=False
+            )
         except Exception:
             pass
 
@@ -462,17 +516,18 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
-            cmap="jet",
+            cmap=get_bright_jet_cmap(),
             clim=[min_p, max_p],
             show_scalar_bar=False,
             opacity=1.0,
             render=False,
         )
+
         scalar_bar = self._replace_scalar_bar(
             "scalar_bar",
             "Pressure (MPa)",
-            label_font_size=10,
-            title_font_size=12,
+            label_font_size=18,
+            title_font_size=20,
             color="white",
             position_x=0.85,
             position_y=0.15,
@@ -505,10 +560,10 @@ class PyVistaRenderer:
 
                 actor = self.plotter.add_mesh(
                     polygon,
-                    color=(1.0, 0.5, 0.0),
-                    opacity=0.6,
-                    show_edges=True,
-                    edge_color=(0.8, 0.4, 0.0),
+                    color=(0.35, 0.0, 0.0),
+                    opacity=0.85,
+                    show_edges=False,
+                    edge_color=(0.35, 0.0, 0.0),
                     line_width=1.0,
                     render=False,
                 )
@@ -636,50 +691,59 @@ class PyVistaRenderer:
             return
 
         cpg = sim_data.corner_point_grid
-        data_hash = hash((len(cpg.cells), tuple(cpg.cells[0].corners[0]) if cpg.cells else ()))
-        if self.cache["corner_grid_hash"] == data_hash and self.cache["corner_actor"] is not None:
-            self.cache["corner_actor"].visibility = True
-            if self.cache["corner_surface_actor"] is not None:
-                self.cache["corner_surface_actor"].visibility = True
+
+        data_hash = hash(str(len(cpg.cells)) + str(cpg.cells[0].corners[0]) if cpg.cells else 0)
+
+        if self.cache.get('corner_grid_hash') == data_hash and self.cache.get('corner_actor') is not None:
+            self.cache['corner_actor'].visibility = True
+            self.cache['corner_surface_actor'].visibility = True
             self.setup_camera_for_corner_grid(cpg)
-            self._render()
+            self.plotter.render()
             return
 
-        self._remove_actor(self.cache["corner_actor"])
-        self._remove_actor(self.cache["corner_surface_actor"])
+        self._remove_actor(self.cache.get('corner_actor'))
+        self._remove_actor(self.cache.get('corner_surface_actor'))
 
-        n_cells = len(cpg.cells)
-        points = np.zeros((n_cells * 8, 3), dtype=np.float32)
-        cell_types = np.full(n_cells, pv.CellType.HEXAHEDRON, dtype=np.uint8)
-        cell_array = np.zeros(n_cells * 9, dtype=np.int64)
-        
-        for i, cell in enumerate(cpg.cells):
-            points[i*8 : (i+1)*8] = cell.corners
-            cell_array[i*9] = 8
-            cell_array[i*9+1 : (i+1)*9] = np.arange(i*8, (i+1)*8)
+        all_points = []
+        cells = []
+        offset = 0
 
-        grid = pv.UnstructuredGrid(cell_array, cell_types, points)
-        
-        if grid.n_points > 0 and grid.n_cells > 0:
-            edges = grid.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False)
-            if edges.n_points > 0:
-                actor = self.plotter.add_mesh(edges, color="white", line_width=1.0, render=False)
-                self.cache["corner_actor"] = actor
-            
-            surface = grid.extract_surface()
-            if surface.n_points > 0:
-                surface_actor = self.plotter.add_mesh(
-                    surface,
-                    color="gray",
-                    opacity=0.15,
-                    show_edges=False,
-                    render=False,
-                )
-                self.cache["corner_surface_actor"] = surface_actor
-        
-        self.cache["corner_grid_hash"] = data_hash
+        for cell in cpg.cells:
+            pts = np.array(cell.corners)
+            all_points.append(pts)
+            cells.append([8, offset, offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7])
+            offset += 8
+
+        all_points = np.vstack(all_points)
+        cells = np.hstack(cells)
+        cell_types = np.full(len(cpg.cells), pv.CellType.HEXAHEDRON, dtype=np.uint8)
+
+        grid = pv.UnstructuredGrid(cells, cell_types, all_points)
+
+        edges = grid.extract_all_edges()
+
+        actor = self.plotter.add_mesh(
+            edges,
+            color="white",
+            line_width=1.0,
+            render=False
+        )
+
+        surface = grid.extract_surface()
+        surface_actor = self.plotter.add_mesh(
+            surface,
+            color=(0.5, 0.5, 0.5),
+            opacity=0.15,
+            show_edges=False,
+            render=False
+        )
+
+        self.cache['corner_grid_hash'] = data_hash
+        self.cache['corner_actor'] = actor
+        self.cache['corner_surface_actor'] = surface_actor
+
         self.setup_camera_for_corner_grid(cpg)
-        self._render()
+        self.plotter.render()
 
     def setup_camera_for_corner_grid(self, cpg):
         min_x = min_y = min_z = float("inf")
@@ -720,9 +784,11 @@ class PyVistaRenderer:
         self.plotter.reset_camera(render=False)
         self.plotter.camera.Zoom(1.0)
 
-    def render_corner_fractures(self, sim_data):
+    #处理裂缝数据了
+    """def render_corner_fractures(self, sim_data):
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
+
         if not sim_data.fractures:
             return
 
@@ -732,7 +798,159 @@ class PyVistaRenderer:
         grid_max_z = sim_data.grid_info.get("Lz", 100.0)
 
         for fracture in sim_data.fractures:
+
+            # =========================================================
+            # 裂缝类型判断
+            # is_hydraulic:
+            #   1 -> 人工裂缝
+            #   0 -> 天然裂缝
+            # =========================================================
+
+            is_hydraulic = int(fracture.get("is_hydraulic", 0))
+
+            if is_hydraulic == 1:
+                # 人工裂缝
+                frac_color = (0.5, 0.1, 0.0)
+                edge_color = (0.3, 0.05, 0.0)
+
+                ambient = 0.85
+                diffuse = 0.35
+                specular = 0.45
+
+            else:
+                # 天然裂缝
+                frac_color = (0.0, 0.25, 0.4)
+                edge_color = (0.0, 0.15, 0.25)
+
+                ambient = 0.85
+                diffuse = 0.65
+                specular = 0.10
+
             all_pts = [list(pt) for pt in fracture["points"]]
+
+            margin = 1.0
+            out_of_bounds = False
+
+            for pt in all_pts:
+
+                if not (
+                    grid_min_x - margin <= pt[0] <= grid_max_x + margin
+                    and grid_min_y - margin <= pt[1] <= grid_max_y + margin
+                    and grid_min_z - margin <= pt[2] <= grid_max_z + margin
+                ):
+                    out_of_bounds = True
+                    break
+
+            if out_of_bounds:
+                continue
+
+            center = np.mean(all_pts, axis=0)
+
+            found_cell = None
+
+            if sim_data.corner_point_grid:
+
+                for cell in sim_data.corner_point_grid.cells:
+
+                    xs = [corner[0] for corner in cell.corners]
+                    ys = [corner[1] for corner in cell.corners]
+                    zs = [corner[2] for corner in cell.corners]
+
+                    if (
+                        min(xs) <= center[0] <= max(xs)
+                        and min(ys) <= center[1] <= max(ys)
+                        and min(zs) <= center[2] <= max(zs)
+                    ):
+                        found_cell = cell
+                        break
+
+            if found_cell is not None:
+
+                xs = [corner[0] for corner in found_cell.corners]
+                ys = [corner[1] for corner in found_cell.corners]
+                zs = [corner[2] for corner in found_cell.corners]
+
+                for pt in all_pts:
+
+                    pt[0] = max(min(xs), min(max(xs), pt[0]))
+                    pt[1] = max(min(ys), min(max(ys), pt[1]))
+                    pt[2] = max(min(zs), min(max(zs), pt[2]))
+
+            points = np.array(all_pts, dtype=float)
+
+            polygon = pv.PolyData(points)
+
+            polygon.faces = np.array(
+                [len(all_pts), *range(len(all_pts))],
+                dtype=np.int32
+            )
+
+            actor = self.plotter.add_mesh(
+                polygon,
+
+                color=frac_color,
+                edge_color=edge_color,
+
+                opacity=0.92,
+
+                show_edges=True,
+                line_width=1.5,
+
+                lighting=True,
+                smooth_shading=True,
+
+                ambient=ambient,
+                diffuse=diffuse,
+                specular=specular,
+                specular_power=20,
+
+                render=False,
+            )
+
+            self.cache["fracture_actors"].append(actor)
+
+        self._render()"""
+
+    #不处理裂缝数据，直接渲染
+    def render_corner_fractures(self, sim_data):
+        self._remove_actor_list(self.cache["fracture_actors"])
+        self.cache["fracture_actors"] = []
+
+        if not sim_data.fractures:
+            return
+
+        grid_min_x = grid_min_y = grid_min_z = 0.0
+        grid_max_x = sim_data.grid_info.get("Lx", 1000.0)
+        grid_max_y = sim_data.grid_info.get("Ly", 500.0)
+        grid_max_z = sim_data.grid_info.get("Lz", 100.0)
+
+        for fracture in sim_data.fractures:
+
+            # =========================================================
+            # 裂缝类型判断
+            # is_hydraulic:
+            #   1 -> 人工裂缝
+            #   0 -> 天然裂缝
+            # =========================================================
+            is_hydraulic = int(fracture.get("is_hydraulic", 0))
+
+            if is_hydraulic == 1:
+                # 人工裂缝
+                frac_color = (0.5, 0.1, 0.0)
+                edge_color = (0.3, 0.05, 0.0)
+                ambient = 0.85
+                diffuse = 0.35
+                specular = 0.45
+            else:
+                # 天然裂缝
+                frac_color = (0.0, 0.25, 0.4)
+                edge_color = (0.0, 0.15, 0.25)
+                ambient = 0.85
+                diffuse = 0.65
+                specular = 0.10
+
+            all_pts = [list(pt) for pt in fracture["points"]]
+
             margin = 1.0
             out_of_bounds = False
             for pt in all_pts:
@@ -746,39 +964,26 @@ class PyVistaRenderer:
             if out_of_bounds:
                 continue
 
-            center = np.mean(all_pts, axis=0)
-            found_cell = None
-            if sim_data.corner_point_grid:
-                for cell in sim_data.corner_point_grid.cells:
-                    xs = [corner[0] for corner in cell.corners]
-                    ys = [corner[1] for corner in cell.corners]
-                    zs = [corner[2] for corner in cell.corners]
-                    if (
-                        min(xs) <= center[0] <= max(xs)
-                        and min(ys) <= center[1] <= max(ys)
-                        and min(zs) <= center[2] <= max(zs)
-                    ):
-                        found_cell = cell
-                        break
+            points = np.array(all_pts, dtype=float)
+            polygon = pv.PolyData(points)
+            polygon.faces = np.array(
+                [len(all_pts), *range(len(all_pts))],
+                dtype=np.int32
+            )
 
-            if found_cell is not None:
-                xs = [corner[0] for corner in found_cell.corners]
-                ys = [corner[1] for corner in found_cell.corners]
-                zs = [corner[2] for corner in found_cell.corners]
-                for pt in all_pts:
-                    pt[0] = max(min(xs), min(max(xs), pt[0]))
-                    pt[1] = max(min(ys), min(max(ys), pt[1]))
-                    pt[2] = max(min(zs), min(max(zs), pt[2]))
-
-            polygon = pv.PolyData(np.array(all_pts, dtype=float))
-            polygon.faces = np.array([4, 0, 1, 2, 3], dtype=np.int32)
             actor = self.plotter.add_mesh(
                 polygon,
-                color="red",
-                opacity=0.8,
+                color=frac_color,
+                edge_color=edge_color,
+                opacity=0.92,
                 show_edges=True,
-                edge_color="darkred",
-                line_width=2,
+                line_width=1.5,
+                lighting=True,
+                smooth_shading=True,
+                ambient=ambient,
+                diffuse=diffuse,
+                specular=specular,
+                specular_power=20,
                 render=False,
             )
             self.cache["fracture_actors"].append(actor)
@@ -790,16 +995,69 @@ class PyVistaRenderer:
         self.cache["fracture_actors"] = []
         self._render()
 
+    #渲染井
     def render_wells(self, sim_data):
         self._remove_actor_list(self.cache["well_actors"])
         self.cache["well_actors"] = []
-        if not sim_data.wells:
+
+        if not getattr(sim_data, "fractures", None):
             return
 
-        for well in sim_data.wells:
-            sphere = pv.Sphere(radius=5.0, center=(well["x"], well["y"], well["z"]))
-            color = (0.0, 1.0, 0.0) if well["type"] == "Fracture" else (1.0, 1.0, 0.0)
-            actor = self.plotter.add_mesh(sphere, color=color, smooth_shading=True, render=False)
+        centers = []
+
+        grid_min_x = grid_min_y = grid_min_z = 0.0
+        grid_max_x = sim_data.grid_info.get("Lx", 1000.0)
+        grid_max_y = sim_data.grid_info.get("Ly", 500.0)
+        grid_max_z = sim_data.grid_info.get("Lz", 100.0)
+
+        for frac in sim_data.fractures:
+
+            if int(frac.get("is_hydraulic", 0)) != 1:
+                continue
+
+            all_pts = np.array(frac["points"], dtype=float)
+            if len(all_pts) < 3:  
+                continue
+
+            margin = 1.0
+            out_of_bounds = False
+            for pt in all_pts:
+                if not (
+                    grid_min_x - margin <= pt[0] <= grid_max_x + margin
+                    and grid_min_y - margin <= pt[1] <= grid_max_y + margin
+                    and grid_min_z - margin <= pt[2] <= grid_max_z + margin
+                ):
+                    out_of_bounds = True
+                    break
+            if out_of_bounds:
+                continue
+
+            real_center = np.mean(all_pts, axis=0)
+            centers.append(real_center)
+
+        if len(centers) < 2:
+            return
+
+        centers = np.array(centers)
+        sorted_idx = np.argsort(centers[:, 0])
+        ordered_centers = centers[sorted_idx]
+
+        segments = [
+            (ordered_centers[i].tolist(), ordered_centers[i+1].tolist())
+            for i in range(len(ordered_centers)-1)
+        ]
+
+        well_line = self._polydata_from_line_segments(segments)
+        if well_line is not None:
+            actor = self.plotter.add_mesh(
+                well_line.tube(radius=2.0),
+                color=(0.28, 0.28, 0.32),
+                opacity=1.0,
+                lighting=True,
+                ambient=0.9,
+                diffuse=1.0,
+                render=False
+            )
             self.cache["well_actors"].append(actor)
 
         self._render()
@@ -827,70 +1085,144 @@ class PyVistaRenderer:
 
         self._render_pressure_field_points(sim_data.pressure_field)
 
+    #压力场渲染
     def render_corner_pressure_field(self, sim_data):
+
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
             return
 
-        self._remove_actor(self.cache["pressure_field_actor"])
-        if self.cache["pressure_scalar_bar"] is not None:
+        self._remove_actor(self.cache.get("pressure_field_actor"))
+        self.cache["pressure_field_actor"] = None
+
+        if self.cache.get("pressure_scalar_bar") is not None:
+
             try:
                 self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
+
             self.cache["pressure_scalar_bar"] = None
 
         try:
+
             cell_data = sim_data.cell_geometry_with_pressure
             n_cells = cell_data.shape[0]
+
             if n_cells == 0:
                 return
 
             pressures = cell_data[:, 28].astype(np.float32)
-            points = cell_data[:, 4:28].reshape(-1, 3).astype(np.float32)
-            
-            cell_types = np.full(n_cells, pv.CellType.HEXAHEDRON, dtype=np.uint8)
-            cell_array = np.zeros(n_cells * 9, dtype=np.int64)
+            pressure_min = float(np.min(pressures))
+            pressure_max = float(np.max(pressures))
+
+            raw_points = cell_data[:, 4:28].reshape(-1, 3).astype(np.float32)
+
+            points, inverse = np.unique(
+                raw_points,
+                axis=0,
+                return_inverse=True
+            )
+
+            inverse = inverse.reshape(n_cells, 8)
+            cell_array = np.empty(n_cells * 9, dtype=np.int64)
             cell_array[0::9] = 8
-            for i in range(8):
-                cell_array[i+1::9] = np.arange(i, n_cells * 8, 8)
 
-            grid = pv.UnstructuredGrid(cell_array, cell_types, points)
+            for i in range(n_cells):
+
+                start = i * 9 + 1
+
+                cell_array[start:start + 8] = inverse[i]
+
+            cell_types = np.full(
+                n_cells,
+                pv.CellType.HEXAHEDRON,
+                dtype=np.uint8
+            )
+
+            grid = pv.UnstructuredGrid(
+                cell_array,
+                cell_types,
+                points
+            )
+
             grid.cell_data["Pressure"] = pressures
-            
-            if grid.n_points > 0 and grid.n_cells > 0:
-                surface = grid.cell_data_to_point_data().extract_surface()
-                if surface.n_points > 0:
-                    pressure_min = float(np.min(pressures))
-                    pressure_max = float(np.max(pressures))
-                    actor = self.plotter.add_mesh(
-                        surface,
-                        scalars="Pressure",
-                        cmap="jet",
-                        clim=[pressure_min, pressure_max],
-                        opacity=0.9,
-                        show_scalar_bar=False,
-                        render=False,
-                    )
-                    scalar_bar = self._replace_scalar_bar(
-                        "pressure_scalar_bar",
-                        "Pressure (bar)",
-                        position_x=0.82,
-                        position_y=0.15,
-                        width=0.08,
-                        height=0.4,
-                        label_font_size=10,
-                        title_font_size=12,
-                        color="white",
-                        vertical=True,
-                        render=False,
-                    )
 
-                    self.cache["pressure_field_actor"] = actor
-                    self.cache["pressure_scalar_bar"] = scalar_bar
+            grid = grid.cell_data_to_point_data()
+
+            #体渲染
+            """
+            actor = self.plotter.add_volume(
+                grid,
+                scalars="Pressure",
+                cmap=get_bright_jet_cmap(),
+                clim=[pressure_min, pressure_max],
+                opacity=np.full(256, 1.0),
+                opacity_unit_distance=25.0,
+                blending="composite",
+                shade=False,
+                mapper="gpu",
+                diffuse=1.0,
+                ambient=0.55,
+                specular=0.15,
+                specular_power=30,
+                show_scalar_bar=False,
+                render=False,
+            )
+            """
+            #面渲染
+
+            surface = grid.extract_surface()
             
+            actor = self.plotter.add_mesh(
+                surface,
+                scalars="Pressure",
+                cmap=get_bright_jet_cmap(),
+                clim=[pressure_min, pressure_max],
+                show_edges=False,
+                opacity=0.65,
+                show_scalar_bar=False,
+                render=False,
+                lighting=False,
+                smooth_shading=True,
+                ambient=1.0,
+                diffuse=0.0,
+                specular=0.0,
+                specular_power=50,
+                interpolate_before_map=True,
+            )
+
+            scalar_bar = self._replace_scalar_bar(
+                "pressure_scalar_bar",
+                "Pressure (bar)",
+                position_x=0.82,
+                position_y=0.15,
+                width=0.08,
+                height=0.40,
+                label_font_size=18,
+                title_font_size=20,
+                color="white",
+                vertical=True,
+                render=False,
+            )
+
+            self.cache["pressure_field_actor"] = actor
+            self.cache["pressure_scalar_bar"] = scalar_bar
+
+            if getattr(sim_data, "fractures", None):
+                self.render_corner_fractures(sim_data)
+
+            if getattr(sim_data, "wells", None):
+                self.render_corner_wells(sim_data)
+
             self._render()
+
         except Exception as exc:
-            print(f"ERROR in render_corner_pressure_field: {exc}")
+            print("\n")
+            print("=" * 60)
+            print("ERROR IN render_corner_pressure_field")
+            print(exc)
+            print("=" * 60)
+            print("\n")
 
     def _render_pressure_field_points(self, field_data):
         points = np.array([[x, y, z] for x, y, z, _ in field_data], dtype=float)
@@ -900,15 +1232,16 @@ class PyVistaRenderer:
 
         cloud = pv.PolyData(points)
         cloud.point_data["Pressure"] = pressures
-        actor = self.plotter.add_mesh(
-            cloud,
+        actor = self.plotter.add_volume(
+            grid,
             scalars="Pressure",
-            cmap="jet",
-            point_size=10,
-            render_points_as_spheres=True,
+            cmap=get_bright_jet_cmap(),
             clim=[pressure_min, pressure_max],
-            show_scalar_bar=False,
-            render=False,
+            opacity=0.6,
+            opacity_unit_distance=50,
+            blending="maximum",
+            shade=False,
+            mapper="gpu",
         )
         scalar_bar = self._replace_scalar_bar(
             "pressure_scalar_bar",
@@ -917,8 +1250,8 @@ class PyVistaRenderer:
             position_y=0.15,
             width=0.08,
             height=0.4,
-            label_font_size=10,
-            title_font_size=12,
+            label_font_size=18,
+            title_font_size=20,
             color="white",
             vertical=True,
             render=False,
@@ -944,44 +1277,118 @@ class PyVistaRenderer:
             self.cache["corner_actor"].visibility = visible
         if self.cache["corner_surface_actor"] is not None:
             self.cache["corner_surface_actor"].visibility = visible
+        if self.cache.get("layer_coarse_grid_actor") is not None:
+            self.cache["layer_coarse_grid_actor"].visibility = visible
         self._render()
 
     def toggle_fractures_visibility(self, visible):
-        for actor in self.cache["fracture_actors"]:
-            actor.visibility = visible
+        for actor in self.cache.get("fracture_actors", []):
+            try:
+                actor.visibility = visible
+            except Exception:
+                pass
 
-        if visible:
-            if self.cache["corner_actor"] is not None:
-                if self.cache["original_grid_opacity"] is None:
-                    self.cache["original_grid_opacity"] = self.cache["corner_actor"].prop.opacity
-                self.cache["corner_actor"].prop.opacity = 0.1
+        for actor in self.cache.get("layer_frac_actors", []):
+            try:
+                actor.visibility = visible
+            except Exception:
+                pass
 
-            if self.cache["pressure_field_actor"] is not None:
-                if self.cache["original_pressure_opacity"] is None:
-                    self.cache["original_pressure_opacity"] = self.cache["pressure_field_actor"].prop.opacity
-                self.cache["pressure_field_actor"].prop.opacity = 0.1
-        else:
-            if self.cache["corner_actor"] is not None and self.cache["original_grid_opacity"] is not None:
-                self.cache["corner_actor"].prop.opacity = self.cache["original_grid_opacity"]
+        pressure_actor = self.cache.get("pressure_field_actor")
 
-            if (
-                self.cache["pressure_field_actor"] is not None
-                and self.cache["original_pressure_opacity"] is not None
-            ):
-                self.cache["pressure_field_actor"].prop.opacity = self.cache["original_pressure_opacity"]
+        if pressure_actor is not None:
+            try:
+                prop = pressure_actor.GetProperty()
+
+                if visible:
+                    prop.SetAmbient(0.45)
+                    prop.SetDiffuse(0.85)
+
+                else:
+                    prop.SetAmbient(0.25)
+                    prop.SetDiffuse(1.0)
+
+            except Exception:
+                pass
 
         self._render()
 
     def toggle_wells_visibility(self, visible):
         for actor in self.cache["well_actors"]:
             actor.visibility = visible
+        for actor in self.cache.get("layer_well_actors", []):
+            try:
+                actor.visibility = visible
+            except Exception:
+                pass
         self._render()
 
     def toggle_pressure_visibility(self, visible):
-        if self.cache["pressure_field_actor"] is not None:
-            self.cache["pressure_field_actor"].visibility = visible
-        if self.cache["pressure_scalar_bar"] is not None:
-            self.cache["pressure_scalar_bar"].visibility = visible
+        pressure_actor = self.cache.get("pressure_field_actor")
+        if pressure_actor is not None:
+            try:
+                pressure_actor.SetVisibility(visible)
+            except Exception:
+                pass
+
+        scalar_bar = self.cache.get("pressure_scalar_bar")
+        if scalar_bar is not None:
+            try:
+                scalar_bar.visibility = visible
+            except Exception:
+                pass
+
+        layer_pressure = self.cache.get("layer_pressure_actor")
+        if layer_pressure is not None:
+            try:
+                layer_pressure.SetVisibility(visible)
+            except Exception:
+                pass
+
+        layer_scalar_bar = self.cache.get("layer_pressure_scalar_bar")
+        if layer_scalar_bar is not None:
+            try:
+                layer_scalar_bar.visibility = visible
+            except Exception:
+                pass
+
+        self._render()
+
+    def apply_layer_visibility(self, show_grid, show_fractures, show_wells, show_pressure):
+        """Apply visibility only to layer-render actors."""
+        layer_grid = self.cache.get("layer_coarse_grid_actor")
+        if layer_grid is not None:
+            try:
+                layer_grid.visibility = show_grid
+            except Exception:
+                pass
+
+        for actor in self.cache.get("layer_frac_actors", []):
+            try:
+                actor.visibility = show_fractures
+            except Exception:
+                pass
+
+        for actor in self.cache.get("layer_well_actors", []):
+            try:
+                actor.visibility = show_wells
+            except Exception:
+                pass
+
+        layer_pressure = self.cache.get("layer_pressure_actor")
+        if layer_pressure is not None:
+            try:
+                layer_pressure.SetVisibility(show_pressure)
+            except Exception:
+                pass
+
+        layer_scalar_bar = self.cache.get("layer_pressure_scalar_bar")
+        if layer_scalar_bar is not None:
+            try:
+                layer_scalar_bar.visibility = show_pressure
+            except Exception:
+                pass
+
         self._render()
 
     def _create_grid_lines_actor(self, grid_geom, color, line_width, opacity):
@@ -1025,7 +1432,7 @@ class PyVistaRenderer:
         if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
             self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
                 sim_data.corner_lgr_parent_grid_geometry,
-                (0.5, 0.5, 0.5),
+                (1.0, 1.0, 1.0),
                 0.5,
                 0.3,
             )
@@ -1033,9 +1440,147 @@ class PyVistaRenderer:
         if getattr(sim_data, "corner_lgr_refined_grid_geometry", None) is not None:
             self.cache["corner_lgr_refined_grid_actor"] = self._create_grid_lines_actor(
                 sim_data.corner_lgr_refined_grid_geometry,
-                (0.2, 0.2, 0.2),
+                (1.0, 1.0, 1.0),
                 1.0,
                 0.8,
+            )
+
+        self._render()
+
+    """def render_corner_lgr_grid(self, sim_data):
+
+        self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
+        self._remove_actor(self.cache["corner_lgr_refined_grid_actor"])
+
+        self.cache["corner_lgr_parent_grid_actor"] = None
+        self.cache["corner_lgr_refined_grid_actor"] = None
+
+        if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
+
+            self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
+                sim_data.corner_lgr_parent_grid_geometry,
+                (0.7, 0.7, 0.7),
+                0.4,
+                0.15,
+            )
+        refined_geom = getattr(sim_data, "corner_lgr_refined_grid_geometry", None)
+
+        if refined_geom is None:
+            self._render()
+            return
+
+        if not hasattr(sim_data, "cell_geometry_with_pressure"):
+            self._render()
+            return
+
+        cell_data = sim_data.cell_geometry_with_pressure
+
+        if cell_data is None or len(cell_data) == 0:
+            self._render()
+            return
+
+        try:
+
+            n_cells = refined_geom.shape[0]
+
+            pressures = cell_data[:, 28].astype(np.float32)
+
+            pressure_min = float(np.min(pressures))
+            pressure_max = float(np.max(pressures))
+            raw_points = refined_geom.reshape(-1, 3).astype(np.float32)
+
+            points, inverse = np.unique(
+                raw_points,
+                axis=0,
+                return_inverse=True
+            )
+
+            inverse = inverse.reshape(n_cells, 8)
+            cell_array = np.empty(n_cells * 9, dtype=np.int64)
+
+            cell_array[0::9] = 8
+
+            for i in range(n_cells):
+
+                start = i * 9 + 1
+
+                cell_array[start:start + 8] = inverse[i]
+
+            cell_types = np.full(
+                n_cells,
+                pv.CellType.HEXAHEDRON,
+                dtype=np.uint8
+            )
+
+            grid = pv.UnstructuredGrid(
+                cell_array,
+                cell_types,
+                points
+            )
+
+            grid.cell_data["Pressure"] = pressures
+
+            grid = grid.cell_data_to_point_data()
+
+            surface = grid.extract_surface()
+            actor = self.plotter.add_mesh(
+                surface,
+                scalars="Pressure",
+                cmap=get_bright_jet_cmap(),
+                clim=[pressure_min, pressure_max],
+                opacity=0.68,
+                smooth_shading=True,
+                lighting=True,
+                ambient=0.35,
+                diffuse=0.75,
+                specular=0.08,
+                show_edges=True,
+                edge_color=(0.15, 0.15, 0.15),
+                line_width=0.35,
+                render=False,
+            )
+
+            self.cache["corner_lgr_refined_grid_actor"] = actor
+
+        except Exception as exc:
+
+            print("\n")
+            print("=" * 60)
+            print("ERROR IN render_corner_lgr_grid")
+            print(exc)
+            print("=" * 60)
+            print("\n")
+
+        self._render()"""
+
+    def render_corner_lgr_grid(self, sim_data):
+
+        self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
+        self._remove_actor(self.cache["corner_lgr_refined_grid_actor"])
+
+        self.cache["corner_lgr_parent_grid_actor"] = None
+        self.cache["corner_lgr_refined_grid_actor"] = None
+
+        #父网格（灰色）
+        if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
+
+            self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
+                sim_data.corner_lgr_parent_grid_geometry,
+                (0.7, 0.7, 0.7),
+                0.4,
+                0.15,
+            )
+
+        # 加密网格（白色）
+        refined_geom = getattr(sim_data, "corner_lgr_refined_grid_geometry", None)
+
+        if refined_geom is not None:
+
+            self.cache["corner_lgr_refined_grid_actor"] = self._create_grid_lines_actor(
+                refined_geom,
+                (1.0, 1.0, 1.0),
+                0.45,
+                0.20,
             )
 
         self._render()
@@ -1045,4 +1590,367 @@ class PyVistaRenderer:
             self.cache["corner_lgr_parent_grid_actor"].visibility = visible
         if self.cache["corner_lgr_refined_grid_actor"] is not None:
             self.cache["corner_lgr_refined_grid_actor"].visibility = visible
+        self._render()
+
+    def set_full_corner_result_visibility(self, visible):
+        """Hide/show full-field corner result actors without affecting layer actors."""
+        if self.cache.get("corner_actor") is not None:
+            self.cache["corner_actor"].visibility = visible
+        if self.cache.get("corner_surface_actor") is not None:
+            self.cache["corner_surface_actor"].visibility = visible
+
+        pressure_actor = self.cache.get("pressure_field_actor")
+        if pressure_actor is not None:
+            try:
+                pressure_actor.SetVisibility(visible)
+            except Exception:
+                pass
+
+        scalar_bar = self.cache.get("pressure_scalar_bar")
+        if scalar_bar is not None:
+            try:
+                scalar_bar.visibility = visible
+            except Exception:
+                pass
+
+        for actor in self.cache.get("fracture_actors", []):
+            try:
+                actor.visibility = visible
+            except Exception:
+                pass
+
+        for actor in self.cache.get("well_actors", []):
+            try:
+                actor.visibility = visible
+            except Exception:
+                pass
+
+        if self.cache.get("corner_lgr_parent_grid_actor") is not None:
+            self.cache["corner_lgr_parent_grid_actor"].visibility = visible
+        if self.cache.get("corner_lgr_refined_grid_actor") is not None:
+            self.cache["corner_lgr_refined_grid_actor"].visibility = visible
+
+        self._render()
+
+    def clear_layer_render(self):
+        """Remove layer-render actors so full-field rendering can take over cleanly."""
+        self._remove_actor(self.cache.get("layer_pressure_actor"))
+        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
+        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
+        self._remove_actor_list(self.cache.get("layer_well_actors", []))
+
+        layer_scalar_bar = self.cache.get("layer_pressure_scalar_bar")
+        if layer_scalar_bar is not None:
+            try:
+                layer_scalar_bar.visibility = False
+                self.plotter.remove_scalar_bar()
+            except Exception:
+                pass
+
+        self.cache["layer_pressure_actor"] = None
+        self.cache["layer_pressure_scalar_bar"] = None
+        self.cache["layer_coarse_grid_actor"] = None
+        self.cache["layer_frac_actors"] = []
+        self.cache["layer_well_actors"] = []
+        self._render()
+
+    # 新增：根据 Z 坐标渲染地质切片  
+    def render_corner_grid_by_layer_k(self, sim_data, k_layer: int):
+
+        self._remove_actor(self.cache.get("layer_pressure_actor"))
+        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
+
+        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
+        self._remove_actor_list(self.cache.get("layer_well_actors", []))
+
+        self.cache["layer_frac_actors"] = []
+        self.cache["layer_pressure_actor"] = None
+        self.cache["layer_well_actors"] = []
+        self.cache["layer_coarse_grid_actor"] = None
+
+        if not sim_data.corner_point_grid:
+            return
+
+        if not hasattr(sim_data, "cell_geometry_with_pressure"):
+            return
+
+        cpg = sim_data.corner_point_grid
+        nx = int(sim_data.grid_info["nx"])
+        ny = int(sim_data.grid_info["ny"])
+        nz = int(sim_data.grid_info["nz"])
+
+        if k_layer < 0 or k_layer >= nz:
+            print(f"Invalid k_layer = {k_layer}")
+            return
+
+        start = k_layer * nx * ny
+        end = (k_layer + 1) * nx * ny
+        coarse_cells = cpg.cells[start:end]
+
+        coarse_boxes = []
+        coarse_points = []
+        coarse_cell_array = []
+        coarse_cell_types = []
+
+        point_offset = 0
+
+        for cell in coarse_cells:
+            pts = np.array(cell.corners, dtype=np.float32)
+            if pts.shape != (8, 3):
+                continue
+
+            xs = pts[:, 0]
+            ys = pts[:, 1]
+            zs = pts[:, 2]
+
+            coarse_boxes.append({
+                "xmin": xs.min(),
+                "xmax": xs.max(),
+                "ymin": ys.min(),
+                "ymax": ys.max(),
+                "zmin": zs.min(),
+                "zmax": zs.max(),
+            })
+
+            coarse_points.extend(pts)
+
+            coarse_cell_array.extend([
+                8, point_offset + 0, point_offset + 1, point_offset + 2, point_offset + 3,
+                point_offset + 4, point_offset + 5, point_offset + 6, point_offset + 7
+            ])
+
+            coarse_cell_types.append(pv.CellType.HEXAHEDRON)
+            point_offset += 8
+
+        if coarse_points:
+            coarse_grid = pv.UnstructuredGrid(
+                np.array(coarse_cell_array, dtype=np.int64),
+                np.array(coarse_cell_types, dtype=np.uint8),
+                np.array(coarse_points, dtype=np.float32)
+            )
+
+            if coarse_grid.n_points > 0:
+                coarse_edges = coarse_grid.extract_all_edges()
+                if coarse_edges.n_points > 0:
+                    coarse_actor = self.plotter.add_mesh(
+                        coarse_edges,
+                        color=(0.88, 0.88, 0.88),
+                        line_width=1,
+                        opacity=1,
+                        render=False,
+                    )
+                    self.cache["layer_coarse_grid_actor"] = coarse_actor
+
+        all_data = sim_data.cell_geometry_with_pressure
+        selected_rows = []
+
+        for row in all_data:
+            pts = row[4:28].reshape(8, 3)
+            cx, cy, cz = pts.mean(axis=0)
+            inside = any(
+                box["xmin"] <= cx <= box["xmax"] and
+                box["ymin"] <= cy <= box["ymax"] and
+                box["zmin"] <= cz <= box["zmax"]
+                for box in coarse_boxes
+            )
+            if inside:
+                selected_rows.append(row)
+
+        if not selected_rows:
+            print(f"No refined cells found for k layer = {k_layer}")
+            self._render()
+            return
+
+        selected_rows = np.array(selected_rows)
+
+        all_points = []
+        cell_corner_ids = []
+
+        for row in selected_rows:
+            pts = row[4:28].reshape(8, 3)
+            start_idx = len(all_points)
+            all_points.extend(pts)
+            cell_corner_ids.append(list(range(start_idx, start_idx + 8)))
+
+        all_points = np.array(all_points)
+        points, inverse = np.unique(all_points, axis=0, return_inverse=True)
+
+        n_cells = len(cell_corner_ids)
+        cell_array = np.empty(n_cells * 9, dtype=np.int64)
+        cell_types = np.full(n_cells, pv.CellType.HEXAHEDRON, dtype=np.uint8)
+
+        for i in range(n_cells):
+            cell_array[i * 9] = 8
+            ids = inverse[i * 8:(i + 1) * 8]
+            cell_array[i * 9 + 1:i * 9 + 9] = ids
+
+        grid = pv.UnstructuredGrid(cell_array, cell_types, points)
+        pressures = selected_rows[:, 28].astype(np.float32)
+        pressures_all = sim_data.cell_geometry_with_pressure[:, 28].astype(np.float32)
+        grid.cell_data["Pressure"] = pressures
+        grid = grid.cell_data_to_point_data()
+
+        surface = grid.extract_surface()
+        actor = self.plotter.add_mesh(
+            surface,
+            scalars="Pressure",
+            cmap=get_bright_jet_cmap(),
+            clim=[float(np.min(pressures_all)), float(np.max(pressures_all))],
+            opacity=0.65,
+            show_scalar_bar=False,
+            show_edges=False,
+            lighting=False,
+            smooth_shading=False,
+            ambient=1.0,
+            diffuse=0.0,
+            specular=0.0,
+            interpolate_before_map=True,
+            render=False,
+        )
+
+        scalar_bar = self._replace_scalar_bar(
+            "layer_pressure_scalar_bar",
+            "Pressure (bar)",
+            position_x=0.82,
+            position_y=0.15,
+            width=0.08,
+            height=0.4,
+            label_font_size=18,
+            title_font_size=20,
+            color="white",
+            vertical=True,
+            render=False,
+        )
+
+        self.cache["layer_pressure_actor"] = actor
+        self.cache["layer_pressure_scalar_bar"] = scalar_bar
+
+        # -------------------------
+        # 天然裂缝保持原逻辑
+        # -------------------------
+        if hasattr(sim_data, "fractures"):
+            for frac in sim_data.fractures:
+                if int(frac.get("is_hydraulic", 0)) == 1:
+                    continue  # 人工裂缝单独处理
+
+                pts = np.array(frac["points"], dtype=np.float64)
+                if len(pts) < 3:
+                    continue
+
+                cx, cy, cz = pts.mean(axis=0)
+                inside = any(
+                    box["xmin"] <= cx <= box["xmax"] and
+                    box["ymin"] <= cy <= box["ymax"] and
+                    box["zmin"] <= cz <= box["zmax"]
+                    for box in coarse_boxes
+                )
+                if not inside:
+                    continue
+
+                poly = pv.PolyData(pts)
+                poly.faces = [len(pts), *range(len(pts))]
+
+                fcolor = (0.0, 0.25, 0.4)
+                ecolor = (0.0, 0.15, 0.25)
+
+                fac = self.plotter.add_mesh(
+                    poly,
+                    color=fcolor,
+                    edge_color=ecolor,
+                    show_edges=True,
+                    line_width=1.5,
+                    opacity=0.9,
+                    render=False
+                )
+                self.cache["layer_frac_actors"].append(fac)
+
+        # -------------------------
+        # 人工裂缝显示规则：只要一个人工裂缝在层内，显示所有人工裂缝
+        # -------------------------
+        show_all_hydraulic = False
+        for frac in sim_data.fractures:
+            if int(frac.get("is_hydraulic", 0)) != 1:
+                continue
+            pts = np.array(frac["points"], dtype=np.float64)
+            if len(pts) < 3:
+                continue
+            cx, cy, cz = pts.mean(axis=0)
+            if any(box["xmin"] <= cx <= box["xmax"] and
+                box["ymin"] <= cy <= box["ymax"] and
+                box["zmin"] <= cz <= box["zmax"] for box in coarse_boxes):
+                show_all_hydraulic = True
+                break
+
+        if show_all_hydraulic:
+            for frac in sim_data.fractures:
+                if int(frac.get("is_hydraulic", 0)) != 1:
+                    continue  # 只显示人工裂缝
+                pts = np.array(frac["points"], dtype=np.float64)
+                if len(pts) < 3:
+                    continue
+                poly = pv.PolyData(pts)
+                poly.faces = [len(pts), *range(len(pts))]
+                fcolor = (0.5, 0.1, 0.0)
+                ecolor = (0.3, 0.05, 0.0)
+                fac = self.plotter.add_mesh(
+                    poly,
+                    color=fcolor,
+                    edge_color=ecolor,
+                    show_edges=True,
+                    line_width=1.5,
+                    opacity=0.9,
+                    render=False
+                )
+                self.cache["layer_frac_actors"].append(fac)
+
+        well_centers = []
+
+        if show_all_hydraulic:
+
+            for frac in sim_data.fractures:
+
+                if int(frac.get("is_hydraulic", 0)) != 1:
+                    continue
+
+                pts = np.array(frac["points"], dtype=np.float64)
+
+                if len(pts) < 3:
+                    continue
+
+                cx, cy, cz = pts.mean(axis=0)
+
+                well_centers.append([cx, cy, cz])
+
+        if len(well_centers) >= 2:
+
+            well_centers = np.array(well_centers)
+
+            well_centers = well_centers[
+                np.argsort(well_centers[:, 0])
+            ]
+
+            segments = [
+                (
+                    well_centers[i].tolist(),
+                    well_centers[i + 1].tolist()
+                )
+                for i in range(len(well_centers) - 1)
+            ]
+
+            well_line = self._polydata_from_line_segments(segments)
+
+            if well_line:
+
+                actor = self.plotter.add_mesh(
+                    well_line.tube(radius=2.0),
+                    color=(0.28, 0.28, 0.32),
+                    opacity=1.0,
+                    lighting=True,
+                    ambient=0.9,
+                    diffuse=1.0,
+                    render=False
+                )
+
+                self.cache["layer_well_actors"].append(actor)
+
         self._render()
