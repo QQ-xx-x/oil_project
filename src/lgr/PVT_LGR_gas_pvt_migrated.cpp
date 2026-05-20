@@ -1298,7 +1298,7 @@ public:
     double region_z_min{0.0};
     double region_z_max{-1.0};
     int hydraulic_frac_count{20};
-    double hydraulic_well_length{600.0};
+    double hydraulic_frac_spacing{100.0};
     double hydraulic_half_length{120.0};
     double hydraulic_height{30.0};
     double hydraulic_aperture{0.1};
@@ -1375,7 +1375,7 @@ public:
     }
 
     void setHydraulicFractureParameters(int total_fracs,
-                                        double well_length,
+                                        double frac_spacing,
                                         double hf_len,
                                         double hf_height,
                                         double aperture_val,
@@ -1384,7 +1384,7 @@ public:
                                         double y_center = -1.0,
                                         double z_center = -1.0) {
         hydraulic_frac_count = total_fracs;
-        hydraulic_well_length = well_length;
+        hydraulic_frac_spacing = frac_spacing;
         hydraulic_half_length = hf_len;
         hydraulic_height = hf_height;
         hydraulic_aperture = aperture_val;
@@ -2649,30 +2649,151 @@ public:
                            double range_y_min = 0.0, double range_y_max = -1.0,
                            double range_z_min = 0.0, double range_z_max = -1.0) {
 
-        double use_max_x = (range_x_max < 0) ? Lx : range_x_max;
-        double use_max_y = (range_y_max < 0) ? Ly : range_y_max;
-        double use_max_z = (range_z_max < 0) ? Lz : range_z_max;
-
         fractures.clear();
 
+        if (total_fracs <= 0) return;
+        if (parents.empty()) {
+            std::cerr << "Cannot generate natural fractures before parent grid is built.\n";
+            return;
+        }
+
+        Point3 grid_min = parents[0].bbox_min;
+        Point3 grid_max = parents[0].bbox_max;
+        for (const auto& p : parents) {
+            grid_min = pointMin(grid_min, p.bbox_min);
+            grid_max = pointMax(grid_max, p.bbox_max);
+        }
+
+        double xmin = (range_x_max < 0.0) ? grid_min.x : std::max(range_x_min, grid_min.x);
+        double xmax = (range_x_max < 0.0) ? grid_max.x : std::min(range_x_max, grid_max.x);
+        double ymin = (range_y_max < 0.0) ? grid_min.y : std::max(range_y_min, grid_min.y);
+        double ymax = (range_y_max < 0.0) ? grid_max.y : std::min(range_y_max, grid_max.y);
+        double zmin = (range_z_max < 0.0) ? grid_min.z : std::max(range_z_min, grid_min.z);
+        double zmax = (range_z_max < 0.0) ? grid_max.z : std::min(range_z_max, grid_max.z);
+
+        if (!(xmin <= xmax && ymin <= ymax && zmin <= zmax)) {
+            std::cerr << "Natural fracture generation range does not overlap the parent grid.\n";
+            return;
+        }
+
+        double span_x = std::max(grid_max.x - grid_min.x, EPS);
+        double span_y = std::max(grid_max.y - grid_min.y, EPS);
+        double span_z = std::max(grid_max.z - grid_min.z, EPS);
+        double grid_scale = std::max(1.0, std::max(span_x, std::max(span_y, span_z)));
+        double pos_tol = 1e-9 * grid_scale;
+        double coverage_rel_tol = 1e-6;
+
+        int bin_nx = std::max(1, std::min((Nx > 0 ? Nx : 1), 64));
+        int bin_ny = std::max(1, std::min((Ny > 0 ? Ny : 1), 64));
+        int bin_nz = std::max(1, std::min((Nz > 0 ? Nz : 1), 64));
+        double bin_dx = span_x / (double)bin_nx;
+        double bin_dy = span_y / (double)bin_ny;
+        double bin_dz = span_z / (double)bin_nz;
+
+        auto clampBin = [](int v, int n) -> int {
+            if (v < 0) return 0;
+            if (v >= n) return n - 1;
+            return v;
+        };
+        auto coordToBin = [&](double x, double mn, double h, int n) -> int {
+            int b = (int)std::floor((x - mn) / std::max(h, EPS));
+            return clampBin(b, n);
+        };
+        auto binIndex = [&](int ix, int iy, int iz) -> int {
+            return (iz * bin_ny + iy) * bin_nx + ix;
+        };
+
+        std::vector<std::vector<int>> parent_bins((size_t)bin_nx * (size_t)bin_ny * (size_t)bin_nz);
+        for (int pid = 0; pid < (int)parents.size(); ++pid) {
+            const auto& p = parents[(size_t)pid];
+            int i0 = coordToBin(p.bbox_min.x, grid_min.x, bin_dx, bin_nx);
+            int i1 = coordToBin(p.bbox_max.x, grid_min.x, bin_dx, bin_nx);
+            int j0 = coordToBin(p.bbox_min.y, grid_min.y, bin_dy, bin_ny);
+            int j1 = coordToBin(p.bbox_max.y, grid_min.y, bin_dy, bin_ny);
+            int k0 = coordToBin(p.bbox_min.z, grid_min.z, bin_dz, bin_nz);
+            int k1 = coordToBin(p.bbox_max.z, grid_min.z, bin_dz, bin_nz);
+            for (int k = k0; k <= k1; ++k) {
+                for (int j = j0; j <= j1; ++j) {
+                    for (int i = i0; i <= i1; ++i) {
+                        parent_bins[(size_t)binIndex(i, j, k)].push_back(pid);
+                    }
+                }
+            }
+        }
+
+        std::vector<int> candidate_parent_ids;
+        std::vector<int> seen_parent(parents.size(), 0);
+        int seen_token = 1;
+        auto collectCandidateParents = [&](const AABB& fb) {
+            candidate_parent_ids.clear();
+            if (seen_token > 2000000000) {
+                std::fill(seen_parent.begin(), seen_parent.end(), 0);
+                seen_token = 1;
+            }
+            int token = seen_token++;
+            AABB q = expandAABB(fb, pos_tol);
+            int i0 = coordToBin(q.mn.x, grid_min.x, bin_dx, bin_nx);
+            int i1 = coordToBin(q.mx.x, grid_min.x, bin_dx, bin_nx);
+            int j0 = coordToBin(q.mn.y, grid_min.y, bin_dy, bin_ny);
+            int j1 = coordToBin(q.mx.y, grid_min.y, bin_dy, bin_ny);
+            int k0 = coordToBin(q.mn.z, grid_min.z, bin_dz, bin_nz);
+            int k1 = coordToBin(q.mx.z, grid_min.z, bin_dz, bin_nz);
+            for (int k = k0; k <= k1; ++k) {
+                for (int j = j0; j <= j1; ++j) {
+                    for (int i = i0; i <= i1; ++i) {
+                        const auto& bin = parent_bins[(size_t)binIndex(i, j, k)];
+                        for (int pid : bin) {
+                            if (seen_parent[(size_t)pid] == token) continue;
+                            seen_parent[(size_t)pid] = token;
+                            candidate_parent_ids.push_back(pid);
+                        }
+                    }
+                }
+            }
+        };
+
+        auto fractureArea = [](const Fracture& f) -> double {
+            return triangleArea3D(f.vertices[0], f.vertices[1], f.vertices[2])
+                 + triangleArea3D(f.vertices[0], f.vertices[2], f.vertices[3]);
+        };
+
+        auto fractureInsideGrid = [&](const Fracture& f) -> bool {
+            AABB fb = fractureAABB(f);
+            if (fb.mn.x < grid_min.x - pos_tol || fb.mx.x > grid_max.x + pos_tol ||
+                fb.mn.y < grid_min.y - pos_tol || fb.mx.y > grid_max.y + pos_tol ||
+                fb.mn.z < grid_min.z - pos_tol || fb.mx.z > grid_max.z + pos_tol) {
+                return false;
+            }
+
+            double full_area = fractureArea(f);
+            if (full_area <= EPS) return false;
+
+            collectCandidateParents(fb);
+            double covered_area = 0.0;
+            double area_tol = std::max(full_area * coverage_rel_tol, EPS);
+            for (int pid : candidate_parent_ids) {
+                const auto& p = parents[(size_t)pid];
+                if (p.bbox_max.x < fb.mn.x - pos_tol || fb.mx.x < p.bbox_min.x - pos_tol) continue;
+                if (p.bbox_max.y < fb.mn.y - pos_tol || fb.mx.y < p.bbox_min.y - pos_tol) continue;
+                if (p.bbox_max.z < fb.mn.z - pos_tol || fb.mx.z < p.bbox_min.z - pos_tol) continue;
+
+                auto poly = clipFractureCell(f, p);
+                covered_area += polygonArea(poly);
+                if (covered_area >= full_area - area_tol) return true;
+            }
+            return covered_area >= full_area - area_tol;
+        };
+
         std::mt19937 rng(42);
-        std::uniform_real_distribution<double> distX(range_x_min, use_max_x);
-        std::uniform_real_distribution<double> distY(range_y_min, use_max_y);
-        std::uniform_real_distribution<double> distZ(range_z_min, use_max_z);
         std::uniform_real_distribution<double> distAngle(min_strike, max_strike);
         std::uniform_real_distribution<double> distDip(0, max_dip);
         std::uniform_real_distribution<double> distL(min_L, max_L);
         std::uniform_real_distribution<double> distheight(min_height, max_height);
 
-        auto inBox = [&](const Point3& p) -> bool {
-            return (p.x >= 0.0 && p.x <= Lx &&
-                    p.y >= 0.0 && p.y <= Ly &&
-                    p.z >= 0.0 && p.z <= Lz);
-        };
-
-        auto fracVerticesInBox = [&](const Fracture& f) -> bool {
-            return inBox(f.vertices[0]) && inBox(f.vertices[1]) &&
-                   inBox(f.vertices[2]) && inBox(f.vertices[3]);
+        auto sampleUniform = [&](double a, double b) -> double {
+            if (b <= a) return 0.5 * (a + b);
+            std::uniform_real_distribution<double> dist(a, b);
+            return dist(rng);
         };
 
         for (int i = 0; i < total_fracs; ++i) {
@@ -2691,7 +2812,6 @@ public:
                     return;
                 }
 
-                Point3 center = {distX(rng), distY(rng), distZ(rng)};
                 double len = distL(rng);
                 double height = distheight(rng);
                 double strike = distAngle(rng);
@@ -2701,12 +2821,31 @@ public:
                 Point3 n_horiz = {-sin(strike), cos(strike), 0};
                 Point3 v = {n_horiz.x * cos(dip), n_horiz.y * cos(dip), -sin(dip)};
 
+                double hx = std::abs(u.x) * len * 0.5 + std::abs(v.x) * height * 0.5;
+                double hy = std::abs(u.y) * len * 0.5 + std::abs(v.y) * height * 0.5;
+                double hz = std::abs(u.z) * len * 0.5 + std::abs(v.z) * height * 0.5;
+                double cx0 = xmin + hx;
+                double cx1 = xmax - hx;
+                double cy0 = ymin + hy;
+                double cy1 = ymax - hy;
+                double cz0 = zmin + hz;
+                double cz1 = zmax - hz;
+                if (cx0 > cx1 + pos_tol || cy0 > cy1 + pos_tol || cz0 > cz1 + pos_tol) {
+                    continue;
+                }
+
+                Point3 center = {
+                    sampleUniform(cx0, cx1),
+                    sampleUniform(cy0, cy1),
+                    sampleUniform(cz0, cz1)
+                };
+
                 f.vertices[0] = center - u*(len/2) - v*(height/2);
                 f.vertices[1] = center + u*(len/2) - v*(height/2);
                 f.vertices[2] = center + u*(len/2) + v*(height/2);
                 f.vertices[3] = center - u*(len/2) + v*(height/2);
 
-                if (fracVerticesInBox(f)) {
+                if (fractureInsideGrid(f)) {
                     fractures.push_back(f);
                     break;
                 }
@@ -2715,65 +2854,197 @@ public:
     }
 
     void generateHydraulicFractures(int total_fracs = 20,
-                                    double well_length = 600,
-                                    double hf_len = 120.0,
-                                    double hf_height = 30.0,
-                                    double aperture_val = 0.1,
-                                    double perm_val = 1000.0,
-                                    double x_center = -1.0,
-                                    double y_center = -1.0,
-                                    double z_center = -1.0,
-                                    int start_id = -1) {
+                                double frac_spacing = 100.0,
+                                double hf_len = 120.0,
+                                double hf_height = 30.0,
+                                double aperture_val = 0.1,
+                                double perm_val = 1000.0,
+                                double x_center = -1.0,
+                                double y_center = -1.0,
+                                double z_center = -1.0,
+                                int start_id = -1) {
+
         if (total_fracs <= 0) {
             std::cout << "No hydraulic fractures requested." << std::endl;
             return;
         }
-        double xc = (x_center < 0.0) ? (Lx / 2.0) : x_center;
-        double yc = (y_center < 0.0) ? (Ly / 2.0) : y_center;
-        double zc = (z_center < 0.0) ? (Lz / 2.0) : z_center;
+
+        if (total_fracs > 1 && frac_spacing <= EPS) {
+            std::cerr << "Invalid hydraulic fracture spacing: frac_spacing must be positive." << std::endl;
+            return;
+        }
+
+        if (hf_len <= EPS || hf_height <= EPS) {
+            std::cerr << "Invalid hydraulic fracture size: hf_len and hf_height must be positive." << std::endl;
+            return;
+        }
+
+        // ------------------------------------------------------------
+        // 1. 使用真实 corner-point grid 的全局 bbox 作为默认储层范围
+        // ------------------------------------------------------------
+        if (parents.empty()) {
+            std::cerr << "Cannot generate hydraulic fractures before parent grid is built." << std::endl;
+            return;
+        }
+
+        Point3 grid_min = parents[0].bbox_min;
+        Point3 grid_max = parents[0].bbox_max;
+        for (const auto& p : parents) {
+            grid_min = pointMin(grid_min, p.bbox_min);
+            grid_max = pointMax(grid_max, p.bbox_max);
+        }
+
+        double x_min_domain = grid_min.x;
+        double x_max_domain = grid_max.x;
+
+        double y_min_domain = grid_min.y;
+        double y_max_domain = grid_max.y;
+
+        double z_min_domain = grid_min.z;
+        double z_max_domain = grid_max.z;
+
+        double xc = (x_center < 0.0) ? 0.5 * (x_min_domain + x_max_domain) : x_center;
+        double yc = (y_center < 0.0) ? 0.5 * (y_min_domain + y_max_domain) : y_center;
+        double zc = (z_center < 0.0) ? 0.5 * (z_min_domain + z_max_domain) : z_center;
+
+        // ------------------------------------------------------------
+        // 2. 检查 y / z 方向的裂缝尺寸是否超出全局 bbox
+        //    注意：后面还会用 fractureFullyInsideCornerPointGrid 做严格判断
+        // ------------------------------------------------------------
         double y_min = yc - hf_len / 2.0;
         double y_max = yc + hf_len / 2.0;
+
         double z_min = zc - hf_height / 2.0;
         double z_max = zc + hf_height / 2.0;
-        if (y_min < 0.0 || y_max > Ly || z_min < 0.0 || z_max > Lz) {
-            std::cerr << "Hydraulic fracture geometry exceeds domain in y/z direction." << std::endl;
-            return;
-        }
-        if (total_fracs > 1) {
-            double x_start_check = xc - well_length / 2.0;
-            double x_end_check   = xc + well_length / 2.0;
-            if (x_start_check < 0.0 || x_end_check > Lx) {
-                std::cerr << "Hydraulic fracture distribution exceeds domain in x direction." << std::endl;
-                return;
+
+        double domain_scale = std::max(1.0,
+                            std::max(x_max_domain - x_min_domain,
+                            std::max(y_max_domain - y_min_domain,
+                                    z_max_domain - z_min_domain)));
+        double tol = 1e-8 * domain_scale;
+
+        auto fractureArea = [](const Fracture& f) -> double {
+            return triangleArea3D(f.vertices[0], f.vertices[1], f.vertices[2])
+                 + triangleArea3D(f.vertices[0], f.vertices[2], f.vertices[3]);
+        };
+
+        auto fractureFullyInsideParentGrid = [&](const Fracture& f) -> bool {
+            AABB fb = fractureAABB(f);
+            if (fb.mn.x < x_min_domain - tol || fb.mx.x > x_max_domain + tol ||
+                fb.mn.y < y_min_domain - tol || fb.mx.y > y_max_domain + tol ||
+                fb.mn.z < z_min_domain - tol || fb.mx.z > z_max_domain + tol) {
+                return false;
             }
-        } else if (xc < 0.0 || xc > Lx) {
-            std::cerr << "Hydraulic fracture center exceeds domain in x direction." << std::endl;
+
+            double full_area = fractureArea(f);
+            if (full_area <= EPS) return false;
+
+            double covered_area = 0.0;
+            double area_tol = std::max(full_area * 1e-6, EPS);
+            for (const auto& p : parents) {
+                if (p.bbox_max.x < fb.mn.x - tol || fb.mx.x < p.bbox_min.x - tol) continue;
+                if (p.bbox_max.y < fb.mn.y - tol || fb.mx.y < p.bbox_min.y - tol) continue;
+                if (p.bbox_max.z < fb.mn.z - tol || fb.mx.z < p.bbox_min.z - tol) continue;
+
+                auto poly = clipFractureCell(f, p);
+                covered_area += polygonArea(poly);
+                if (covered_area >= full_area - area_tol) return true;
+            }
+            return covered_area >= full_area - area_tol;
+        };
+
+        if (y_min < y_min_domain - tol || y_max > y_max_domain + tol ||
+            z_min < z_min_domain - tol || z_max > z_max_domain + tol) {
+            std::cerr << "Hydraulic fracture geometry exceeds domain in y/z direction." << std::endl;
+            std::cerr << "  y range = [" << y_min << ", " << y_max << "], domain = ["
+                    << y_min_domain << ", " << y_max_domain << "]" << std::endl;
+            std::cerr << "  z range = [" << z_min << ", " << z_max << "], domain = ["
+                    << z_min_domain << ", " << z_max_domain << "]" << std::endl;
             return;
         }
-        int base_id = (start_id >= 0) ? start_id : getNextFractureId();
-        double spacing = 0.0;
-        double x_start = xc;
-        if (total_fracs > 1) {
-            double eps_x=0.1;
-            x_start = xc - well_length / 2.0 + eps_x;
-            double x_end = xc + well_length / 2.0 - eps_x;
-            spacing = (x_end - x_start) / (total_fracs - 1);
+
+        // ------------------------------------------------------------
+        // 3. 按指定裂缝间距对称布置人工裂缝
+        //
+        //    核心公式：
+        //    x_curr = xc + (k - 0.5 * (total_fracs - 1)) * frac_spacing
+        //
+        //    total_fracs = 5:
+        //    xc - 2s, xc - s, xc, xc + s, xc + 2s
+        //
+        //    total_fracs = 4:
+        //    xc - 1.5s, xc - 0.5s, xc + 0.5s, xc + 1.5s
+        // ------------------------------------------------------------
+        double total_span = (total_fracs > 1)
+                            ? (total_fracs - 1) * frac_spacing
+                            : 0.0;
+
+        double x_first = xc - 0.5 * total_span;
+        double x_last  = xc + 0.5 * total_span;
+
+        if (x_first < x_min_domain - tol || x_last > x_max_domain + tol) {
+            std::cerr << "Hydraulic fracture distribution exceeds domain in x direction." << std::endl;
+            std::cerr << "  x_first = " << x_first << ", x_last = " << x_last << std::endl;
+            std::cerr << "  domain x range = [" << x_min_domain << ", " << x_max_domain << "]" << std::endl;
+            std::cerr << "  total_fracs = " << total_fracs
+                    << ", frac_spacing = " << frac_spacing
+                    << ", total_span = " << total_span << std::endl;
+            return;
         }
+
+        // 若未显式指定 start_id，则自动从当前已有裂缝编号之后开始
+        int base_id = (start_id >= 0) ? start_id : getNextFractureId();
+
+        // 先临时保存，全部检查通过后再 push 到 fractures
+        // 避免中途失败时只生成一部分人工裂缝
+        std::vector<Fracture> new_hydraulic_fracs;
+        new_hydraulic_fracs.reserve(total_fracs);
+
         for (int k = 0; k < total_fracs; ++k) {
             Fracture f;
             f.id = base_id + k;
             f.aperture = aperture_val;
             f.perm = perm_val;
             f.is_hydraulic = true;
-            double x_curr = (total_fracs == 1) ? xc : (x_start + k * spacing);
-            f.vertices[0] = {x_curr, yc - hf_len/2.0, zc - hf_height/2.0};
-            f.vertices[1] = {x_curr, yc + hf_len/2.0, zc - hf_height/2.0};
-            f.vertices[2] = {x_curr, yc + hf_len/2.0, zc + hf_height/2.0};
-            f.vertices[3] = {x_curr, yc - hf_len/2.0, zc + hf_height/2.0};
+
+            double x_curr = xc;
+            if (total_fracs > 1) {
+                x_curr = xc + (k - 0.5 * (total_fracs - 1)) * frac_spacing;
+            }
+
+            // 裂缝面位于 x = x_curr，是垂直于 x 方向的 y-z 平面
+            f.vertices[0] = {x_curr, yc - hf_len / 2.0,    zc - hf_height / 2.0};
+            f.vertices[1] = {x_curr, yc + hf_len / 2.0,    zc - hf_height / 2.0};
+            f.vertices[2] = {x_curr, yc + hf_len / 2.0,    zc + hf_height / 2.0};
+            f.vertices[3] = {x_curr, yc - hf_len / 2.0,    zc + hf_height / 2.0};
+
+            // 对 corner-point grid 做严格几何检查：
+            // 四个顶点必须都在真实角点网格内部
+            if (!fractureFullyInsideParentGrid(f)) {
+                std::cerr << "Hydraulic fracture " << f.id
+                        << " is not fully inside the corner-point grid." << std::endl;
+                std::cerr << "  x_curr = " << x_curr
+                        << ", yc = " << yc
+                        << ", zc = " << zc << std::endl;
+                std::cerr << "  Consider reducing hf_len / hf_height / total_fracs / frac_spacing,"
+                        << " or moving the fracture center." << std::endl;
+                return;
+            }
+
+            new_hydraulic_fracs.push_back(f);
+        }
+
+        for (const auto& f : new_hydraulic_fracs) {
             fractures.push_back(f);
         }
-        std::cout << "Generated " << total_fracs << " hydraulic fractures. "
-                  << "ID range: [" << base_id << ", " << (base_id + total_fracs - 1) << "]" << std::endl;
+
+        std::cout << "Generated " << total_fracs << " hydraulic fractures by spacing." << std::endl;
+        std::cout << "  ID range: [" << base_id << ", "
+                << (base_id + total_fracs - 1) << "]" << std::endl;
+        std::cout << "  center = (" << xc << ", " << yc << ", " << zc << ")" << std::endl;
+        std::cout << "  frac_spacing = " << frac_spacing << " m" << std::endl;
+        std::cout << "  x_first = " << x_first << ", x_last = " << x_last << std::endl;
+        std::cout << "  total fracture span = " << total_span << " m" << std::endl;
     }
 
     static AABB fractureAABB(const Fracture& f) {
@@ -3890,12 +4161,22 @@ public:
         ff.close();
 
         std::ofstream fracFile("fracture_geometry_lgr.csv");
-        fracFile << "id,x0,y0,z0,x1,y1,z1,x2,y2,z2,x3,y3,z3\n";
+        fracFile << "id,frac_type,is_hydraulic,"
+                << "x0,y0,z0,x1,y1,z1,x2,y2,z2,x3,y3,z3\n";
+
         for (const auto& f : fractures) {
-            fracFile << f.id;
+            std::string frac_type = f.is_hydraulic ? "hydraulic" : "natural";
+
+            fracFile << f.id << ","
+                    << frac_type << ","
+                    << (f.is_hydraulic ? 1 : 0);
+
             for (int i = 0; i < 4; ++i) {
-                fracFile << "," << f.vertices[i].x << "," << f.vertices[i].y << "," << f.vertices[i].z;
+                fracFile << "," << f.vertices[i].x
+                        << "," << f.vertices[i].y
+                        << "," << f.vertices[i].z;
             }
+
             fracFile << "\n";
         }
         fracFile.close();
@@ -4215,7 +4496,7 @@ public:
             use_region_fractures ? region_z_max : -1.0);
         generateHydraulicFractures(
             hydraulic_frac_count,
-            hydraulic_well_length,
+            hydraulic_frac_spacing,
             hydraulic_half_length,
             hydraulic_height,
             hydraulic_aperture,
@@ -4283,7 +4564,7 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
              py::arg("total_fracs"),
-             py::arg("well_length"),
+             py::arg("frac_spacing"),
              py::arg("hf_len"),
              py::arg("hf_height"),
              py::arg("aperture_val"),
