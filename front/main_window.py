@@ -65,7 +65,7 @@ class AlgorithmSelector(QWidget):
         
         for algo in self.disabled_algos:
             lbl = QLabel(algo)
-            lbl.setStyleSheet("color: #666666; font-size: 10px;")
+            lbl.setStyleSheet("color: #8b9199; font-size: 10px;")
             self.layout.addWidget(lbl)
         
         self.layout.addStretch()
@@ -85,7 +85,7 @@ class AlgorithmSelector(QWidget):
             if aid == algo_id:
                 lbl.setStyleSheet(f"color: {config['active_color']}; font-weight: bold; font-size: 12px;")
             else:
-                lbl.setStyleSheet(f"color: #666666; font-weight: bold; font-size: 12px;")
+                lbl.setStyleSheet(f"color: #8b9199; font-weight: bold; font-size: 12px;")
         
         if self.on_algorithm_changed:
             self.on_algorithm_changed(algo_id)
@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         """初始化主界面 - 与原文件一致"""
         # 创建中央部件
         central_widget = QWidget()
+        central_widget.setStyleSheet("background-color: #f0f2f5;")
         self.setCentralWidget(central_widget)
         
         # 主垂直布局：算法栏 + 分割器 + 底部面板
@@ -178,13 +179,13 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setStyleSheet("""
             QSplitter::handle {
-                background-color: #3d3d3d;
+                background-color: #e3e6ea;
             }
         """)
         
         # 左侧面板
         self.left_panel = QWidget()
-        self.left_panel.setStyleSheet("background-color: #2b2b2b;")
+        self.left_panel.setStyleSheet("background-color: #f3f4f6;")
         self.left_layout = QVBoxLayout(self.left_panel)
         self.left_layout.setContentsMargins(5, 5, 5, 5)
         self.left_panel.setMinimumWidth(200)
@@ -201,7 +202,7 @@ class MainWindow(QMainWindow):
         
         # 底部面板
         self.bottom_panel = QWidget()
-        self.bottom_panel.setStyleSheet("background-color: #1e1e1e; border: none;")
+        self.bottom_panel.setStyleSheet("background-color: #eef1f4; border: none;")
         self.bottom_panel.setMaximumHeight(200)
 
         self.progress_bar = QProgressBar()
@@ -211,9 +212,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedHeight(22)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #1e1e1e;
-                color: #cccccc;
-                border: 1px solid #3d3d3d;
+                background-color: #eef1f4;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
                 text-align: center;
             }
             QProgressBar::chunk {
@@ -230,7 +231,7 @@ class MainWindow(QMainWindow):
         """创建算法选择栏部件 - 与原文件一致"""
         algo_bar = QWidget()
         algo_bar.setFixedHeight(32)
-        algo_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #3d3d3d;")
+        algo_bar.setStyleSheet("background-color: #eceff3; border-bottom: 1px solid #d9dce1;")
         algo_layout = QHBoxLayout(algo_bar)
         algo_layout.setContentsMargins(10, 2, 10, 2)
         algo_layout.setSpacing(10)
@@ -401,8 +402,8 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(24, 24))
         toolbar.setStyleSheet("""
             QToolBar {
-                background-color: #2b2b2b;
-                border-bottom: 1px solid #3d3d3d;
+                background-color: #f7f8fa;
+                border-bottom: 1px solid #d9dce1;
                 padding: 2px;
             }
             QToolButton {
@@ -410,14 +411,14 @@ class MainWindow(QMainWindow):
                 border: none;
                 padding: 5px;
                 margin: 2px;
-                color: #cccccc;
+                color: #1f2328;
             }
             QToolButton:hover {
-                background-color: #3d3d3d;
+                background-color: #f3f4f6;
                 border-radius: 3px;
             }
             QToolBar::separator {
-                background-color: #3d3d3d;
+                background-color: #d8d8d8;
                 width: 1px;
                 margin: 4px 8px;
             }
@@ -468,8 +469,8 @@ class MainWindow(QMainWindow):
                 background-color: #B71C1C;
             }
             QPushButton:disabled {
-                background-color: #6b2b2b;
-                color: #bbbbbb;
+                background-color: #e8d0d0;
+                color: #999999;
             }
         """)
         self.stop_btn.setEnabled(False)
@@ -480,7 +481,7 @@ class MainWindow(QMainWindow):
         """创建左侧面板 - 与原文件一致"""
         # 顶部标签按钮
         tab_frame = QFrame()
-        tab_frame.setStyleSheet("background-color: #2b2b2b; border-bottom: 1px solid #3d3d3d;")
+        tab_frame.setStyleSheet("background-color: #f3f4f6; border-bottom: 1px solid #d9dce1;")
         tab_layout = QHBoxLayout(tab_frame)
         tab_layout.setContentsMargins(5, 5, 5, 5)
         tab_layout.setSpacing(5)
@@ -499,9 +500,9 @@ class MainWindow(QMainWindow):
             btn.setFixedHeight(30)
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #3d3d3d;
-                    color: #cccccc;
-                    border: 1px solid #555555;
+                    background-color: #f3f4f6;
+                    color: #1f2328;
+                    border: 1px solid #c8ced6;
                     border-radius: 3px;
                     padding: 5px 15px;
                 }
@@ -510,7 +511,7 @@ class MainWindow(QMainWindow):
                     color: white;
                 }
                 QPushButton:hover {
-                    background-color: #4d4d4d;
+                    background-color: #e7ebf0;
                 }
             """)
             btn.clicked.connect(lambda checked, name=tab_name: self.switch_tab(name))
@@ -522,11 +523,11 @@ class MainWindow(QMainWindow):
         
         # 按算法切换的参数区
         self.algorithm_param_stack = QStackedWidget()
-        self.algorithm_param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.algorithm_param_stack.setStyleSheet("background-color: #f3f4f6;")
 
         # Black Oil 参数堆叠窗口
         self.param_stack = QStackedWidget()
-        self.param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.param_stack.setStyleSheet("background-color: #f3f4f6;")
         
         # Grid参数页面
         self.grid_page = self.create_grid_page()
@@ -549,7 +550,7 @@ class MainWindow(QMainWindow):
 
         # Corner Grid 参数堆叠窗口
         self.corner_param_stack = QStackedWidget()
-        self.corner_param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.corner_param_stack.setStyleSheet("background-color: #f3f4f6;")
 
         self.corner_grid_page = self.create_corner_grid_page()
         self.corner_param_stack.addWidget(self.corner_grid_page)
@@ -574,7 +575,7 @@ class MainWindow(QMainWindow):
     def create_grid_page(self):
         """创建Grid参数页面，支持加密/不加密两套参数面板切换。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -584,7 +585,7 @@ class MainWindow(QMainWindow):
 
         self.combo_grid_refinement = QComboBox()
         self.combo_grid_refinement.addItems(["不加密", "加密"])
-        self.combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.combo_grid_refinement.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         self.combo_grid_refinement.currentTextChanged.connect(self.update_parameter_mode)
 
         # Keep a hidden backup interface for future grid-type switching.
@@ -592,7 +593,7 @@ class MainWindow(QMainWindow):
         self.combo_grid_type.addItem("角格", "corner_point")
         self.combo_grid_type.addItem("网格", "cartesian")
         self.combo_grid_type.setCurrentIndex(0)
-        self.combo_grid_type.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.combo_grid_type.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
         options_layout.addWidget(self.combo_grid_refinement, 0, 1)
@@ -619,7 +620,7 @@ class MainWindow(QMainWindow):
     def create_pvt_page(self):
         """创建 PVT 参数页面，支持加密/不加密两套参数面板切换。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -788,7 +789,7 @@ class MainWindow(QMainWindow):
 
     def create_refined_pvt_params_page(self):
         """加密 PVT 参数页面。"""
-        content = QWidget()
+        content = QWidget() 
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -978,7 +979,7 @@ class MainWindow(QMainWindow):
     def create_wells_page(self):
         """创建 Wells 参数页面，支持加密/不加密两套面板。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1123,7 +1124,7 @@ class MainWindow(QMainWindow):
     def create_fractures_page(self):
         """创建 Fractures 参数页面，支持加密/不加密两套面板。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1224,7 +1225,7 @@ class MainWindow(QMainWindow):
     def create_results_page(self, algorithm_key="black_oil"):
         """创建 Results 页面。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1234,7 +1235,7 @@ class MainWindow(QMainWindow):
 
         view_mode_combo = QComboBox()
         view_mode_combo.addItems(["Pressure Field", "Fracture Mesh"])
-        view_mode_combo.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        view_mode_combo.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         view_mode_combo.currentTextChanged.connect(self.change_view_mode)
 
         view_layout.addWidget(QLabel("Select View:"))
@@ -1248,7 +1249,7 @@ class MainWindow(QMainWindow):
 
         combo_field = QComboBox()
         combo_field.addItems(["Pressure", "Temperature", "Stress"])
-        combo_field.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        combo_field.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         combo_field.currentTextChanged.connect(self.change_field_display)
 
         check_show_grid = QCheckBox("Show Grid Lines")
@@ -1291,14 +1292,14 @@ class MainWindow(QMainWindow):
         toggle_btn.setCheckable(True)
         toggle_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 6px 10px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
             QPushButton:checked {
                 background-color: #1565C0;
@@ -1309,7 +1310,7 @@ class MainWindow(QMainWindow):
 
         status_label = QLabel("未选择区域")
         status_label.setWordWrap(True)
-        status_label.setStyleSheet("color: #8f8f8f; padding: 4px 0;")
+        status_label.setStyleSheet("color: #6b7380; padding: 4px 0;")
 
         self.selection_tool_controls[algorithm_key] = {
             'toggle_btn': toggle_btn,
@@ -1324,7 +1325,7 @@ class MainWindow(QMainWindow):
     def create_corner_grid_page(self):
         """创建 Corner Grid 的 Grid 页面 - 使用滚动区域。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -1344,7 +1345,7 @@ class MainWindow(QMainWindow):
         self.corner_combo_grid_refinement = QComboBox()
         self.corner_combo_grid_refinement.addItems(["不加密", "加密"])
         self.corner_combo_grid_refinement.setCurrentIndex(1)  # 默认加密，对齐原版C++
-        self.corner_combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.corner_combo_grid_refinement.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
         options_layout.addWidget(self.corner_combo_grid_refinement, 0, 1)
@@ -1381,7 +1382,7 @@ class MainWindow(QMainWindow):
         # 加一条灰色的横线，将新按钮和下面的 CSV 选项隔开，UI 更清晰
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("background-color: #555555; margin: 5px 0px;")
+        line.setStyleSheet("background-color: #d8d8d8; margin: 5px 0px;")
         file_layout.addWidget(line)
         # ==============================================================
 
@@ -1389,22 +1390,22 @@ class MainWindow(QMainWindow):
         coord_layout = QHBoxLayout()
         coord_label = QLabel("COORD:")
         coord_label.setFixedWidth(60)
-        coord_label.setStyleSheet("color: #cccccc;")
+        coord_label.setStyleSheet("color: #1f2328;")
         self.corner_coord_file_label = QLabel("未选择")
-        self.corner_coord_file_label.setStyleSheet("color: #8f8f8f;")
+        self.corner_coord_file_label.setStyleSheet("color: #6b7380;")
         self.corner_coord_file_label.setWordWrap(True)
         coord_btn = QPushButton("浏览...")
         coord_btn.setFixedWidth(50)
         coord_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 3px 6px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
         """)
         coord_btn.clicked.connect(lambda: self.select_corner_grid_csv_file("coord"))
@@ -1416,22 +1417,22 @@ class MainWindow(QMainWindow):
         zcorn_layout = QHBoxLayout()
         zcorn_label = QLabel("ZCORN:")
         zcorn_label.setFixedWidth(60)
-        zcorn_label.setStyleSheet("color: #cccccc;")
+        zcorn_label.setStyleSheet("color: #1f2328;")
         self.corner_zcorn_file_label = QLabel("未选择")
-        self.corner_zcorn_file_label.setStyleSheet("color: #8f8f8f;")
+        self.corner_zcorn_file_label.setStyleSheet("color: #6b7380;")
         self.corner_zcorn_file_label.setWordWrap(True)
         zcorn_btn = QPushButton("浏览...")
         zcorn_btn.setFixedWidth(50)
         zcorn_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 3px 6px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
         """)
         zcorn_btn.clicked.connect(lambda: self.select_corner_grid_csv_file("zcorn"))
@@ -1456,8 +1457,8 @@ class MainWindow(QMainWindow):
                 background-color: #45a049;
             }
             QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
+                background-color: #e0e3e8;
+                color: #999999;
             }
         """)
         draw_btn.clicked.connect(self.draw_corner_grid_from_csv)
@@ -1533,7 +1534,7 @@ class MainWindow(QMainWindow):
     def create_corner_pvt_page(self):
         """创建 Corner Grid 的 PVT 页面。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1565,7 +1566,7 @@ class MainWindow(QMainWindow):
     def create_corner_wells_page(self):
         """创建 Corner Grid 的 Wells 页面 - 使用可复用组件"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -1578,13 +1579,13 @@ class MainWindow(QMainWindow):
     def create_corner_fractures_page(self):
         """创建 Corner Grid 的 Fractures 页面 - 使用可复用组件"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
         self.corner_check_enable_hydraulic = QCheckBox("启用人工裂缝")
         self.corner_check_enable_hydraulic.setChecked(True)
-        self.corner_check_enable_hydraulic.setStyleSheet("color: #cccccc; font-weight: bold;")
+        self.corner_check_enable_hydraulic.setStyleSheet("color: #1f2328; font-weight: bold;")
         layout.addWidget(self.corner_check_enable_hydraulic)
         
         self.corner_natural_frac_panel = NaturalFracturesPanel()
@@ -1603,6 +1604,12 @@ class MainWindow(QMainWindow):
         self.corner_hydraulic_frac_panel.spin_height.setValue(30.0)
         self.corner_hydraulic_frac_panel.spin_aperture.setValue(0.1)
         layout.addWidget(self.corner_hydraulic_frac_panel)
+        self.corner_check_enable_hydraulic.toggled.connect(
+            self.corner_hydraulic_frac_panel.set_controls_enabled
+        )
+        self.corner_hydraulic_frac_panel.set_controls_enabled(
+            self.corner_check_enable_hydraulic.isChecked()
+        )
         
         layout.addStretch()
         return page
@@ -1610,7 +1617,7 @@ class MainWindow(QMainWindow):
     def create_corner_results_page(self):
         """创建 Corner Grid 的 Results 页面 - 仅显示控制"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -1621,31 +1628,31 @@ class MainWindow(QMainWindow):
         
         self.check_show_grid_corner = QCheckBox("Show Grid")
         self.check_show_grid_corner.setChecked(True)
-        self.check_show_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_grid_corner.setStyleSheet("color: #1f2328;")
         self.check_show_grid_corner.stateChanged.connect(self.toggle_corner_grid_visibility)
         control_layout.addWidget(self.check_show_grid_corner)
         
         self.check_show_fractures_corner = QCheckBox("Show Fractures")
         self.check_show_fractures_corner.setChecked(True)
-        self.check_show_fractures_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_fractures_corner.setStyleSheet("color: #1f2328;")
         self.check_show_fractures_corner.stateChanged.connect(self.toggle_corner_fractures_visibility)
         control_layout.addWidget(self.check_show_fractures_corner)
         
         self.check_show_wells_corner = QCheckBox("Show Wells")
         self.check_show_wells_corner.setChecked(True)
-        self.check_show_wells_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_wells_corner.setStyleSheet("color: #1f2328;")
         self.check_show_wells_corner.stateChanged.connect(self.toggle_corner_wells_visibility)
         control_layout.addWidget(self.check_show_wells_corner)
         
         self.check_show_pressure_corner = QCheckBox("Show Pressure Field")
         self.check_show_pressure_corner.setChecked(True)
-        self.check_show_pressure_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_pressure_corner.setStyleSheet("color: #1f2328;")
         self.check_show_pressure_corner.stateChanged.connect(self.toggle_corner_pressure_visibility)
         control_layout.addWidget(self.check_show_pressure_corner)
 
         self.check_show_lgr_grid_corner = QCheckBox("Show LGR Grid")
         self.check_show_lgr_grid_corner.setChecked(True)
-        self.check_show_lgr_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_lgr_grid_corner.setStyleSheet("color: #1f2328;")
         self.check_show_lgr_grid_corner.stateChanged.connect(self.toggle_corner_lgr_grid_visibility)
         control_layout.addWidget(self.check_show_lgr_grid_corner)
 
@@ -1654,7 +1661,7 @@ class MainWindow(QMainWindow):
 
         # --- 压力场显示模式切换 ---
         self.corner_pressure_mode_label = QLabel("Pressure Display Mode:")
-        self.corner_pressure_mode_label.setStyleSheet("color: #cccccc;")
+        self.corner_pressure_mode_label.setStyleSheet("color: #1f2328;")
         layout.addWidget(self.corner_pressure_mode_label)
 
         self.corner_pressure_mode_combo = QComboBox()
@@ -1663,7 +1670,7 @@ class MainWindow(QMainWindow):
             "Matrix Pressure (WR)",
         ])
         self.corner_pressure_mode_combo.setStyleSheet(
-            "color: #cccccc; background-color: #3d3d3d;"
+            "color: #1f2328; background-color: #f3f4f6;"
         )
         self.corner_pressure_mode_combo.setCurrentIndex(0)
         self.corner_pressure_mode_combo.currentIndexChanged.connect(
@@ -1672,7 +1679,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.corner_pressure_mode_combo)
 
         self.corner_pressure_mode_status = QLabel("")
-        self.corner_pressure_mode_status.setStyleSheet("color: #888888; font-size: 10px;")
+        self.corner_pressure_mode_status.setStyleSheet("color: #5c6670; font-size: 10px;")
         self.corner_pressure_mode_status.setWordWrap(True)
         layout.addWidget(self.corner_pressure_mode_status)
 
@@ -1700,7 +1707,7 @@ class MainWindow(QMainWindow):
 
         label = QLabel(message)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #8f8f8f; padding: 6px 0;")
+        label.setStyleSheet("color: #6b7380; padding: 6px 0;")
         layout.addWidget(label)
 
         group.setLayout(layout)
@@ -2139,7 +2146,7 @@ class MainWindow(QMainWindow):
         status_layout = QVBoxLayout()
         self.sim_status_text = QTextEdit()
         self.sim_status_text.setReadOnly(True)
-        self.sim_status_text.setStyleSheet("background-color: #1e1e1e; color: #00ff00; border: 1px solid #3d3d3d; font-family: Consolas;")
+        self.sim_status_text.setStyleSheet("background-color: #fafbfc; color: #1f2328; border: 1px solid #d9dce1; font-family: Consolas;")
         self.sim_status_text.setMaximumHeight(150)
         status_layout.addWidget(self.sim_status_text)
         self.sim_status_group.setLayout(status_layout)
@@ -2149,7 +2156,7 @@ class MainWindow(QMainWindow):
         stats_layout = QVBoxLayout()
         self.stats_text = QTextEdit()
         self.stats_text.setReadOnly(True)
-        self.stats_text.setStyleSheet("background-color: #1e1e1e; color: #cccccc; border: 1px solid #3d3d3d;")
+        self.stats_text.setStyleSheet("background-color: #fafbfc; color: #1f2328; border: 1px solid #d9dce1;")
         self.stats_text.setMaximumHeight(150)
         stats_layout.addWidget(self.stats_text)
         stats_group.setLayout(stats_layout)
@@ -2160,7 +2167,20 @@ class MainWindow(QMainWindow):
         self.prop_table = QTableWidget()
         self.prop_table.setColumnCount(2)
         self.prop_table.setHorizontalHeaderLabels(["Property", "Value"])
-        self.prop_table.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        self.prop_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
+                gridline-color: #d9dce1;
+            }
+            QHeaderView::section {
+                background-color: #f0f2f5;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
+                padding: 4px;
+            }
+        """)
         self.prop_table.setMaximumHeight(150)
         prop_layout.addWidget(self.prop_table)
         prop_group.setLayout(prop_layout)
@@ -2172,7 +2192,7 @@ class MainWindow(QMainWindow):
     def create_status_bar(self):
         """创建状态栏 - 与原文件一致"""
         self.status_bar = QStatusBar()
-        self.status_bar.setStyleSheet("background-color: #2b2b2b; color: #cccccc;")
+        self.status_bar.setStyleSheet("background-color: #f7f8fa; color: #1f2328;")
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready - Click 'Run Simulation' to start")
     
@@ -2180,9 +2200,9 @@ class MainWindow(QMainWindow):
         """GroupBox样式 - 与原文件一致"""
         return """
             QGroupBox {
-                background-color: #2b2b2b;
-                color: #cccccc;
-                border: 1px solid #3d3d3d;
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
                 border-radius: 3px;
                 margin-top: 10px;
                 font-weight: bold;
@@ -2193,16 +2213,16 @@ class MainWindow(QMainWindow):
                 padding: 0 5px;
             }
             QLabel {
-                color: #cccccc;
+                color: #1f2328;
             }
             QSpinBox, QDoubleSpinBox, QComboBox {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 3px;
             }
             QCheckBox {
-                color: #cccccc;
+                color: #1f2328;
             }
         """
 
@@ -2221,8 +2241,8 @@ class MainWindow(QMainWindow):
                 background-color: #1976D2;
             }
             QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
+                background-color: #e0e3e8;
+                color: #999999;
             }
         """
     
@@ -3510,23 +3530,23 @@ class MainWindow(QMainWindow):
         dialog.setMinimumSize(420, 280)
         dialog.setStyleSheet("""
             QDialog {
-                background-color: #2b2b2b;
-                color: #cccccc;
+                background-color: #f7f8fa;
+                color: #1f2328;
             }
             QLabel {
-                color: #cccccc;
+                color: #1f2328;
             }
             QSpinBox, QDoubleSpinBox {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 5px;
                 min-height: 28px;
             }
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 5px 12px;
             }
         """)

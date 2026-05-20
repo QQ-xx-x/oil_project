@@ -3890,12 +3890,22 @@ public:
         ff.close();
 
         std::ofstream fracFile("fracture_geometry_lgr.csv");
-        fracFile << "id,x0,y0,z0,x1,y1,z1,x2,y2,z2,x3,y3,z3\n";
+        fracFile << "id,frac_type,is_hydraulic,"
+                << "x0,y0,z0,x1,y1,z1,x2,y2,z2,x3,y3,z3\n";
+
         for (const auto& f : fractures) {
-            fracFile << f.id;
+            std::string frac_type = f.is_hydraulic ? "hydraulic" : "natural";
+
+            fracFile << f.id << ","
+                    << frac_type << ","
+                    << (f.is_hydraulic ? 1 : 0);
+
             for (int i = 0; i < 4; ++i) {
-                fracFile << "," << f.vertices[i].x << "," << f.vertices[i].y << "," << f.vertices[i].z;
+                fracFile << "," << f.vertices[i].x
+                        << "," << f.vertices[i].y
+                        << "," << f.vertices[i].z;
             }
+
             fracFile << "\n";
         }
         fracFile.close();
