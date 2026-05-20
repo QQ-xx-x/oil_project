@@ -267,7 +267,6 @@ def run_corner_edfm_simulation(params):
         sim.setInitialStateParameters(
             float(params.get('pressure', 800.0)),
             float(params.get('sw', 0.05)),
-            float(params.get('sg', 0.9)),
         )
     if use_lgr_module and hasattr(sim, 'setLGRParameters'):
         sim.setLGRParameters(
