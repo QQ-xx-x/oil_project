@@ -806,12 +806,12 @@ class PyVistaRenderer:
             #   0 -> 天然裂缝
             # =========================================================
 
-            is_hydraulic = int(fracture.get("is_hydraulic", 0))
+            is_hydraulic = int(fracture.get("is_hydraulic", 0)) == 1 or fracture.get("type") == "hydraulic"
 
-            if is_hydraulic == 1:
+            if is_hydraulic:
                 # 人工裂缝
-                frac_color = (0.5, 0.1, 0.0)
-                edge_color = (0.3, 0.05, 0.0)
+                frac_color = (1.0, 0.0, 0.0)
+                edge_color = (0.75, 0.0, 0.0)
 
                 ambient = 0.85
                 diffuse = 0.35
@@ -932,12 +932,12 @@ class PyVistaRenderer:
             #   1 -> 人工裂缝
             #   0 -> 天然裂缝
             # =========================================================
-            is_hydraulic = int(fracture.get("is_hydraulic", 0))
+            is_hydraulic = int(fracture.get("is_hydraulic", 0)) == 1 or fracture.get("type") == "hydraulic"
 
-            if is_hydraulic == 1:
+            if is_hydraulic:
                 # 人工裂缝
-                frac_color = (0.5, 0.1, 0.0)
-                edge_color = (0.3, 0.05, 0.0)
+                frac_color = (1.0, 0.0, 0.0)
+                edge_color = (0.75, 0.0, 0.0)
                 ambient = 0.85
                 diffuse = 0.35
                 specular = 0.45
@@ -1012,7 +1012,7 @@ class PyVistaRenderer:
 
         for frac in sim_data.fractures:
 
-            if int(frac.get("is_hydraulic", 0)) != 1:
+            if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
                 continue
 
             all_pts = np.array(frac["points"], dtype=float)
@@ -1830,7 +1830,7 @@ class PyVistaRenderer:
         # -------------------------
         if hasattr(sim_data, "fractures"):
             for frac in sim_data.fractures:
-                if int(frac.get("is_hydraulic", 0)) == 1:
+                if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
                     continue  # 人工裂缝单独处理
 
                 pts = np.array(frac["points"], dtype=np.float64)
@@ -1869,7 +1869,7 @@ class PyVistaRenderer:
         # -------------------------
         show_all_hydraulic = False
         for frac in sim_data.fractures:
-            if int(frac.get("is_hydraulic", 0)) != 1:
+            if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
                 continue
             pts = np.array(frac["points"], dtype=np.float64)
             if len(pts) < 3:
@@ -1883,15 +1883,15 @@ class PyVistaRenderer:
 
         if show_all_hydraulic:
             for frac in sim_data.fractures:
-                if int(frac.get("is_hydraulic", 0)) != 1:
+                if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
                     continue  # 只显示人工裂缝
                 pts = np.array(frac["points"], dtype=np.float64)
                 if len(pts) < 3:
                     continue
                 poly = pv.PolyData(pts)
                 poly.faces = [len(pts), *range(len(pts))]
-                fcolor = (0.5, 0.1, 0.0)
-                ecolor = (0.3, 0.05, 0.0)
+                fcolor = (1.0, 0.0, 0.0)
+                ecolor = (0.75, 0.0, 0.0)
                 fac = self.plotter.add_mesh(
                     poly,
                     color=fcolor,
@@ -1909,7 +1909,7 @@ class PyVistaRenderer:
 
             for frac in sim_data.fractures:
 
-                if int(frac.get("is_hydraulic", 0)) != 1:
+                if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
                     continue
 
                 pts = np.array(frac["points"], dtype=np.float64)

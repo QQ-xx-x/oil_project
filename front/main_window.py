@@ -2137,6 +2137,20 @@ class MainWindow(QMainWindow):
                 Qt.Checked if self.check_show_lgr_grid_corner.isChecked() else Qt.Unchecked
             )
 
+    def _restore_corner_lgr_grid_after_full_render(self):
+        """Rebuild the LGR grid actor after full-field pressure rendering."""
+        if not hasattr(self, 'vtk_renderer'):
+            return
+        has_lgr_geom = (
+            getattr(self.sim_data, 'corner_lgr_grid_geometry', None) is not None
+            or getattr(self.sim_data, 'corner_lgr_parent_grid_geometry', None) is not None
+            or getattr(self.sim_data, 'corner_lgr_refined_grid_geometry', None) is not None
+        )
+        if not has_lgr_geom:
+            return
+        if hasattr(self.vtk_renderer, 'render_corner_lgr_grid'):
+            self.vtk_renderer.render_corner_lgr_grid(self.sim_data)
+
     def _apply_corner_render_mode(self):
         """Corner 渲染调度：分层 render 优先，否则按 pressure mode 分发。"""
         if hasattr(self, 'check_enable_corner_layer_render') and \
@@ -2173,6 +2187,7 @@ class MainWindow(QMainWindow):
 
         if not hasattr(self, 'corner_pressure_mode_combo'):
             self._apply_leaf_pressure_mode()
+            self._restore_corner_lgr_grid_after_full_render()
             self._reapply_corner_visibility_controls(layer_mode=False)
             return
         index = self.corner_pressure_mode_combo.currentIndex()
@@ -2180,6 +2195,7 @@ class MainWindow(QMainWindow):
             self._apply_dual_porosity_pressure_mode()
         else:
             self._apply_leaf_pressure_mode()
+        self._restore_corner_lgr_grid_after_full_render()
         self._reapply_corner_visibility_controls(layer_mode=False)
 
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
@@ -3072,7 +3088,9 @@ class MainWindow(QMainWindow):
             natural_frac_params = self.corner_natural_frac_panel.get_values()
             for frac in self.sim_data.fractures:
                 frac_id = frac.get('id', 0)
-                frac['type'] = 'hydraulic' if frac_id >= natural_frac_params['num_fracs'] else 'natural'
+                is_hydraulic = frac_id >= natural_frac_params['num_fracs']
+                frac['type'] = 'hydraulic' if is_hydraulic else 'natural'
+                frac['is_hydraulic'] = 1 if is_hydraulic else 0
                 for i, p in enumerate(frac['points']):
                     frac['points'][i] = (p[0] + x_offset, p[1] + y_offset, p[2] + z_offset)
             
