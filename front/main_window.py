@@ -4,6 +4,7 @@
 """
 import sys
 import os
+import subprocess
 import json
 import math
 import re
@@ -65,7 +66,7 @@ class AlgorithmSelector(QWidget):
         
         for algo in self.disabled_algos:
             lbl = QLabel(algo)
-            lbl.setStyleSheet("color: #666666; font-size: 10px;")
+            lbl.setStyleSheet("color: #8b9199; font-size: 10px;")
             self.layout.addWidget(lbl)
         
         self.layout.addStretch()
@@ -85,7 +86,7 @@ class AlgorithmSelector(QWidget):
             if aid == algo_id:
                 lbl.setStyleSheet(f"color: {config['active_color']}; font-weight: bold; font-size: 12px;")
             else:
-                lbl.setStyleSheet(f"color: #666666; font-weight: bold; font-size: 12px;")
+                lbl.setStyleSheet(f"color: #8b9199; font-weight: bold; font-size: 12px;")
         
         if self.on_algorithm_changed:
             self.on_algorithm_changed(algo_id)
@@ -163,6 +164,7 @@ class MainWindow(QMainWindow):
         """初始化主界面 - 与原文件一致"""
         # 创建中央部件
         central_widget = QWidget()
+        central_widget.setStyleSheet("background-color: #f0f2f5;")
         self.setCentralWidget(central_widget)
         
         # 主垂直布局：算法栏 + 分割器 + 底部面板
@@ -178,13 +180,13 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setStyleSheet("""
             QSplitter::handle {
-                background-color: #3d3d3d;
+                background-color: #e3e6ea;
             }
         """)
         
         # 左侧面板
         self.left_panel = QWidget()
-        self.left_panel.setStyleSheet("background-color: #2b2b2b;")
+        self.left_panel.setStyleSheet("background-color: #f3f4f6;")
         self.left_layout = QVBoxLayout(self.left_panel)
         self.left_layout.setContentsMargins(5, 5, 5, 5)
         self.left_panel.setMinimumWidth(200)
@@ -201,7 +203,7 @@ class MainWindow(QMainWindow):
         
         # 底部面板
         self.bottom_panel = QWidget()
-        self.bottom_panel.setStyleSheet("background-color: #1e1e1e; border: none;")
+        self.bottom_panel.setStyleSheet("background-color: #eef1f4; border: none;")
         self.bottom_panel.setMaximumHeight(200)
 
         self.progress_bar = QProgressBar()
@@ -211,9 +213,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFixedHeight(22)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #1e1e1e;
-                color: #cccccc;
-                border: 1px solid #3d3d3d;
+                background-color: #eef1f4;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
                 text-align: center;
             }
             QProgressBar::chunk {
@@ -230,7 +232,7 @@ class MainWindow(QMainWindow):
         """创建算法选择栏部件 - 与原文件一致"""
         algo_bar = QWidget()
         algo_bar.setFixedHeight(32)
-        algo_bar.setStyleSheet("background-color: #1e1e1e; border-bottom: 1px solid #3d3d3d;")
+        algo_bar.setStyleSheet("background-color: #eceff3; border-bottom: 1px solid #d9dce1;")
         algo_layout = QHBoxLayout(algo_bar)
         algo_layout.setContentsMargins(10, 2, 10, 2)
         algo_layout.setSpacing(10)
@@ -401,8 +403,8 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(24, 24))
         toolbar.setStyleSheet("""
             QToolBar {
-                background-color: #2b2b2b;
-                border-bottom: 1px solid #3d3d3d;
+                background-color: #f7f8fa;
+                border-bottom: 1px solid #d9dce1;
                 padding: 2px;
             }
             QToolButton {
@@ -410,14 +412,14 @@ class MainWindow(QMainWindow):
                 border: none;
                 padding: 5px;
                 margin: 2px;
-                color: #cccccc;
+                color: #1f2328;
             }
             QToolButton:hover {
-                background-color: #3d3d3d;
+                background-color: #f3f4f6;
                 border-radius: 3px;
             }
             QToolBar::separator {
-                background-color: #3d3d3d;
+                background-color: #d8d8d8;
                 width: 1px;
                 margin: 4px 8px;
             }
@@ -468,8 +470,8 @@ class MainWindow(QMainWindow):
                 background-color: #B71C1C;
             }
             QPushButton:disabled {
-                background-color: #6b2b2b;
-                color: #bbbbbb;
+                background-color: #e8d0d0;
+                color: #999999;
             }
         """)
         self.stop_btn.setEnabled(False)
@@ -480,7 +482,7 @@ class MainWindow(QMainWindow):
         """创建左侧面板 - 与原文件一致"""
         # 顶部标签按钮
         tab_frame = QFrame()
-        tab_frame.setStyleSheet("background-color: #2b2b2b; border-bottom: 1px solid #3d3d3d;")
+        tab_frame.setStyleSheet("background-color: #f3f4f6; border-bottom: 1px solid #d9dce1;")
         tab_layout = QHBoxLayout(tab_frame)
         tab_layout.setContentsMargins(5, 5, 5, 5)
         tab_layout.setSpacing(5)
@@ -499,9 +501,9 @@ class MainWindow(QMainWindow):
             btn.setFixedHeight(30)
             btn.setStyleSheet("""
                 QPushButton {
-                    background-color: #3d3d3d;
-                    color: #cccccc;
-                    border: 1px solid #555555;
+                    background-color: #f3f4f6;
+                    color: #1f2328;
+                    border: 1px solid #c8ced6;
                     border-radius: 3px;
                     padding: 5px 15px;
                 }
@@ -510,7 +512,7 @@ class MainWindow(QMainWindow):
                     color: white;
                 }
                 QPushButton:hover {
-                    background-color: #4d4d4d;
+                    background-color: #e7ebf0;
                 }
             """)
             btn.clicked.connect(lambda checked, name=tab_name: self.switch_tab(name))
@@ -522,11 +524,11 @@ class MainWindow(QMainWindow):
         
         # 按算法切换的参数区
         self.algorithm_param_stack = QStackedWidget()
-        self.algorithm_param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.algorithm_param_stack.setStyleSheet("background-color: #f3f4f6;")
 
         # Black Oil 参数堆叠窗口
         self.param_stack = QStackedWidget()
-        self.param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.param_stack.setStyleSheet("background-color: #f3f4f6;")
         
         # Grid参数页面
         self.grid_page = self.create_grid_page()
@@ -549,7 +551,7 @@ class MainWindow(QMainWindow):
 
         # Corner Grid 参数堆叠窗口
         self.corner_param_stack = QStackedWidget()
-        self.corner_param_stack.setStyleSheet("background-color: #2b2b2b;")
+        self.corner_param_stack.setStyleSheet("background-color: #f3f4f6;")
 
         self.corner_grid_page = self.create_corner_grid_page()
         self.corner_param_stack.addWidget(self.corner_grid_page)
@@ -574,7 +576,7 @@ class MainWindow(QMainWindow):
     def create_grid_page(self):
         """创建Grid参数页面，支持加密/不加密两套参数面板切换。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -584,7 +586,7 @@ class MainWindow(QMainWindow):
 
         self.combo_grid_refinement = QComboBox()
         self.combo_grid_refinement.addItems(["不加密", "加密"])
-        self.combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.combo_grid_refinement.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         self.combo_grid_refinement.currentTextChanged.connect(self.update_parameter_mode)
 
         # Keep a hidden backup interface for future grid-type switching.
@@ -592,7 +594,7 @@ class MainWindow(QMainWindow):
         self.combo_grid_type.addItem("角格", "corner_point")
         self.combo_grid_type.addItem("网格", "cartesian")
         self.combo_grid_type.setCurrentIndex(0)
-        self.combo_grid_type.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.combo_grid_type.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
         options_layout.addWidget(self.combo_grid_refinement, 0, 1)
@@ -619,7 +621,7 @@ class MainWindow(QMainWindow):
     def create_pvt_page(self):
         """创建 PVT 参数页面，支持加密/不加密两套参数面板切换。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -788,7 +790,7 @@ class MainWindow(QMainWindow):
 
     def create_refined_pvt_params_page(self):
         """加密 PVT 参数页面。"""
-        content = QWidget()
+        content = QWidget() 
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -978,7 +980,7 @@ class MainWindow(QMainWindow):
     def create_wells_page(self):
         """创建 Wells 参数页面，支持加密/不加密两套面板。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1021,7 +1023,7 @@ class MainWindow(QMainWindow):
         self.basic_check_enable_hf = QCheckBox("启用人工裂缝")
         self.basic_check_enable_hf.setChecked(True)
         self.basic_spin_hf_count = self.create_spinbox(0, 200, 20)
-        self.basic_spin_hf_well_length = self.create_double_spinbox(0.0, 100000.0, 2000.0, decimals=2)
+        self.basic_spin_hf_spacing_x = self.create_double_spinbox(0.0, 100000.0, 31.58, decimals=2)
         self.basic_spin_hf_length = self.create_double_spinbox(0.0, 100000.0, 120.0, decimals=2)
         self.basic_spin_hf_height = self.create_double_spinbox(0.0, 100000.0, 40.0, decimals=2)
         self.basic_spin_hf_aperture = self.create_double_spinbox(0.0, 10.0, 0.01, decimals=4)
@@ -1036,8 +1038,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.basic_check_enable_hf, 0, 0, 1, 2)
         layout.addWidget(QLabel("裂缝数量:"), 1, 0)
         layout.addWidget(self.basic_spin_hf_count, 1, 1)
-        layout.addWidget(QLabel("Well Length (m):"), 2, 0)
-        layout.addWidget(self.basic_spin_hf_well_length, 2, 1)
+        layout.addWidget(QLabel("裂缝间距 Fracture Spacing (m):"), 2, 0)
+        layout.addWidget(self.basic_spin_hf_spacing_x, 2, 1)
         layout.addWidget(QLabel("裂缝长度 (m):"), 3, 0)
         layout.addWidget(self.basic_spin_hf_length, 3, 1)
         layout.addWidget(QLabel("裂缝高度 (m):"), 4, 0)
@@ -1079,8 +1081,7 @@ class MainWindow(QMainWindow):
         return self.wrap_in_scroll_area(content)
 
     def collect_unrefined_wells_params(self):
-        hf_count = self.basic_spin_hf_count.value()
-        hf_well_length = self.basic_spin_hf_well_length.value()
+        hf_spacing_x = self.basic_spin_hf_spacing_x.value()
         return {
             'well_x': self.basic_spin_well_x.value(),
             'well_y': self.basic_spin_well_y.value(),
@@ -1088,12 +1089,11 @@ class MainWindow(QMainWindow):
             'well_pressure': self.basic_spin_well_pressure.value(),
             'well_radius': self.basic_spin_well_radius.value(),
             'hf_enabled': self.basic_check_enable_hf.isChecked(),
-            'hf_count': hf_count,
-            'hf_well_length': hf_well_length,
+            'hf_count': self.basic_spin_hf_count.value(),
+            'hf_spacing_x': hf_spacing_x,
             'hf_center_x': self.basic_spin_hf_center_x.value(),
             'hf_center_y': self.basic_spin_hf_center_y.value(),
             'hf_center_z': self.basic_spin_hf_center_z.value(),
-            'hf_spacing_x': (hf_well_length / (hf_count - 1)) if hf_count > 1 else 0.0,
             'hf_length': self.basic_spin_hf_length.value(),
             'hf_height': self.basic_spin_hf_height.value(),
             'hf_aperture': self.basic_spin_hf_aperture.value(),
@@ -1109,7 +1109,6 @@ class MainWindow(QMainWindow):
             'well_radius': self.refined_spin_well_radius.value(),
             'hf_enabled': False,
             'hf_count': 0,
-            'hf_well_length': 0.0,
             'hf_center_x': self.refined_spin_well_x.value(),
             'hf_center_y': self.refined_spin_well_y.value(),
             'hf_center_z': self.refined_spin_well_z.value(),
@@ -1123,7 +1122,7 @@ class MainWindow(QMainWindow):
     def create_fractures_page(self):
         """创建 Fractures 参数页面，支持加密/不加密两套面板。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1224,7 +1223,7 @@ class MainWindow(QMainWindow):
     def create_results_page(self, algorithm_key="black_oil"):
         """创建 Results 页面。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
 
@@ -1234,7 +1233,7 @@ class MainWindow(QMainWindow):
 
         view_mode_combo = QComboBox()
         view_mode_combo.addItems(["Pressure Field", "Fracture Mesh"])
-        view_mode_combo.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        view_mode_combo.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         view_mode_combo.currentTextChanged.connect(self.change_view_mode)
 
         view_layout.addWidget(QLabel("Select View:"))
@@ -1248,7 +1247,7 @@ class MainWindow(QMainWindow):
 
         combo_field = QComboBox()
         combo_field.addItems(["Pressure", "Temperature", "Stress"])
-        combo_field.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        combo_field.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         combo_field.currentTextChanged.connect(self.change_field_display)
 
         check_show_grid = QCheckBox("Show Grid Lines")
@@ -1291,14 +1290,14 @@ class MainWindow(QMainWindow):
         toggle_btn.setCheckable(True)
         toggle_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 6px 10px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
             QPushButton:checked {
                 background-color: #1565C0;
@@ -1309,7 +1308,7 @@ class MainWindow(QMainWindow):
 
         status_label = QLabel("未选择区域")
         status_label.setWordWrap(True)
-        status_label.setStyleSheet("color: #8f8f8f; padding: 4px 0;")
+        status_label.setStyleSheet("color: #6b7380; padding: 4px 0;")
 
         self.selection_tool_controls[algorithm_key] = {
             'toggle_btn': toggle_btn,
@@ -1324,7 +1323,7 @@ class MainWindow(QMainWindow):
     def create_corner_grid_page(self):
         """创建 Corner Grid 的 Grid 页面 - 使用滚动区域。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -1344,7 +1343,7 @@ class MainWindow(QMainWindow):
         self.corner_combo_grid_refinement = QComboBox()
         self.corner_combo_grid_refinement.addItems(["不加密", "加密"])
         self.corner_combo_grid_refinement.setCurrentIndex(1)  # 默认加密，对齐原版C++
-        self.corner_combo_grid_refinement.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.corner_combo_grid_refinement.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
 
         options_layout.addWidget(QLabel("是否加密:"), 0, 0)
         options_layout.addWidget(self.corner_combo_grid_refinement, 0, 1)
@@ -1381,7 +1380,7 @@ class MainWindow(QMainWindow):
         # 加一条灰色的横线，将新按钮和下面的 CSV 选项隔开，UI 更清晰
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("background-color: #555555; margin: 5px 0px;")
+        line.setStyleSheet("background-color: #d8d8d8; margin: 5px 0px;")
         file_layout.addWidget(line)
         # ==============================================================
 
@@ -1389,22 +1388,22 @@ class MainWindow(QMainWindow):
         coord_layout = QHBoxLayout()
         coord_label = QLabel("COORD:")
         coord_label.setFixedWidth(60)
-        coord_label.setStyleSheet("color: #cccccc;")
+        coord_label.setStyleSheet("color: #1f2328;")
         self.corner_coord_file_label = QLabel("未选择")
-        self.corner_coord_file_label.setStyleSheet("color: #8f8f8f;")
+        self.corner_coord_file_label.setStyleSheet("color: #6b7380;")
         self.corner_coord_file_label.setWordWrap(True)
         coord_btn = QPushButton("浏览...")
         coord_btn.setFixedWidth(50)
         coord_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 3px 6px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
         """)
         coord_btn.clicked.connect(lambda: self.select_corner_grid_csv_file("coord"))
@@ -1416,22 +1415,22 @@ class MainWindow(QMainWindow):
         zcorn_layout = QHBoxLayout()
         zcorn_label = QLabel("ZCORN:")
         zcorn_label.setFixedWidth(60)
-        zcorn_label.setStyleSheet("color: #cccccc;")
+        zcorn_label.setStyleSheet("color: #1f2328;")
         self.corner_zcorn_file_label = QLabel("未选择")
-        self.corner_zcorn_file_label.setStyleSheet("color: #8f8f8f;")
+        self.corner_zcorn_file_label.setStyleSheet("color: #6b7380;")
         self.corner_zcorn_file_label.setWordWrap(True)
         zcorn_btn = QPushButton("浏览...")
         zcorn_btn.setFixedWidth(50)
         zcorn_btn.setStyleSheet("""
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 border-radius: 3px;
                 padding: 3px 6px;
             }
             QPushButton:hover {
-                background-color: #4d4d4d;
+                background-color: #e7ebf0;
             }
         """)
         zcorn_btn.clicked.connect(lambda: self.select_corner_grid_csv_file("zcorn"))
@@ -1456,8 +1455,8 @@ class MainWindow(QMainWindow):
                 background-color: #45a049;
             }
             QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
+                background-color: #e0e3e8;
+                color: #999999;
             }
         """)
         draw_btn.clicked.connect(self.draw_corner_grid_from_csv)
@@ -1533,7 +1532,7 @@ class MainWindow(QMainWindow):
     def create_corner_pvt_page(self):
         """创建 Corner Grid 的 PVT 页面。"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1546,10 +1545,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        self.corner_pvt_plot_btn = QPushButton("绘图")
+        self.corner_pvt_plot_btn = QPushButton("相对渗透率曲线绘制")
         self.corner_pvt_plot_btn.setStyleSheet(self.action_button_style())
         self.corner_pvt_plot_btn.clicked.connect(self.plot_current_pvt_curve)
         layout.addWidget(self.corner_pvt_plot_btn)
+
+        self.corner_blasingame_plot_btn = QPushButton("blasingame的绘制")
+        self.corner_blasingame_plot_btn.setStyleSheet(self.action_button_style())
+        self.corner_blasingame_plot_btn.clicked.connect(self.plot_blasingame_script)
+        layout.addWidget(self.corner_blasingame_plot_btn)
 
         self.corner_oil_water_panel = OilWaterPropertiesPanel()
         layout.addWidget(self.corner_oil_water_panel)
@@ -1565,7 +1569,7 @@ class MainWindow(QMainWindow):
     def create_corner_wells_page(self):
         """创建 Corner Grid 的 Wells 页面 - 使用可复用组件"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -1578,13 +1582,13 @@ class MainWindow(QMainWindow):
     def create_corner_fractures_page(self):
         """创建 Corner Grid 的 Fractures 页面 - 使用可复用组件"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
         self.corner_check_enable_hydraulic = QCheckBox("启用人工裂缝")
         self.corner_check_enable_hydraulic.setChecked(True)
-        self.corner_check_enable_hydraulic.setStyleSheet("color: #cccccc; font-weight: bold;")
+        self.corner_check_enable_hydraulic.setStyleSheet("color: #1f2328; font-weight: bold;")
         layout.addWidget(self.corner_check_enable_hydraulic)
         
         self.corner_natural_frac_panel = NaturalFracturesPanel()
@@ -1599,10 +1603,17 @@ class MainWindow(QMainWindow):
         self.corner_hydraulic_frac_panel = HydraulicFracturesPanel()
         # 设置corner专用默认值，对齐原版C++参数
         self.corner_hydraulic_frac_panel.spin_num_stages.setValue(20)
+        self.corner_hydraulic_frac_panel.spin_spacing_x.setValue(600.0 / 19.0)
         self.corner_hydraulic_frac_panel.spin_half_len.setValue(60.0)
         self.corner_hydraulic_frac_panel.spin_height.setValue(30.0)
         self.corner_hydraulic_frac_panel.spin_aperture.setValue(0.1)
         layout.addWidget(self.corner_hydraulic_frac_panel)
+        self.corner_check_enable_hydraulic.toggled.connect(
+            self.corner_hydraulic_frac_panel.set_controls_enabled
+        )
+        self.corner_hydraulic_frac_panel.set_controls_enabled(
+            self.corner_check_enable_hydraulic.isChecked()
+        )
         
         layout.addStretch()
         return page
@@ -1610,7 +1621,7 @@ class MainWindow(QMainWindow):
     def create_corner_results_page(self):
         """创建 Corner Grid 的 Results 页面 - 仅显示控制"""
         page = QWidget()
-        page.setStyleSheet("background-color: #2b2b2b;")
+        page.setStyleSheet("background-color: #f3f4f6;")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(10, 10, 10, 10)
         
@@ -1621,31 +1632,31 @@ class MainWindow(QMainWindow):
         
         self.check_show_grid_corner = QCheckBox("Show Grid")
         self.check_show_grid_corner.setChecked(True)
-        self.check_show_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_grid_corner.setStyleSheet("color: #1f2328;")
         self.check_show_grid_corner.stateChanged.connect(self.toggle_corner_grid_visibility)
         control_layout.addWidget(self.check_show_grid_corner)
         
         self.check_show_fractures_corner = QCheckBox("Show Fractures")
         self.check_show_fractures_corner.setChecked(True)
-        self.check_show_fractures_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_fractures_corner.setStyleSheet("color: #1f2328;")
         self.check_show_fractures_corner.stateChanged.connect(self.toggle_corner_fractures_visibility)
         control_layout.addWidget(self.check_show_fractures_corner)
         
         self.check_show_wells_corner = QCheckBox("Show Wells")
         self.check_show_wells_corner.setChecked(True)
-        self.check_show_wells_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_wells_corner.setStyleSheet("color: #1f2328;")
         self.check_show_wells_corner.stateChanged.connect(self.toggle_corner_wells_visibility)
         control_layout.addWidget(self.check_show_wells_corner)
         
         self.check_show_pressure_corner = QCheckBox("Show Pressure Field")
         self.check_show_pressure_corner.setChecked(True)
-        self.check_show_pressure_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_pressure_corner.setStyleSheet("color: #1f2328;")
         self.check_show_pressure_corner.stateChanged.connect(self.toggle_corner_pressure_visibility)
         control_layout.addWidget(self.check_show_pressure_corner)
 
         self.check_show_lgr_grid_corner = QCheckBox("Show LGR Grid")
         self.check_show_lgr_grid_corner.setChecked(True)
-        self.check_show_lgr_grid_corner.setStyleSheet("color: #cccccc;")
+        self.check_show_lgr_grid_corner.setStyleSheet("color: #1f2328;")
         self.check_show_lgr_grid_corner.stateChanged.connect(self.toggle_corner_lgr_grid_visibility)
         control_layout.addWidget(self.check_show_lgr_grid_corner)
 
@@ -1654,7 +1665,7 @@ class MainWindow(QMainWindow):
 
         # --- 压力场显示模式切换 ---
         self.corner_pressure_mode_label = QLabel("Pressure Display Mode:")
-        self.corner_pressure_mode_label.setStyleSheet("color: #cccccc;")
+        self.corner_pressure_mode_label.setStyleSheet("color: #1f2328;")
         layout.addWidget(self.corner_pressure_mode_label)
 
         self.corner_pressure_mode_combo = QComboBox()
@@ -1663,7 +1674,7 @@ class MainWindow(QMainWindow):
             "Matrix Pressure (WR)",
         ])
         self.corner_pressure_mode_combo.setStyleSheet(
-            "color: #cccccc; background-color: #3d3d3d;"
+            "color: #1f2328; background-color: #f3f4f6;"
         )
         self.corner_pressure_mode_combo.setCurrentIndex(0)
         self.corner_pressure_mode_combo.currentIndexChanged.connect(
@@ -1672,9 +1683,43 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.corner_pressure_mode_combo)
 
         self.corner_pressure_mode_status = QLabel("")
-        self.corner_pressure_mode_status.setStyleSheet("color: #888888; font-size: 10px;")
+        self.corner_pressure_mode_status.setStyleSheet("color: #5c6670; font-size: 10px;")
         self.corner_pressure_mode_status.setWordWrap(True)
         layout.addWidget(self.corner_pressure_mode_status)
+
+        # --- 分层渲染控制 ---
+        self.check_enable_corner_layer_render = QCheckBox("Enable Layer Rendering")
+        self.check_enable_corner_layer_render.setChecked(False)
+        self.check_enable_corner_layer_render.setStyleSheet("color: #1f2328;")
+        self.check_enable_corner_layer_render.stateChanged.connect(
+            self._on_corner_layer_render_toggled
+        )
+        layout.addWidget(self.check_enable_corner_layer_render)
+
+        layer_row = QHBoxLayout()
+        self.corner_layer_label = QLabel("K Layer:")
+        self.corner_layer_label.setStyleSheet("color: #1f2328;")
+        layer_row.addWidget(self.corner_layer_label)
+
+        self.corner_layer_spin = QSpinBox()
+        self.corner_layer_spin.setMinimum(1)
+        self.corner_layer_spin.setMaximum(9999)
+        self.corner_layer_spin.setValue(1)
+        self.corner_layer_spin.setEnabled(False)
+        self.corner_layer_spin.setStyleSheet(
+            "color: #1f2328; background-color: #f3f4f6;"
+        )
+        self.corner_layer_spin.valueChanged.connect(
+            self._on_corner_layer_changed
+        )
+        layer_row.addWidget(self.corner_layer_spin)
+        layer_row.addStretch()
+        layout.addLayout(layer_row)
+
+        self.corner_layer_info = QLabel("")
+        self.corner_layer_info.setStyleSheet("color: #5c6670; font-size: 10px;")
+        self.corner_layer_info.setWordWrap(True)
+        layout.addWidget(self.corner_layer_info)
 
         layout.addStretch()
         return page
@@ -1700,7 +1745,7 @@ class MainWindow(QMainWindow):
 
         label = QLabel(message)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #8f8f8f; padding: 6px 0;")
+        label.setStyleSheet("color: #6b7380; padding: 6px 0;")
         layout.addWidget(label)
 
         group.setLayout(layout)
@@ -1942,10 +1987,7 @@ class MainWindow(QMainWindow):
         0 → Fracture / Leaf Pressure (现有路径)
         1 → Matrix Pressure (WR)
         """
-        if index == 1:
-            self._apply_dual_porosity_pressure_mode()
-        else:
-            self._apply_leaf_pressure_mode()
+        self._apply_corner_render_mode()
 
     def _update_corner_pressure_mode_status(self):
         """根据当前 sim_data 更新压力场模式状态标签文字。"""
@@ -2020,6 +2062,141 @@ class MainWindow(QMainWindow):
                 self.vtk_renderer.render_corner_pressure_field(self.sim_data)
         except Exception:
             pass
+
+    def _update_corner_layer_controls(self):
+        """根据当前 sim_data 初始化分层渲染控件的范围和可用性。"""
+        if not hasattr(self, 'corner_layer_spin'):
+            return
+        nz = 0
+        if self.sim_data and self.sim_data.corner_point_grid:
+            nz = int(self.sim_data.grid_info.get("nz", 0))
+        if nz <= 0:
+            self.corner_layer_info.setText("")
+            return
+        self.corner_layer_spin.setRange(1, nz)
+        if self.corner_layer_spin.value() > nz:
+            self.corner_layer_spin.setValue(1)
+        self.corner_layer_info.setText(f"Available layers: 1 - {nz}")
+
+    def _on_corner_layer_render_toggled(self, state):
+        """勾选/取消分层渲染。"""
+        enabled = (state == Qt.Checked)
+        self.corner_layer_spin.setEnabled(enabled)
+        if enabled and hasattr(self, 'corner_layer_info'):
+            self.corner_layer_info.setText(
+                "Layer rendering currently supports Fracture / Leaf Pressure only."
+            )
+        self._apply_corner_render_mode()
+
+    def _on_corner_layer_changed(self, value):
+        """K Layer 层号变化时刷新分层显示。"""
+        if hasattr(self, 'check_enable_corner_layer_render') and \
+                self.check_enable_corner_layer_render.isChecked():
+            self._apply_corner_render_mode()
+
+    def _reapply_corner_visibility_controls(self, layer_mode=False):
+        """Re-apply current checkbox states after render mode switches."""
+        if layer_mode:
+            if hasattr(self.vtk_renderer, 'apply_layer_visibility'):
+                self.vtk_renderer.apply_layer_visibility(
+                    getattr(self, 'check_show_grid_corner', None).isChecked()
+                    if hasattr(self, 'check_show_grid_corner') else True,
+                    getattr(self, 'check_show_fractures_corner', None).isChecked()
+                    if hasattr(self, 'check_show_fractures_corner') else True,
+                    getattr(self, 'check_show_wells_corner', None).isChecked()
+                    if hasattr(self, 'check_show_wells_corner') else True,
+                    getattr(self, 'check_show_pressure_corner', None).isChecked()
+                    if hasattr(self, 'check_show_pressure_corner') else True,
+                )
+            if hasattr(self, 'check_show_lgr_grid_corner'):
+                if hasattr(self.vtk_renderer, 'toggle_corner_lgr_grid_visibility'):
+                    self.vtk_renderer.toggle_corner_lgr_grid_visibility(False)
+                self.check_show_lgr_grid_corner.setEnabled(False)
+            return
+
+        if hasattr(self, 'check_show_grid_corner'):
+            self.toggle_corner_grid_visibility(
+                Qt.Checked if self.check_show_grid_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_fractures_corner'):
+            self.toggle_corner_fractures_visibility(
+                Qt.Checked if self.check_show_fractures_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_wells_corner'):
+            self.toggle_corner_wells_visibility(
+                Qt.Checked if self.check_show_wells_corner.isChecked() else Qt.Unchecked
+            )
+        if hasattr(self, 'check_show_pressure_corner'):
+            self.toggle_corner_pressure_visibility(
+                Qt.Checked if self.check_show_pressure_corner.isChecked() else Qt.Unchecked
+            )
+
+        if hasattr(self, 'check_show_lgr_grid_corner'):
+            self.check_show_lgr_grid_corner.setEnabled(True)
+            self.toggle_corner_lgr_grid_visibility(
+                Qt.Checked if self.check_show_lgr_grid_corner.isChecked() else Qt.Unchecked
+            )
+
+    def _restore_corner_lgr_grid_after_full_render(self):
+        """Rebuild the LGR grid actor after full-field pressure rendering."""
+        if not hasattr(self, 'vtk_renderer'):
+            return
+        has_lgr_geom = (
+            getattr(self.sim_data, 'corner_lgr_grid_geometry', None) is not None
+            or getattr(self.sim_data, 'corner_lgr_parent_grid_geometry', None) is not None
+            or getattr(self.sim_data, 'corner_lgr_refined_grid_geometry', None) is not None
+        )
+        if not has_lgr_geom:
+            return
+        if hasattr(self.vtk_renderer, 'render_corner_lgr_grid'):
+            self.vtk_renderer.render_corner_lgr_grid(self.sim_data)
+
+    def _apply_corner_render_mode(self):
+        """Corner 渲染调度：分层 render 优先，否则按 pressure mode 分发。"""
+        if hasattr(self, 'check_enable_corner_layer_render') and \
+                self.check_enable_corner_layer_render.isChecked():
+            # 分层模式下强制切回 Fracture / Leaf Pressure
+            if hasattr(self, 'corner_pressure_mode_combo'):
+                self.corner_pressure_mode_combo.blockSignals(True)
+                self.corner_pressure_mode_combo.setCurrentIndex(0)
+                self.corner_pressure_mode_combo.setEnabled(False)
+                self.corner_pressure_mode_combo.blockSignals(False)
+            self._update_corner_layer_controls()
+            k_index = self.corner_layer_spin.value() - 1
+            try:
+                if hasattr(self.vtk_renderer, 'set_full_corner_result_visibility'):
+                    self.vtk_renderer.set_full_corner_result_visibility(False)
+                self.vtk_renderer.render_corner_grid_by_layer_k(
+                    self.sim_data, k_index
+                )
+                self._reapply_corner_visibility_controls(layer_mode=True)
+            except Exception as e:
+                self.append_sim_status(f"Layer render failed: {e}")
+            return
+
+        # 未启用分层渲染时，恢复 pressure mode combo
+        if hasattr(self, 'corner_pressure_mode_combo'):
+            self.corner_pressure_mode_combo.setEnabled(True)
+        if hasattr(self, 'corner_layer_info'):
+            self.corner_layer_info.setText("")
+        self._update_corner_layer_controls()
+        if hasattr(self.vtk_renderer, 'clear_layer_render'):
+            self.vtk_renderer.clear_layer_render()
+        if hasattr(self.vtk_renderer, 'set_full_corner_result_visibility'):
+            self.vtk_renderer.set_full_corner_result_visibility(True)
+
+        if not hasattr(self, 'corner_pressure_mode_combo'):
+            self._apply_leaf_pressure_mode()
+            self._restore_corner_lgr_grid_after_full_render()
+            self._reapply_corner_visibility_controls(layer_mode=False)
+            return
+        index = self.corner_pressure_mode_combo.currentIndex()
+        if index == 1:
+            self._apply_dual_porosity_pressure_mode()
+        else:
+            self._apply_leaf_pressure_mode()
+        self._restore_corner_lgr_grid_after_full_render()
+        self._reapply_corner_visibility_controls(layer_mode=False)
 
     def register_results_controls(self, algorithm_key, view_mode_combo, combo_field,
                                   check_show_grid, check_show_fractures):
@@ -2102,7 +2279,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.append_sim_status(f"PVT plot error: {exc}")
             self.status_bar.showMessage("PVT curve failed")
-    
+
+    def plot_blasingame_script(self):
+        """启动 Blasingame 绘图脚本（独立进程，弹出 Matplotlib 图窗）。"""
+        script_path = os.path.join(self.project_root, "plot_blasingame.py")
+        if not os.path.exists(script_path):
+            self.append_sim_status(f"Blasingame plot script not found: {script_path}")
+            self.status_bar.showMessage("Blasingame plot script not found")
+            return
+        try:
+            self.append_sim_status("Launching Blasingame plot script...")
+            subprocess.Popen([sys.executable, script_path], cwd=self.project_root)
+            self.append_sim_status("Blasingame plot script started")
+            self.status_bar.showMessage("Blasingame plot script started")
+        except Exception as exc:
+            self.append_sim_status(f"Blasingame plot script failed: {exc}")
+            self.status_bar.showMessage("Blasingame plot script failed")
+
     def create_center_panel(self):
         """创建中间VTK视图面板 - 与原文件一致"""
         self.center_stack = QStackedWidget()
@@ -2139,7 +2332,7 @@ class MainWindow(QMainWindow):
         status_layout = QVBoxLayout()
         self.sim_status_text = QTextEdit()
         self.sim_status_text.setReadOnly(True)
-        self.sim_status_text.setStyleSheet("background-color: #1e1e1e; color: #00ff00; border: 1px solid #3d3d3d; font-family: Consolas;")
+        self.sim_status_text.setStyleSheet("background-color: #fafbfc; color: #1f2328; border: 1px solid #d9dce1; font-family: Consolas;")
         self.sim_status_text.setMaximumHeight(150)
         status_layout.addWidget(self.sim_status_text)
         self.sim_status_group.setLayout(status_layout)
@@ -2149,7 +2342,7 @@ class MainWindow(QMainWindow):
         stats_layout = QVBoxLayout()
         self.stats_text = QTextEdit()
         self.stats_text.setReadOnly(True)
-        self.stats_text.setStyleSheet("background-color: #1e1e1e; color: #cccccc; border: 1px solid #3d3d3d;")
+        self.stats_text.setStyleSheet("background-color: #fafbfc; color: #1f2328; border: 1px solid #d9dce1;")
         self.stats_text.setMaximumHeight(150)
         stats_layout.addWidget(self.stats_text)
         stats_group.setLayout(stats_layout)
@@ -2160,7 +2353,20 @@ class MainWindow(QMainWindow):
         self.prop_table = QTableWidget()
         self.prop_table.setColumnCount(2)
         self.prop_table.setHorizontalHeaderLabels(["Property", "Value"])
-        self.prop_table.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        self.prop_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
+                gridline-color: #d9dce1;
+            }
+            QHeaderView::section {
+                background-color: #f0f2f5;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
+                padding: 4px;
+            }
+        """)
         self.prop_table.setMaximumHeight(150)
         prop_layout.addWidget(self.prop_table)
         prop_group.setLayout(prop_layout)
@@ -2172,7 +2378,7 @@ class MainWindow(QMainWindow):
     def create_status_bar(self):
         """创建状态栏 - 与原文件一致"""
         self.status_bar = QStatusBar()
-        self.status_bar.setStyleSheet("background-color: #2b2b2b; color: #cccccc;")
+        self.status_bar.setStyleSheet("background-color: #f7f8fa; color: #1f2328;")
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready - Click 'Run Simulation' to start")
     
@@ -2180,9 +2386,9 @@ class MainWindow(QMainWindow):
         """GroupBox样式 - 与原文件一致"""
         return """
             QGroupBox {
-                background-color: #2b2b2b;
-                color: #cccccc;
-                border: 1px solid #3d3d3d;
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #d9dce1;
                 border-radius: 3px;
                 margin-top: 10px;
                 font-weight: bold;
@@ -2193,16 +2399,16 @@ class MainWindow(QMainWindow):
                 padding: 0 5px;
             }
             QLabel {
-                color: #cccccc;
+                color: #1f2328;
             }
             QSpinBox, QDoubleSpinBox, QComboBox {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #fafbfc;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 3px;
             }
             QCheckBox {
-                color: #cccccc;
+                color: #1f2328;
             }
         """
 
@@ -2221,8 +2427,8 @@ class MainWindow(QMainWindow):
                 background-color: #1976D2;
             }
             QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
+                background-color: #e0e3e8;
+                color: #999999;
             }
         """
     
@@ -2697,13 +2903,16 @@ class MainWindow(QMainWindow):
             self.append_sim_status(f"Well relative coords: ({rel_well_x}, {rel_well_y}, {rel_well_z})")
             self.append_sim_status(f"Hydraulic frac params: half_len={half_len}, height={height}")
             self.append_sim_status(f"hf_length (passed to C++): {half_len * 2.0}, hf_height: {height}")
-        
+            self.append_sim_status(f"hf_spacing_x (passed to C++): {hydraulic_frac_params['spacing_x']}")
+
         tmp_dir = os.path.join(self.project_root, '.tmp')
         os.makedirs(tmp_dir, exist_ok=True)
         fd, self.pending_result_path = tempfile.mkstemp(prefix='corner_simulation_result_', suffix='.json', dir=tmp_dir)
         os.close(fd)
         self.sim_output_buffer = ""
-        
+
+        hf_count = hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0
+
         params = {
             'algorithm': 'corner_edfm',
             'corner_grid_refinement': self.corner_combo_grid_refinement.currentText(),
@@ -2718,8 +2927,8 @@ class MainWindow(QMainWindow):
             'aperture': natural_frac_params.get('aperture', 0.1),
             'frac_perm': natural_frac_params.get('perm', 100.0),
             'hf_enabled': self.corner_check_enable_hydraulic.isChecked(),
-            'hf_count': hydraulic_frac_params['num_stages'] if self.corner_check_enable_hydraulic.isChecked() else 0,
-            'hf_well_length': 600.0,
+            'hf_count': hf_count,
+            'hf_spacing_x': hydraulic_frac_params.get('spacing_x', 0.0) if self.corner_check_enable_hydraulic.isChecked() else 0.0,
             'hf_length': hydraulic_frac_params.get('half_len', 60.0) * 2.0 if self.corner_check_enable_hydraulic.isChecked() else 120.0,
             'hf_height': hydraulic_frac_params.get('height', 30.0) if self.corner_check_enable_hydraulic.isChecked() else 30.0,
             'hf_aperture': hydraulic_frac_params.get('aperture', 0.1) if self.corner_check_enable_hydraulic.isChecked() else 0.1,
@@ -2879,7 +3088,9 @@ class MainWindow(QMainWindow):
             natural_frac_params = self.corner_natural_frac_panel.get_values()
             for frac in self.sim_data.fractures:
                 frac_id = frac.get('id', 0)
-                frac['type'] = 'hydraulic' if frac_id >= natural_frac_params['num_fracs'] else 'natural'
+                is_hydraulic = frac_id >= natural_frac_params['num_fracs']
+                frac['type'] = 'hydraulic' if is_hydraulic else 'natural'
+                frac['is_hydraulic'] = 1 if is_hydraulic else 0
                 for i, p in enumerate(frac['points']):
                     frac['points'][i] = (p[0] + x_offset, p[1] + y_offset, p[2] + z_offset)
             
@@ -2926,7 +3137,17 @@ class MainWindow(QMainWindow):
                 self.corner_pressure_mode_combo.setCurrentIndex(0)
                 self.corner_pressure_mode_combo.blockSignals(False)
                 self._update_corner_pressure_mode_status()
-            
+
+            # 初始化分层渲染控件范围，默认不启用
+            self._update_corner_layer_controls()
+            if hasattr(self, 'check_enable_corner_layer_render'):
+                self.check_enable_corner_layer_render.blockSignals(True)
+                self.check_enable_corner_layer_render.setChecked(False)
+                self.check_enable_corner_layer_render.blockSignals(False)
+                self.corner_layer_spin.setEnabled(False)
+            if hasattr(self, 'corner_layer_info'):
+                self.corner_layer_info.setText("")
+
             # 默认显示裂缝，网格和压力场变透明
             if hasattr(self, 'check_show_fractures_corner') and self.check_show_fractures_corner.isChecked():
                 self.toggle_corner_fractures_visibility(Qt.Checked)
@@ -3510,23 +3731,23 @@ class MainWindow(QMainWindow):
         dialog.setMinimumSize(420, 280)
         dialog.setStyleSheet("""
             QDialog {
-                background-color: #2b2b2b;
-                color: #cccccc;
+                background-color: #f7f8fa;
+                color: #1f2328;
             }
             QLabel {
-                color: #cccccc;
+                color: #1f2328;
             }
             QSpinBox, QDoubleSpinBox {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 5px;
                 min-height: 28px;
             }
             QPushButton {
-                background-color: #3d3d3d;
-                color: #cccccc;
-                border: 1px solid #555555;
+                background-color: #f3f4f6;
+                color: #1f2328;
+                border: 1px solid #c8ced6;
                 padding: 5px 12px;
             }
         """)

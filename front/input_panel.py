@@ -14,9 +14,9 @@ def groupbox_style():
     """GroupBox样式 - 与原文件一致"""
     return """
         QGroupBox {
-            background-color: #2b2b2b;
-            color: #cccccc;
-            border: 1px solid #3d3d3d;
+            background-color: #fafbfc;
+            color: #1f2328;
+            border: 1px solid #d9dce1;
             border-radius: 3px;
             margin-top: 10px;
             font-weight: bold;
@@ -27,16 +27,16 @@ def groupbox_style():
             padding: 0 5px;
         }
         QLabel {
-            color: #cccccc;
+            color: #1f2328;
         }
         QSpinBox, QDoubleSpinBox, QComboBox {
-            background-color: #3d3d3d;
-            color: #cccccc;
-            border: 1px solid #555555;
+            background-color: #fafbfc;
+            color: #1f2328;
+            border: 1px solid #c8ced6;
             padding: 3px;
         }
         QCheckBox {
-            color: #cccccc;
+            color: #1f2328;
         }
     """
 
@@ -365,6 +365,8 @@ class DualPorosityPanel(QWidget):
         self.label_matrix_vol_frac = QLabel("Matrix Vol Frac:")
         self.label_fracture_vol_frac = QLabel("Fracture Vol Frac:")
         self.label_wr_shape_factor = QLabel("WR Shape Factor:")
+        self.label_dual_porosity_hint = QLabel()
+        self.label_dual_porosity_hint.setWordWrap(True)
 
         self.dual_porosity_widgets = [
             self.label_phi_fracture,
@@ -384,20 +386,21 @@ class DualPorosityPanel(QWidget):
         ]
 
         grid.addWidget(self.check_enable, 0, 0, 1, 2)
-        grid.addWidget(self.label_phi_fracture, 1, 0)
-        grid.addWidget(self.spin_phi_fracture, 1, 1)
-        grid.addWidget(self.label_k_fx, 2, 0)
-        grid.addWidget(self.spin_k_fx, 2, 1)
-        grid.addWidget(self.label_k_fy, 3, 0)
-        grid.addWidget(self.spin_k_fy, 3, 1)
-        grid.addWidget(self.label_k_fz, 4, 0)
-        grid.addWidget(self.spin_k_fz, 4, 1)
-        grid.addWidget(self.label_matrix_vol_frac, 5, 0)
-        grid.addWidget(self.spin_matrix_vol_frac, 5, 1)
-        grid.addWidget(self.label_fracture_vol_frac, 6, 0)
-        grid.addWidget(self.spin_fracture_vol_frac, 6, 1)
-        grid.addWidget(self.label_wr_shape_factor, 7, 0)
-        grid.addWidget(self.spin_wr_shape_factor, 7, 1)
+        grid.addWidget(self.label_dual_porosity_hint, 1, 0, 1, 2)
+        grid.addWidget(self.label_phi_fracture, 2, 0)
+        grid.addWidget(self.spin_phi_fracture, 2, 1)
+        grid.addWidget(self.label_k_fx, 3, 0)
+        grid.addWidget(self.spin_k_fx, 3, 1)
+        grid.addWidget(self.label_k_fy, 4, 0)
+        grid.addWidget(self.spin_k_fy, 4, 1)
+        grid.addWidget(self.label_k_fz, 5, 0)
+        grid.addWidget(self.spin_k_fz, 5, 1)
+        grid.addWidget(self.label_matrix_vol_frac, 6, 0)
+        grid.addWidget(self.spin_matrix_vol_frac, 6, 1)
+        grid.addWidget(self.label_fracture_vol_frac, 7, 0)
+        grid.addWidget(self.spin_fracture_vol_frac, 7, 1)
+        grid.addWidget(self.label_wr_shape_factor, 8, 0)
+        grid.addWidget(self.spin_wr_shape_factor, 8, 1)
 
         group.setLayout(grid)
         layout.addWidget(group)
@@ -405,8 +408,25 @@ class DualPorosityPanel(QWidget):
         self.set_dual_porosity_controls_enabled(self.check_enable.isChecked())
 
     def set_dual_porosity_controls_enabled(self, enabled):
+        label_color = "#1f2328" if enabled else "#8b9199"
+        spin_style = (
+            "background-color: #fafbfc; color: #1f2328; border: 1px solid #c8ced6; padding: 3px;"
+            if enabled else
+            "background-color: #eceff3; color: #8b9199; border: 1px solid #d8dde3; padding: 3px;"
+        )
         for widget in self.dual_porosity_widgets:
             widget.setEnabled(enabled)
+            if isinstance(widget, QLabel):
+                widget.setStyleSheet(f"color: {label_color};")
+            else:
+                widget.setStyleSheet(spin_style)
+
+        if enabled:
+            self.label_dual_porosity_hint.setText("WR 已启用，以下参数将参与计算。")
+            self.label_dual_porosity_hint.setStyleSheet("color: #2e7d32; font-size: 10px; padding-bottom: 4px;")
+        else:
+            self.label_dual_porosity_hint.setText("WR 未启用，以下参数当前不生效。")
+            self.label_dual_porosity_hint.setStyleSheet("color: #8b9199; font-size: 10px; padding-bottom: 4px;")
 
     def get_values(self):
         return {
@@ -631,31 +651,70 @@ class HydraulicFracturesPanel(QWidget):
         grid = QGridLayout()
         
         self.spin_num_stages = create_spinbox(1, 50, 20)
+        self.spin_spacing_x = create_double_spinbox(0.0, 100000.0, 31.58, decimals=2)
         self.spin_half_len = create_double_spinbox(0.0, 10000.0, 120.0, decimals=2)
         self.spin_height = create_double_spinbox(0.0, 1000.0, 30.0, decimals=2)
         self.spin_aperture = create_double_spinbox(0.0, 10.0, 0.1, decimals=4)
         self.spin_perm = create_double_spinbox(0.0, 1000000.0, 1000.0, decimals=2)
         self.spin_conductivity = create_double_spinbox(0.0, 1000000.0, 100.0, decimals=2)
-        
+        self.label_hint = QLabel()
+        self.label_hint.setWordWrap(True)
+        self.hydraulic_inputs = [
+            self.spin_num_stages,
+            self.spin_spacing_x,
+            self.spin_half_len,
+            self.spin_height,
+            self.spin_aperture,
+            self.spin_perm,
+            self.spin_conductivity,
+        ]
+
         grid.addWidget(QLabel("压裂段数:"), 0, 0)
         grid.addWidget(self.spin_num_stages, 0, 1)
-        grid.addWidget(QLabel("半缝长 (m):"), 1, 0)
-        grid.addWidget(self.spin_half_len, 1, 1)
-        grid.addWidget(QLabel("缝高 (m):"), 2, 0)
-        grid.addWidget(self.spin_height, 2, 1)
-        grid.addWidget(QLabel("Aperture (m):"), 3, 0)
-        grid.addWidget(self.spin_aperture, 3, 1)
-        grid.addWidget(QLabel("Permeability (D):"), 4, 0)
-        grid.addWidget(self.spin_perm, 4, 1)
-        grid.addWidget(QLabel("Conductivity (D·m):"), 5, 0)
-        grid.addWidget(self.spin_conductivity, 5, 1)
+        grid.addWidget(QLabel("裂缝间距 Fracture Spacing (m):"), 1, 0)
+        grid.addWidget(self.spin_spacing_x, 1, 1)
+        grid.addWidget(QLabel("半缝长 (m):"), 2, 0)
+        grid.addWidget(self.spin_half_len, 2, 1)
+        grid.addWidget(QLabel("缝高 (m):"), 3, 0)
+        grid.addWidget(self.spin_height, 3, 1)
+        grid.addWidget(QLabel("Aperture (m):"), 4, 0)
+        grid.addWidget(self.spin_aperture, 4, 1)
+        grid.addWidget(QLabel("Permeability (D):"), 5, 0)
+        grid.addWidget(self.spin_perm, 5, 1)
+        grid.addWidget(QLabel("Conductivity (D·m):"), 6, 0)
+        grid.addWidget(self.spin_conductivity, 6, 1)
         
         group.setLayout(grid)
+        self.hydraulic_group = group
+        layout.addWidget(self.label_hint)
         layout.addWidget(group)
+        self.set_controls_enabled(True)
+    
+    def set_controls_enabled(self, enabled):
+        label_color = "#1f2328" if enabled else "#8b9199"
+        spin_style = (
+            "background-color: #fafbfc; color: #1f2328; border: 1px solid #c8ced6; padding: 3px;"
+            if enabled else
+            "background-color: #eceff3; color: #8b9199; border: 1px solid #d8dde3; padding: 3px;"
+        )
+        for widget in self.hydraulic_inputs:
+            widget.setEnabled(enabled)
+            widget.setStyleSheet(spin_style)
+
+        for label in self.hydraulic_group.findChildren(QLabel):
+            label.setStyleSheet(f"color: {label_color};")
+
+        if enabled:
+            self.label_hint.setText("人工裂缝已启用，以下参数将参与计算。")
+            self.label_hint.setStyleSheet("color: #2e7d32; font-size: 10px; padding-top: 4px;")
+        else:
+            self.label_hint.setText("人工裂缝未启用，以下参数当前不生效。")
+            self.label_hint.setStyleSheet("color: #8b9199; font-size: 10px; padding-top: 4px;")
     
     def get_values(self):
         return {
             'num_stages': self.spin_num_stages.value(),
+            'spacing_x': self.spin_spacing_x.value(),
             'half_len': self.spin_half_len.value(),
             'height': self.spin_height.value(),
             'aperture': self.spin_aperture.value(),
@@ -763,7 +822,7 @@ class ResultsPanel(QWidget):
         
         self.view_mode_combo = QComboBox()
         self.view_mode_combo.addItems(["Pressure Field", "Fracture Mesh"])
-        self.view_mode_combo.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.view_mode_combo.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         
         view_layout.addWidget(QLabel("Select View:"))
         view_layout.addWidget(self.view_mode_combo)
@@ -777,7 +836,7 @@ class ResultsPanel(QWidget):
         
         self.combo_field = QComboBox()
         self.combo_field.addItems(["Pressure", "Temperature", "Stress"])
-        self.combo_field.setStyleSheet("color: #cccccc; background-color: #3d3d3d;")
+        self.combo_field.setStyleSheet("color: #1f2328; background-color: #f3f4f6;")
         
         self.check_show_grid = QCheckBox("Show Grid Lines")
         self.check_show_grid.setChecked(False)

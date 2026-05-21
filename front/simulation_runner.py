@@ -225,20 +225,37 @@ def load_corner_grid_info(coord_file, zcorn_file):
 
 def apply_corner_fluid_properties(sim, params):
     """If supported by the loaded module, forward oil/water rock-fluid settings."""
-    if not hasattr(sim, 'setOilWaterProperties'):
+    has_legacy_api = hasattr(sim, 'setOilWaterProperties')
+    has_gw_api = hasattr(sim, 'setGasWaterProperties')
+    if not has_legacy_api and not has_gw_api:
+        return
+
+    mu_w = float(params.get('mu_w', 1.0))
+    mu_o = float(params.get('mu_o', 5.0))
+    cw = float(params.get('cw', 1e-8))
+    co = float(params.get('co', 1e-5))
+    p_ref = float(params.get('p_ref', 100.0))
+    swi = float(params.get('swi', 0.05))
+    sor = float(params.get('sor', 0.01))
+    sgc = float(params.get('sgc', 0.05))
+    mu_g = float(params.get('mu_g', 0.2))
+    cg = float(params.get('cg', 1e-3))
+
+    if has_gw_api:
+        sim.setGasWaterProperties(mu_w, cw, p_ref, swi, sgc, mu_g, cg)
         return
 
     sim.setOilWaterProperties(
-        float(params.get('mu_w', 1.0)),
-        float(params.get('mu_o', 5.0)),
-        float(params.get('cw', 1e-8)),
-        float(params.get('co', 1e-5)),
-        float(params.get('p_ref', 100.0)),
-        float(params.get('swi', 0.05)),
-        float(params.get('sor', 0.01)),
-        float(params.get('sgc', 0.05)),
-        float(params.get('mu_g', 0.2)),
-        float(params.get('cg', 1e-3)),
+        mu_w,
+        mu_o,
+        cw,
+        co,
+        p_ref,
+        swi,
+        sor,
+        sgc,
+        mu_g,
+        cg,
     )
 
 
@@ -257,6 +274,50 @@ def apply_corner_gas_pvt_properties(sim, params):
         int(params.get('gas_table_n', 2000)),
         float(params.get('gas_Psc_bar', 1.01325)),
     )
+
+
+def _resolve_gas_water_initial_state(params):
+    """Normalize the gas-water initial state for both new and legacy bindings."""
+    pressure = float(params.get('pressure', 800.0))
+    sw = float(params.get('sw', 0.05))
+
+    sg_raw = params.get('sg')
+    sg = None
+    if sg_raw not in (None, ''):
+        try:
+            sg = float(sg_raw)
+        except (TypeError, ValueError):
+            sg = None
+
+    if sg is not None:
+        implied_sg = 1.0 - sw
+        if abs(sg - implied_sg) > 1e-6:
+            print(
+                f"Initial gas saturation {sg:.6f} is ignored by the gas-water LGR model; "
+                f"using Sg = 1 - Sw = {implied_sg:.6f}.",
+                flush=True,
+            )
+        sg = implied_sg
+
+    return pressure, sw, sg
+
+
+def apply_corner_initial_state(sim, params):
+    """Set the gas-water initial state while remaining compatible with old bindings."""
+    if not hasattr(sim, 'setInitialStateParameters'):
+        return
+
+    pressure, sw, sg = _resolve_gas_water_initial_state(params)
+
+    try:
+        sim.setInitialStateParameters(pressure, sw)
+        return
+    except TypeError:
+        pass
+
+    if sg is None:
+        sg = 1.0 - sw
+    sim.setInitialStateParameters(pressure, sw, sg)
 
 
 def run_corner_edfm_simulation(params):
@@ -284,9 +345,11 @@ def run_corner_edfm_simulation(params):
         float(params.get('aperture', 0.1)),
         float(params.get('frac_perm', 100.0)),
     )
+    hf_count = int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0
+    hf_spacing = float(params.get('hf_spacing_x', 0.0))
     sim.setHydraulicFractureParameters(
-        int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0,
-        float(params.get('hf_well_length', 600.0)),
+        hf_count,
+        hf_spacing,
         float(params.get('hf_length', 120.0)),
         float(params.get('hf_height', 30.0)),
         float(params.get('hf_aperture', 0.1)),
@@ -302,11 +365,7 @@ def run_corner_edfm_simulation(params):
     apply_corner_fluid_properties(sim, params)
     apply_corner_gas_pvt_properties(sim, params)
     if use_lgr_module and hasattr(sim, 'setInitialStateParameters'):
-        sim.setInitialStateParameters(
-            float(params.get('pressure', 800.0)),
-            float(params.get('sw', 0.05)),
-            float(params.get('sg', 0.9)),
-        )
+        apply_corner_initial_state(sim, params)
     if use_lgr_module and hasattr(sim, 'setLGRParameters'):
         sim.setLGRParameters(
             bool(params.get('enable_lgr', True)),
