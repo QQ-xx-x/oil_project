@@ -24,6 +24,19 @@ def get_bright_jet_cmap():
     ]
     return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=512)
 
+def get_soft_jet_cmap():
+    """低饱和 jet colormap，适合浅色背景下的 pressure 结果层。"""
+    from matplotlib.colors import LinearSegmentedColormap
+    soft_jet_colors = [
+        (0.14, 0.32, 0.74),   # 更明亮的深冷蓝
+        (0.20, 0.56, 0.88),   # 更鲜明的中蓝
+        (0.34, 0.82, 0.89),   # 明亮青蓝
+        (0.88, 0.90, 0.46),   # 更亮的黄绿过渡
+        (0.98, 0.72, 0.18),   # 更明艳的暖橙
+        (0.90, 0.34, 0.24),   # 更有存在感的暖红
+    ]
+    return LinearSegmentedColormap.from_list("soft_jet", soft_jet_colors, N=512)
+
 def _ensure_local_pyvista_site() -> None:
     project_root = Path(__file__).resolve().parent.parent
     local_site = project_root / ".deps" / "pyvista_site"
@@ -516,10 +529,10 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
-            cmap=get_bright_jet_cmap(),
+            cmap=get_soft_jet_cmap(),
             clim=[min_p, max_p],
             show_scalar_bar=False,
-            opacity=1.0,
+            opacity=0.96,
             render=False,
         )
 
@@ -528,7 +541,7 @@ class PyVistaRenderer:
             "Pressure (MPa)",
             label_font_size=18,
             title_font_size=20,
-            color="white",
+            color="#2f3640",
             position_x=0.85,
             position_y=0.15,
             width=0.08,
@@ -560,10 +573,10 @@ class PyVistaRenderer:
 
                 actor = self.plotter.add_mesh(
                     polygon,
-                    color=(0.35, 0.0, 0.0),
+                    color=(0.72, 0.38, 0.38),
                     opacity=0.85,
                     show_edges=False,
-                    edge_color=(0.35, 0.0, 0.0),
+                    edge_color=(0.54, 0.29, 0.29),
                     line_width=1.0,
                     render=False,
                 )
@@ -575,7 +588,7 @@ class PyVistaRenderer:
                 if edge_lines:
                     edge_actor = self.plotter.add_mesh(
                         pv.MultiBlock(edge_lines),
-                        color=(0.0, 0.0, 0.0),
+                        color=(0.54, 0.29, 0.29),
                         line_width=1.5,
                         render=False,
                     )
@@ -623,7 +636,7 @@ class PyVistaRenderer:
 
         actor = self.plotter.add_mesh(
             line_poly_data,
-            color=(0.8, 0.8, 0.8),
+            color=(0.70, 0.74, 0.80),
             line_width=1.0,
             opacity=0.8,
             render=False,
@@ -724,7 +737,7 @@ class PyVistaRenderer:
 
         actor = self.plotter.add_mesh(
             edges,
-            color="white",
+            color=(0.67, 0.72, 0.78),
             line_width=1.0,
             render=False
         )
@@ -732,7 +745,7 @@ class PyVistaRenderer:
         surface = grid.extract_surface()
         surface_actor = self.plotter.add_mesh(
             surface,
-            color=(0.5, 0.5, 0.5),
+            color=(0.82, 0.85, 0.89),
             opacity=0.15,
             show_edges=False,
             render=False
@@ -784,7 +797,7 @@ class PyVistaRenderer:
         self.plotter.reset_camera(render=False)
         self.plotter.camera.Zoom(1.0)
 
-    #处理裂缝数据了
+    # 旧实现（注释块，不执行）——生效版本见下方 render_corner_fractures()
     """def render_corner_fractures(self, sim_data):
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
@@ -936,8 +949,8 @@ class PyVistaRenderer:
 
             if is_hydraulic:
                 # 人工裂缝
-                frac_color = (1.0, 0.0, 0.0)
-                edge_color = (0.75, 0.0, 0.0)
+                frac_color = (0.72, 0.38, 0.38)
+                edge_color = (0.54, 0.29, 0.29)
                 ambient = 0.85
                 diffuse = 0.35
                 specular = 0.45
@@ -1051,7 +1064,7 @@ class PyVistaRenderer:
         if well_line is not None:
             actor = self.plotter.add_mesh(
                 well_line.tube(radius=2.0),
-                color=(0.28, 0.28, 0.32),
+                color=(0.31, 0.35, 0.40),
                 opacity=1.0,
                 lighting=True,
                 ambient=0.9,
@@ -1176,10 +1189,10 @@ class PyVistaRenderer:
             actor = self.plotter.add_mesh(
                 surface,
                 scalars="Pressure",
-                cmap=get_bright_jet_cmap(),
+                cmap=get_soft_jet_cmap(),
                 clim=[pressure_min, pressure_max],
                 show_edges=False,
-                opacity=0.65,
+                opacity=0.72,
                 show_scalar_bar=False,
                 render=False,
                 lighting=False,
@@ -1200,7 +1213,7 @@ class PyVistaRenderer:
                 height=0.40,
                 label_font_size=18,
                 title_font_size=20,
-                color="white",
+                color="#2f3640",
                 vertical=True,
                 render=False,
             )
@@ -1235,9 +1248,9 @@ class PyVistaRenderer:
         actor = self.plotter.add_volume(
             grid,
             scalars="Pressure",
-            cmap=get_bright_jet_cmap(),
+            cmap=get_soft_jet_cmap(),
             clim=[pressure_min, pressure_max],
-            opacity=0.6,
+            opacity=0.7,
             opacity_unit_distance=50,
             blending="maximum",
             shade=False,
@@ -1252,7 +1265,7 @@ class PyVistaRenderer:
             height=0.4,
             label_font_size=18,
             title_font_size=20,
-            color="white",
+            color="#2f3640",
             vertical=True,
             render=False,
         )
@@ -1423,6 +1436,7 @@ class PyVistaRenderer:
             render=False,
         )
 
+    # NOTE: 此定义会被下方第二个 render_corner_lgr_grid 覆盖，保留仅用于参考旧实现。
     def render_corner_lgr_grid(self, sim_data):
         self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
         self._remove_actor(self.cache["corner_lgr_refined_grid_actor"])
@@ -1447,6 +1461,7 @@ class PyVistaRenderer:
 
         self._render()
 
+    # 旧实现（注释块，不执行）——生效版本见下方 render_corner_lgr_grid()
     """def render_corner_lgr_grid(self, sim_data):
 
         self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
@@ -1561,24 +1576,24 @@ class PyVistaRenderer:
         self.cache["corner_lgr_parent_grid_actor"] = None
         self.cache["corner_lgr_refined_grid_actor"] = None
 
-        #父网格（灰色）
+        #父网格（浅灰蓝）
         if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
 
             self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
                 sim_data.corner_lgr_parent_grid_geometry,
-                (0.7, 0.7, 0.7),
+                (0.78, 0.82, 0.87),
                 0.4,
                 0.15,
             )
 
-        # 加密网格（白色）
+        # 加密网格（稍深灰蓝，层次清晰）
         refined_geom = getattr(sim_data, "corner_lgr_refined_grid_geometry", None)
 
         if refined_geom is not None:
 
             self.cache["corner_lgr_refined_grid_actor"] = self._create_grid_lines_actor(
                 refined_geom,
-                (1.0, 1.0, 1.0),
+                (0.64, 0.69, 0.76),
                 0.45,
                 0.20,
             )
@@ -1734,7 +1749,7 @@ class PyVistaRenderer:
                 if coarse_edges.n_points > 0:
                     coarse_actor = self.plotter.add_mesh(
                         coarse_edges,
-                        color=(0.88, 0.88, 0.88),
+                        color=(0.78, 0.82, 0.87),
                         line_width=1,
                         opacity=1,
                         render=False,
@@ -1794,9 +1809,9 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
-            cmap=get_bright_jet_cmap(),
+            cmap=get_soft_jet_cmap(),
             clim=[float(np.min(pressures_all)), float(np.max(pressures_all))],
-            opacity=0.65,
+            opacity=0.72,
             show_scalar_bar=False,
             show_edges=False,
             lighting=False,
@@ -1817,7 +1832,7 @@ class PyVistaRenderer:
             height=0.4,
             label_font_size=18,
             title_font_size=20,
-            color="white",
+            color="#2f3640",
             vertical=True,
             render=False,
         )
@@ -1890,8 +1905,8 @@ class PyVistaRenderer:
                     continue
                 poly = pv.PolyData(pts)
                 poly.faces = [len(pts), *range(len(pts))]
-                fcolor = (1.0, 0.0, 0.0)
-                ecolor = (0.75, 0.0, 0.0)
+                fcolor = (0.72, 0.38, 0.38)
+                ecolor = (0.54, 0.29, 0.29)
                 fac = self.plotter.add_mesh(
                     poly,
                     color=fcolor,
@@ -1943,7 +1958,7 @@ class PyVistaRenderer:
 
                 actor = self.plotter.add_mesh(
                     well_line.tube(radius=2.0),
-                    color=(0.28, 0.28, 0.32),
+                    color=(0.31, 0.35, 0.40),
                     opacity=1.0,
                     lighting=True,
                     ambient=0.9,

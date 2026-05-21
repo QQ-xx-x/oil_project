@@ -2299,7 +2299,7 @@ class MainWindow(QMainWindow):
     def create_center_panel(self):
         """创建中间VTK视图面板 - 与原文件一致"""
         self.center_stack = QStackedWidget()
-        self.center_stack.setStyleSheet("background-color: #000000;")
+        self.center_stack.setStyleSheet("background-color: #eef2f6;")
         self.center_layout.addWidget(self.center_stack)
 
         self.vtk_widget = PyVistaView()
