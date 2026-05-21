@@ -4339,7 +4339,9 @@ public:
     }
 
     void run(double total_days) {
-        std::ofstream file("output_sim_lgr.csv");
+        std::string run_tag = enable_dual_porosity ? "_WR" : "_noWR";
+        std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
+        std::ofstream file("output_sim_lgr" + run_tag + ".csv");
         file << "Time,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         double t = 0.0;
         const double dt0 = 1e-5;
@@ -4394,7 +4396,8 @@ public:
 
         file.close();
 
-        std::ofstream field("final_field_lgr.csv");
+        std::cout << "Writing field data to final_field_lgr" << run_tag << ".csv" << std::endl;
+        std::ofstream field("final_field_lgr" + run_tag + ".csv");
         field << "leaf_id,parent_id,x,y,z,P,Sw,Sg";
         if (enable_dual_porosity) field << ",P_matrix,Sw_matrix,Sg_matrix";
         field << "\n";
