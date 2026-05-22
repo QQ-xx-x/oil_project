@@ -1721,6 +1721,8 @@ class MainWindow(QMainWindow):
         self.corner_layer_info.setWordWrap(True)
         layout.addWidget(self.corner_layer_info)
 
+        layout.addWidget(self.create_selection_tools_group("black_oil_corner_grid"))
+
         layout.addStretch()
         return page
 
@@ -2672,15 +2674,7 @@ class MainWindow(QMainWindow):
         """将 Black Oil 的框选区域参数整理成算法输入。"""
         selection = self.selection_params_by_algorithm.get("black_oil")
         if not selection:
-            return {
-                'region_num_fracs': 0,
-                'region_x_min': 0.0,
-                'region_x_max': 0.0,
-                'region_y_min': 0.0,
-                'region_y_max': 0.0,
-                'region_z_min': 0.0,
-                'region_z_max': 0.0,
-            }
+            return self.empty_region_fracture_params()
 
         return {
             'region_num_fracs': int(selection['N']),
@@ -2690,6 +2684,47 @@ class MainWindow(QMainWindow):
             'region_y_max': float(selection['y2']),
             'region_z_min': 0.0,
             'region_z_max': float(params['lz']),
+        }
+
+    def empty_region_fracture_params(self):
+        """返回未启用区域裂缝时的统一参数。"""
+        return {
+            'region_num_fracs': 0,
+            'region_x_min': 0.0,
+            'region_x_max': 0.0,
+            'region_y_min': 0.0,
+            'region_y_max': 0.0,
+            'region_z_min': 0.0,
+            'region_z_max': 0.0,
+        }
+
+    def collect_corner_region_fracture_params(self):
+        """将 Corner Grid 的框选区域参数整理成算法输入。"""
+        selection = self.selection_params_by_algorithm.get("black_oil_corner_grid")
+        if not selection or not self.sim_data.corner_point_grid:
+            return self.empty_region_fracture_params()
+
+        cpg = self.sim_data.corner_point_grid
+        origin_x = float(cpg.origin_x)
+        origin_y = float(cpg.origin_y)
+        origin_z = float(cpg.origin_z)
+        _, _, _, _, min_z, max_z = self.get_corner_selection_world_bounds()
+
+        return {
+            'region_num_fracs': int(selection['N']),
+            'region_x_min': float(selection['x1']) - origin_x,
+            'region_x_max': float(selection['x2']) - origin_x,
+            'region_y_min': float(selection['y1']) - origin_y,
+            'region_y_max': float(selection['y2']) - origin_y,
+            'region_z_min': min_z - origin_z,
+            'region_z_max': max_z - origin_z,
+            'region_abs_x_min': float(selection['x1']),
+            'region_abs_x_max': float(selection['x2']),
+            'region_abs_y_min': float(selection['y1']),
+            'region_abs_y_max': float(selection['y2']),
+            'region_abs_z_min': min_z,
+            'region_abs_z_max': max_z,
+            'region_coordinate_mode': 'relative_to_corner_grid_origin',
         }
 
     def run_simulation(self):
@@ -2840,6 +2875,7 @@ class MainWindow(QMainWindow):
         lx = self.sim_data.corner_point_grid.lx
         ly = self.sim_data.corner_point_grid.ly
         lz = self.sim_data.corner_point_grid.lz
+        region_params = self.collect_corner_region_fracture_params()
         
         self.append_sim_status("=" * 50)
         self.append_sim_status("  Corner Point Grid Simulation Starting...")
@@ -2850,6 +2886,23 @@ class MainWindow(QMainWindow):
         self.append_sim_status(f"Grid size: ({lx}, {ly}, {lz})")
         self.append_sim_status(f"Natural fractures: {natural_frac_params['num_fracs']}, aperture={natural_frac_params['aperture']}")
         self.append_sim_status(f"Hydraulic fractures: {hydraulic_frac_params['num_stages']}, aperture={hydraulic_frac_params['aperture']}")
+        if region_params.get('region_num_fracs', 0) > 0:
+            self.append_sim_status(
+                "Region Fractures: "
+                f"N={region_params['region_num_fracs']}, "
+                f"X[{region_params['region_abs_x_min']:.2f}, {region_params['region_abs_x_max']:.2f}], "
+                f"Y[{region_params['region_abs_y_min']:.2f}, {region_params['region_abs_y_max']:.2f}], "
+                f"Z[{region_params['region_abs_z_min']:.2f}, {region_params['region_abs_z_max']:.2f}]"
+            )
+            self.append_sim_status(
+                "Region Fractures backend coords: "
+                f"X[{region_params['region_x_min']:.2f}, {region_params['region_x_max']:.2f}], "
+                f"Y[{region_params['region_y_min']:.2f}, {region_params['region_y_max']:.2f}], "
+                f"Z[{region_params['region_z_min']:.2f}, {region_params['region_z_max']:.2f}] "
+                f"({region_params['region_coordinate_mode']})"
+            )
+        else:
+            self.append_sim_status("Region Fractures: disabled")
         self.append_sim_status(f"LGR enabled: {self.corner_combo_grid_refinement.currentText()}")
         if self.corner_combo_grid_refinement.currentText() == "加密":
             self.append_sim_status(f"d_threshold: 5.0, lgr_nrx=2, lgr_nry=2, lgr_nrz=2")
@@ -2973,6 +3026,7 @@ class MainWindow(QMainWindow):
             'fracture_volume_fraction': dual_porosity_params['fracture_volume_fraction'],
             'wr_shape_factor': dual_porosity_params['wr_shape_factor'],
         }
+        params.update(region_params)
         
         # 如果是加密模式，添加LGR参数
         if self.corner_combo_grid_refinement.currentText() == "加密":
@@ -2985,6 +3039,7 @@ class MainWindow(QMainWindow):
         self.append_sim_status(f"=== Full Parameters ===")
         self.append_sim_status(f"num_fracs: {params.get('num_fracs')}")
         self.append_sim_status(f"hf_count: {params.get('hf_count')}")
+        self.append_sim_status(f"region_num_fracs: {params.get('region_num_fracs')}")
         self.append_sim_status(f"hf_length: {params.get('hf_length')}")
         self.append_sim_status(f"hf_height: {params.get('hf_height')}")
         self.append_sim_status(f"d_threshold: {params.get('d_threshold')}")
@@ -3717,7 +3772,7 @@ class MainWindow(QMainWindow):
             f"区域: ({params['x1']:.2f}, {params['y1']:.2f}) -> "
             f"({params['x2']:.2f}, {params['y2']:.2f}), N = {params['N']}"
         )
-        if self.current_algorithm == "black_oil":
+        if self.current_algorithm in {"black_oil", "black_oil_corner_grid"}:
             status += "\n将于下次运行时应用。"
         self.update_corner_selection_status(status)
 
@@ -3725,7 +3780,7 @@ class MainWindow(QMainWindow):
         """弹出矩形框选参数输入窗，返回确认后的参数。"""
         x1, y1, x2, y2 = bounds
         dialog = QDialog(self)
-        dialog.setWindowTitle("天然裂缝区域参数")
+        dialog.setWindowTitle("区域裂缝参数")
         dialog.setModal(True)
         dialog.resize(460, 300)
         dialog.setMinimumSize(420, 280)
@@ -3765,11 +3820,11 @@ class MainWindow(QMainWindow):
         n_spin = self.create_spinbox(1, 100000, 1)
 
         for row, (label_text, widget) in enumerate([
-            ("x1", x1_spin),
-            ("y1", y1_spin),
-            ("x2", x2_spin),
-            ("y2", y2_spin),
-            ("N", n_spin),
+            ("X min", x1_spin),
+            ("Y min", y1_spin),
+            ("X max", x2_spin),
+            ("Y max", y2_spin),
+            ("裂缝数量 N", n_spin),
         ]):
             grid.addWidget(QLabel(f"{label_text}:"), row, 0)
             grid.addWidget(widget, row, 1)

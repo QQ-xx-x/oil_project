@@ -1288,7 +1288,7 @@ public:
     double natural_max_strike{PI};
     double natural_aperture{0.1};
     double natural_perm{100.0};
-    bool use_region_fractures{false};
+    int region_total_fracs_{0};
     double region_x_min{0.0};
     double region_x_max{-1.0};
     double region_y_min{0.0};
@@ -1351,7 +1351,6 @@ public:
         natural_max_strike = max_strike;
         natural_aperture = aperture_val;
         natural_perm = perm_val;
-        use_region_fractures = false;
     }
 
     void setRegionFractureParameters(int total_fracs,
@@ -1361,8 +1360,7 @@ public:
                                      double y_max,
                                      double z_min,
                                      double z_max) {
-        natural_frac_count = total_fracs;
-        use_region_fractures = true;
+        region_total_fracs_ = total_fracs;
         region_x_min = x_min;
         region_x_max = x_max;
         region_y_min = y_min;
@@ -2655,9 +2653,12 @@ public:
                            double aperture_val = 0.1, double perm_val = 100.0,
                            double range_x_min = 0.0, double range_x_max = -1.0,
                            double range_y_min = 0.0, double range_y_max = -1.0,
-                           double range_z_min = 0.0, double range_z_max = -1.0) {
+                           double range_z_min = 0.0, double range_z_max = -1.0,
+                           bool append_existing = false,
+                           int start_id = -1,
+                           unsigned int rng_seed = 42) {
 
-        fractures.clear();
+        if (!append_existing) fractures.clear();
 
         if (total_fracs <= 0) return;
         if (parents.empty()) {
@@ -2792,7 +2793,8 @@ public:
             return covered_area >= full_area - area_tol;
         };
 
-        std::mt19937 rng(42);
+        int base_id = (start_id >= 0) ? start_id : 0;
+        std::mt19937 rng(rng_seed);
         std::uniform_real_distribution<double> distAngle(min_strike, max_strike);
         std::uniform_real_distribution<double> distDip(0, max_dip);
         std::uniform_real_distribution<double> distL(min_L, max_L);
@@ -2806,7 +2808,7 @@ public:
 
         for (int i = 0; i < total_fracs; ++i) {
             Fracture f;
-            f.id = i; // 天然裂缝从 0 开始连续编号
+            f.id = base_id + i; // 天然裂缝从 0 开始连续编号，区域追加裂缝从当前最大 ID 之后开始
             f.aperture = aperture_val;
             f.perm = perm_val;
             f.is_hydraulic = false; // 明确标记为天然裂缝
@@ -2859,6 +2861,44 @@ public:
                 }
             }
         }
+    }
+
+    void generateFracturesInRegion(int total_fracs,
+                                   double x_min, double x_max,
+                                   double y_min, double y_max,
+                                   double z_min, double z_max) {
+        if (total_fracs <= 0) return;
+
+        int before_count = static_cast<int>(fractures.size());
+        int start_id = getNextFractureId();
+        generateFractures(
+            total_fracs,
+            natural_min_length,
+            natural_max_length,
+            10.0, 20.0,
+            natural_max_dip,
+            natural_min_strike,
+            natural_max_strike,
+            natural_aperture,
+            natural_perm,
+            x_min, x_max,
+            y_min, y_max,
+            z_min, z_max,
+            true,
+            start_id,
+            12345U
+        );
+
+        int placed = static_cast<int>(fractures.size()) - before_count;
+        if (placed < total_fracs) {
+            std::cerr << "Warning: Only placed " << placed << " of " << total_fracs
+                      << " fractures in region. Consider reducing fracture size or enlarging region.\n";
+        }
+
+        std::cout << "Generated " << placed << " fractures in region ["
+                  << x_min << "," << x_max << "] x ["
+                  << y_min << "," << y_max << "] x ["
+                  << z_min << "," << z_max << "]" << std::endl;
     }
 
     void generateHydraulicFractures(int total_fracs = 20,
@@ -4425,13 +4465,12 @@ public:
             10.0, 20.0,  // min_height, max_height
             natural_max_dip,
             natural_min_strike, natural_max_strike,
-            natural_aperture, natural_perm,
-            use_region_fractures ? region_x_min : 0.0,
-            use_region_fractures ? region_x_max : -1.0,
-            use_region_fractures ? region_y_min : 0.0,
-            use_region_fractures ? region_y_max : -1.0,
-            use_region_fractures ? region_z_min : 0.0,
-            use_region_fractures ? region_z_max : -1.0);
+            natural_aperture, natural_perm);
+        generateFracturesInRegion(
+            region_total_fracs_,
+            region_x_min, region_x_max,
+            region_y_min, region_y_max,
+            region_z_min, region_z_max);
         generateHydraulicFractures(
             hydraulic_frac_count,
             hydraulic_frac_spacing,
@@ -4499,7 +4538,14 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def(py::init<>())
         .def("setCornerPointFiles", &SimulatorLGR::setCornerPointFiles)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
-        .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
+        .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters,
+             py::arg("total_fracs"),
+             py::arg("x_min"),
+             py::arg("x_max"),
+             py::arg("y_min"),
+             py::arg("y_max"),
+             py::arg("z_min"),
+             py::arg("z_max"))
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
              py::arg("total_fracs"),
              py::arg("frac_spacing"),

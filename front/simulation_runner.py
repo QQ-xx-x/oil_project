@@ -345,6 +345,33 @@ def run_corner_edfm_simulation(params):
         float(params.get('aperture', 0.1)),
         float(params.get('frac_perm', 100.0)),
     )
+    region_num_fracs = int(params.get('region_num_fracs', 0))
+    if region_num_fracs > 0:
+        region_args = (
+            region_num_fracs,
+            float(params.get('region_x_min', 0.0)),
+            float(params.get('region_x_max', 0.0)),
+            float(params.get('region_y_min', 0.0)),
+            float(params.get('region_y_max', 0.0)),
+            float(params.get('region_z_min', 0.0)),
+            float(params.get('region_z_max', 0.0)),
+        )
+        if hasattr(sim, 'setRegionFractureParameters'):
+            print(
+                "Setting region fracture parameters: "
+                f"N={region_args[0]}, "
+                f"X[{region_args[1]}, {region_args[2]}], "
+                f"Y[{region_args[3]}, {region_args[4]}], "
+                f"Z[{region_args[5]}, {region_args[6]}]",
+                flush=True,
+            )
+            sim.setRegionFractureParameters(*region_args)
+        else:
+            print(
+                "WARNING: corner EDFM module missing setRegionFractureParameters(); "
+                "region fractures disabled",
+                flush=True,
+            )
     hf_count = int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0
     hf_spacing = float(params.get('hf_spacing_x', 0.0))
     sim.setHydraulicFractureParameters(
