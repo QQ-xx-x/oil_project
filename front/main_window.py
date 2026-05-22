@@ -3027,6 +3027,11 @@ class MainWindow(QMainWindow):
             'wr_shape_factor': dual_porosity_params['wr_shape_factor'],
         }
         params.update(region_params)
+        self.pending_corner_fracture_counts = {
+            'natural': int(params.get('num_fracs', 0) or 0),
+            'region': int(params.get('region_num_fracs', 0) or 0),
+            'hydraulic': int(params.get('hf_count', 0) or 0),
+        }
         
         # 如果是加密模式，添加LGR参数
         if self.corner_combo_grid_refinement.currentText() == "加密":
@@ -3141,10 +3146,22 @@ class MainWindow(QMainWindow):
                 z_offset = self.sim_data.corner_point_grid.origin_z
             
             natural_frac_params = self.corner_natural_frac_panel.get_values()
+            fracture_counts = getattr(self, 'pending_corner_fracture_counts', {}) or {}
+            natural_count = int(fracture_counts.get('natural', natural_frac_params['num_fracs']) or 0)
+            region_count = int(fracture_counts.get('region', 0) or 0)
+            hydraulic_count = int(fracture_counts.get('hydraulic', 0) or 0)
+            region_start_id = natural_count
+            hydraulic_start_id = natural_count + region_count
             for frac in self.sim_data.fractures:
                 frac_id = frac.get('id', 0)
-                is_hydraulic = frac_id >= natural_frac_params['num_fracs']
-                frac['type'] = 'hydraulic' if is_hydraulic else 'natural'
+                is_region = region_start_id <= frac_id < hydraulic_start_id
+                is_hydraulic = hydraulic_count > 0 and frac_id >= hydraulic_start_id
+                if is_hydraulic:
+                    frac['type'] = 'hydraulic'
+                elif is_region:
+                    frac['type'] = 'region'
+                else:
+                    frac['type'] = 'natural'
                 frac['is_hydraulic'] = 1 if is_hydraulic else 0
                 for i, p in enumerate(frac['points']):
                     frac['points'][i] = (p[0] + x_offset, p[1] + y_offset, p[2] + z_offset)
