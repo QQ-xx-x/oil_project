@@ -1,0 +1,192 @@
+{
+  "history_file": "history_fit_target.csv",
+  "results_dir": "results_fit_target",
+  "runs_dir": "runs_fit_target",
+  "build_release": "../build/Release",
+  "random_seed": 20260521,
+  "simulation_days": 730.0,
+  "enkf": {
+    "ensemble_size": 24,
+    "alphas": [4.0, 4.0, 4.0, 4.0],
+    "max_workers": 1,
+    "save_member_outputs": true,
+    "reuse_existing_outputs": true,
+    "quiet_member_logs": true
+  },
+  "observation": {
+    "start_day": 0.0,
+    "end_day": 730.0,
+    "stride_days": 14.0,
+    "channels": [
+      {
+        "name": "gas_rate",
+        "column": "gas_rate_sm3_d",
+        "model_key": "gas_rate",
+        "transform": "log",
+        "epsilon": 1.0,
+        "relative_error": 0.60,
+        "absolute_error": 1000.0,
+        "weight": 0.25
+      },
+      {
+        "name": "gas_cum",
+        "column": "gas_cum_sm3",
+        "model_key": "gas_cum",
+        "transform": "log",
+        "epsilon": 1.0,
+        "relative_error": 0.04,
+        "absolute_error": 1000000.0,
+        "weight": 2.0
+      },
+      {
+        "name": "water_rate",
+        "column": "water_rate_sm3_d",
+        "model_key": "water_rate",
+        "transform": "log",
+        "epsilon": 0.05,
+        "relative_error": 0.80,
+        "absolute_error": 1.0,
+        "weight": 0.25
+      },
+      {
+        "name": "water_cum",
+        "column": "water_cum_sm3",
+        "model_key": "water_cum",
+        "transform": "log",
+        "epsilon": 0.1,
+        "relative_error": 0.05,
+        "absolute_error": 20.0,
+        "weight": 2.0
+      }
+    ]
+  },
+  "base_params": {
+    "coord_file": "../src/basic/ratio_style_800x400x120_40x20x6_COORD.csv",
+    "zcorn_file": "../src/basic/ratio_style_800x400x120_40x20x6_ZCORN.csv",
+    "simulation_days": 730.0,
+    "fractures": {
+      "num_fracs": 72,
+      "min_len": 14.0,
+      "max_len": 36.0,
+      "max_dip": 0.82,
+      "min_strike": 0.18,
+      "max_strike": 2.72,
+      "aperture": 0.075,
+      "frac_perm": 180.0
+    },
+    "hydraulic_fractures": {
+      "hf_count": 14,
+      "hf_spacing": 58.0,
+      "hf_length": 96.0,
+      "hf_height": 24.0,
+      "hf_aperture": 0.065,
+      "hf_perm": 720.0,
+      "hf_center_x": 420.0,
+      "hf_center_y": 205.0,
+      "hf_center_z": 62.0
+    },
+    "well": {
+      "radius": 0.06,
+      "bhp": 42.0
+    },
+    "fluid": {
+      "mu_w": 0.78,
+      "mu_o_placeholder": 3.6,
+      "cw": 2.5e-6,
+      "co_placeholder": 8.0e-6,
+      "p_ref": 120.0,
+      "swi": 0.08,
+      "sor_placeholder": 0.02,
+      "sgc": 0.04,
+      "mu_g_fallback": 0.17,
+      "cg_fallback": 8.0e-4
+    },
+    "gas_pvt": {
+      "gas_t_C": 126.0,
+      "gas_Mg": 18.2,
+      "gas_Tc": 202.0,
+      "gas_Pc_bar": 46.0,
+      "gas_table_Pmin_bar": 2.0,
+      "gas_table_Pmax_bar": 900.0,
+      "gas_table_n": 1400,
+      "gas_Psc_bar": 1.01325
+    },
+    "initial_state": {
+      "pressure": 800.0,
+      "sw": 0.4,
+      "sg": 0.6
+    },
+    "lgr": {
+      "enabled": true,
+      "d_threshold": 4.2,
+      "nrx": 2,
+      "nry": 2,
+      "nrz": 1
+    },
+    "dual_porosity": {
+      "enabled": true,
+      "phi_matrix": 0.055,
+      "phi_fracture": 0.36,
+      "k_matrix_x": 0.008,
+      "k_matrix_y": 0.006,
+      "k_matrix_z": 0.0015,
+      "k_fracture_x": 1.6,
+      "k_fracture_y": 1.2,
+      "k_fracture_z": 0.15,
+      "matrix_volume_fraction": 0.965,
+      "fracture_volume_fraction": 0.035,
+      "wr_shape_factor": 0.085
+    }
+  },
+  "fit_parameters": [
+    {
+      "name": "initial_sw",
+      "path": ["initial_state", "sw"],
+      "initial": 0.25,
+      "lower": 0.10,
+      "upper": 0.55,
+      "transform": "linear",
+      "perturb": 0.06,
+      "dependent": {
+        "path": ["initial_state", "sg"],
+        "formula": "one_minus_value"
+      }
+    },
+    {
+      "name": "well_bhp",
+      "path": ["well", "bhp"],
+      "initial": 50.0,
+      "lower": 30.0,
+      "upper": 70.0,
+      "transform": "linear",
+      "perturb": 4.0
+    },
+    {
+      "name": "hf_perm",
+      "path": ["hydraulic_fractures", "hf_perm"],
+      "initial": 1000.0,
+      "lower": 200.0,
+      "upper": 2500.0,
+      "transform": "log",
+      "perturb": 0.35
+    },
+    {
+      "name": "frac_perm",
+      "path": ["fractures", "frac_perm"],
+      "initial": 120.0,
+      "lower": 30.0,
+      "upper": 600.0,
+      "transform": "log",
+      "perturb": 0.45
+    },
+    {
+      "name": "wr_shape_factor",
+      "path": ["dual_porosity", "wr_shape_factor"],
+      "initial": 0.14,
+      "lower": 0.02,
+      "upper": 0.25,
+      "transform": "log",
+      "perturb": 0.30
+    }
+  ]
+}

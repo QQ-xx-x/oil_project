@@ -1,3 +1,4 @@
+import argparse
 import csv
 from pathlib import Path
 
@@ -9,13 +10,13 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = Path(__file__).resolve().parent
-HISTORY_FILE = OUTPUT_DIR / "history_synthetic.csv"
-OUT_FILE = OUTPUT_DIR / "history_observed_gas_water.png"
+DEFAULT_HISTORY_FILE = OUTPUT_DIR / "history_fit_target.csv"
+DEFAULT_OUT_FILE = OUTPUT_DIR / "history_fit_target_gas_water.png"
 
 
-def read_history():
+def read_history(history_file):
     rows = []
-    with HISTORY_FILE.open("r", newline="", encoding="utf-8") as f:
+    with Path(history_file).open("r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(
@@ -38,7 +39,6 @@ def series(rows, key):
 def plot_production_panel(ax, rows, phase_name, rate_key, cum_key, color):
     ax_rate = ax.twinx()
 
-    # Historical observations only: no model line and no fitted simulation curve.
     ax.scatter(
         series(rows, "day"),
         series(rows, cum_key),
@@ -47,7 +47,7 @@ def plot_production_panel(ax, rows, phase_name, rate_key, cum_key, color):
         edgecolors=color,
         linewidths=0.8,
         alpha=0.9,
-        label=f"Observed synthetic, {phase_name} production cumulative",
+        label=f"Fit target, {phase_name} production cumulative",
     )
     ax_rate.scatter(
         series(rows, "day"),
@@ -55,10 +55,10 @@ def plot_production_panel(ax, rows, phase_name, rate_key, cum_key, color):
         s=9,
         color=color,
         alpha=0.55,
-        label=f"Observed synthetic, {phase_name} production rate",
+        label=f"Fit target, {phase_name} production rate",
     )
 
-    ax.set_title(f"Synthetic Observed {phase_name} Production")
+    ax.set_title(f"History Fit Target {phase_name} Production")
     ax.set_xlabel("Production day [d]")
     ax.set_ylabel(f"{phase_name} production cumulative [sm3]")
     ax_rate.set_ylabel(f"{phase_name} production rate [sm3/d]")
@@ -79,14 +79,22 @@ def plot_production_panel(ax, rows, phase_name, rate_key, cum_key, color):
 
 
 def main():
-    rows = read_history()
+    parser = argparse.ArgumentParser(description="Plot history fitting target gas-water production data.")
+    parser.add_argument("--history", default=str(DEFAULT_HISTORY_FILE), help="History target CSV.")
+    parser.add_argument("--output", default=str(DEFAULT_OUT_FILE), help="Output PNG path.")
+    args = parser.parse_args()
+
+    rows = read_history(args.history)
+    out_file = Path(args.output)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
     fig, (ax_gas, ax_water) = plt.subplots(1, 2, figsize=(15, 5.6), constrained_layout=True)
 
     plot_production_panel(ax_gas, rows, "Gas", "gas_rate", "gas_cum", "#1f77b4")
     plot_production_panel(ax_water, rows, "Water", "water_rate", "water_cum", "#2ca02c")
 
-    fig.savefig(OUT_FILE, dpi=180)
-    print(f"plot={OUT_FILE}")
+    fig.savefig(out_file, dpi=180)
+    print(f"plot={out_file}")
 
 
 if __name__ == "__main__":
