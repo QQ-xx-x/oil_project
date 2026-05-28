@@ -52,6 +52,31 @@ def series(rows, key):
     return [row[key] for row in rows]
 
 
+def interp_series(rows, day, key):
+    if day <= rows[0]["day"]:
+        return rows[0][key]
+    for left, right in zip(rows[:-1], rows[1:]):
+        if left["day"] <= day <= right["day"]:
+            span = max(right["day"] - left["day"], 1e-12)
+            frac = (day - left["day"]) / span
+            return left[key] + frac * (right[key] - left[key])
+    return rows[-1][key]
+
+
+def resample_fit_to_history_days(fit, history):
+    days = series(history, "day")
+    return [
+        {
+            "day": day,
+            "water_rate": interp_series(fit, day, "water_rate"),
+            "gas_rate": interp_series(fit, day, "gas_rate"),
+            "water_cum": interp_series(fit, day, "water_cum"),
+            "gas_cum": interp_series(fit, day, "gas_cum"),
+        }
+        for day in days
+    ]
+
+
 def plot_panel(ax, history, fit, phase_name, rate_key, cum_key, color):
     ax_rate = ax.twinx()
 
@@ -121,7 +146,7 @@ def main():
     if not fit_file.exists():
         raise FileNotFoundError(f"Best fit output does not exist yet: {fit_file}")
     history = read_history(args.history)
-    fit = read_fit(fit_file)
+    fit = resample_fit_to_history_days(read_fit(fit_file), history)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
     fig, (ax_gas, ax_water) = plt.subplots(1, 2, figsize=(15, 5.6), constrained_layout=True)

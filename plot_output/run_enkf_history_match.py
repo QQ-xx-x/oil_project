@@ -1,12 +1,13 @@
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
 import numpy as np
 
 from enkf_assimilator import ensemble_smoother_update, objective_values, summarize_objectives
-from model_adapter import ForwardModelAdapter, copy_best_output
+from model_adapter import ForwardModelAdapter, copy_best_output, stable_json_sha256, file_sha256
 from observations import build_observations
 from parameters import ParameterManager, load_config, resolve_path
 
@@ -28,6 +29,22 @@ def write_json(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def build_run_signature_context(config):
+    history_path = resolve_path(config["history_file"], config)
+    build_release = resolve_path(config["build_release"], config)
+    return {
+        "history_file": str(history_path.resolve()),
+        "history_sha256": file_sha256(history_path),
+        "observation": config["observation"],
+        "fit_parameters": config["fit_parameters"],
+        "base_params_sha256": stable_json_sha256(config["base_params"]),
+        "build_release": str(build_release.resolve()),
+        "enkf_alphas": config["enkf"].get("alphas"),
+        "ensemble_size": config["enkf"].get("ensemble_size"),
+        "random_seed": config.get("random_seed"),
+    }
 
 
 def evaluate_ensemble(config, manager, obs, adapter, ensemble, iteration, runs_dir):
@@ -101,7 +118,7 @@ def main():
         print(f"results_dir={results_dir}")
         return
 
-    adapter = ForwardModelAdapter(config)
+    adapter = ForwardModelAdapter(config, run_signature_context=build_run_signature_context(config))
     lower = manager.lower_vector()
     upper = manager.upper_vector()
     alphas = [float(alpha) for alpha in config["enkf"]["alphas"]]

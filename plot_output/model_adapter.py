@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -34,8 +35,9 @@ def redirect_process_output(log_path, enabled=True):
 
 
 class ForwardModelAdapter:
-    def __init__(self, config):
+    def __init__(self, config, run_signature_context=None):
         self.config = config
+        self.run_signature_context = run_signature_context or {}
         build_release = resolve_path(config["build_release"], config)
         if not build_release.exists():
             raise FileNotFoundError(f"Build release directory does not exist: {build_release}")
@@ -43,19 +45,21 @@ class ForwardModelAdapter:
         import edfm_core_corner_lgr
 
         self.module = edfm_core_corner_lgr
+        self.module_path = Path(edfm_core_corner_lgr.__file__).resolve()
 
     def run_member(self, params, run_dir, quiet=True):
         run_path = Path(run_dir)
         run_path.mkdir(parents=True, exist_ok=True)
         params_path = run_path / "params.json"
-        params_path.write_text(json.dumps(params, indent=2), encoding="utf-8")
 
         output_name = "output_sim_lgr_WR.csv" if params["dual_porosity"]["enabled"] else "output_sim_lgr_noWR.csv"
         output_path = run_path / output_name
-        if self.config.get("enkf", {}).get("reuse_existing_outputs", False) and output_path.exists():
-            simulation = read_simulation_output(output_path)
-            if simulation["day"][-1] >= float(params["simulation_days"]) - 1e-6:
-                return simulation, output_path
+        signature_path = run_path / "run_signature.json"
+        signature = self._run_signature(params, output_name)
+        if self._can_reuse_existing_output(params, output_path, signature_path, signature):
+            return read_simulation_output(output_path), output_path
+
+        params_path.write_text(json.dumps(params, indent=2), encoding="utf-8")
 
         old_cwd = Path.cwd()
         os.chdir(run_path)
@@ -66,7 +70,55 @@ class ForwardModelAdapter:
             os.chdir(old_cwd)
 
         simulation = read_simulation_output(output_path)
+        signature_record = {
+            "input_signature": signature,
+            "output_sha256": file_sha256(output_path),
+        }
+        signature_path.write_text(json.dumps(signature_record, indent=2, sort_keys=True), encoding="utf-8")
         return simulation, output_path
+
+    def _run_signature(self, params, output_name):
+        return {
+            "version": 1,
+            "params_sha256": stable_json_sha256(params),
+            "params": params,
+            "output_name": output_name,
+            "simulation_days": float(params["simulation_days"]),
+            "coord_file": self._file_identity(params["coord_file"]),
+            "zcorn_file": self._file_identity(params["zcorn_file"]),
+            "module_file": self._file_identity(self.module_path),
+            "context": self.run_signature_context,
+        }
+
+    def _can_reuse_existing_output(self, params, output_path, signature_path, expected_signature):
+        if not self.config.get("enkf", {}).get("reuse_existing_outputs", False):
+            return False
+        if not output_path.exists() or not signature_path.exists():
+            return False
+
+        try:
+            old_signature = json.loads(signature_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        old_input_signature = old_signature.get("input_signature", old_signature)
+        if old_input_signature != expected_signature:
+            return False
+        old_output_sha = old_signature.get("output_sha256")
+        if old_output_sha is not None and file_sha256(output_path) != old_output_sha:
+            return False
+
+        try:
+            simulation = read_simulation_output(output_path)
+        except (OSError, ValueError, KeyError):
+            return False
+        return simulation["day"][-1] >= float(params["simulation_days"]) - 1e-6
+
+    def _file_identity(self, path):
+        resolved = resolve_path(str(path), self.config)
+        return {
+            "path": str(resolved.resolve()),
+            "sha256": file_sha256(resolved),
+        }
 
     def _run_cpp_simulation(self, params):
         sim = self.module.EDFMSimulator()
@@ -195,6 +247,19 @@ def read_simulation_output(path):
         "gas_rate": gas_rate,
         "output_path": str(path),
     }
+
+
+def stable_json_sha256(payload):
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def copy_best_output(output_path, destination):
