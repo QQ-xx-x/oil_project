@@ -1,0 +1,13 @@
+{
+  "objective": 3.268265843804723,
+  "selected_source": "best_seen_member",
+  "final_ensemble_mean_objective": 8.921887172400368,
+  "best_seen_member_objective": 3.268265843804723,
+  "physical_fit_parameters": {
+    "initial_sw": 0.4065154523287128,
+    "hf_perm": 1242.3929101173505,
+    "frac_perm": 134.52456762726578,
+    "wr_shape_factor": 0.2437832566946105
+  },
+  "simulation_output": "D:\\c++code\\oil_project\\history_matching\\runs_fixed_bhp_full\\iter_03\\member_017\\output_sim_lgr_WR.csv"
+}

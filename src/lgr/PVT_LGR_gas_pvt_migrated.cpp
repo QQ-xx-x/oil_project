@@ -1306,6 +1306,11 @@ public:
     double hydraulic_center_z{-1.0};
     double well_radius{0.05};
     double well_pressure{50.0};
+    std::string well_control_mode{"bhp"};
+    std::vector<double> well_control_days;
+    std::vector<double> well_control_rates;
+    double rate_control_bhp_min{14.7};
+    double rate_control_bhp_max{1000.0};
     double initial_pressure{800.0};
     double initial_sw{0.05};
     double simulation_total_days{7300.0};
@@ -1394,6 +1399,38 @@ public:
     void setWellParameters(double rw, double pressure) {
         well_radius = rw;
         well_pressure = pressure;
+    }
+
+    void setGasRateControlSchedule(const std::vector<double>& days,
+                                   const std::vector<double>& rates) {
+        setRateControlSchedule("gas_rate", days, rates);
+    }
+
+    void setWaterRateControlSchedule(const std::vector<double>& days,
+                                     const std::vector<double>& rates) {
+        setRateControlSchedule("water_rate", days, rates);
+    }
+
+    void setRateControlSchedule(const std::string& mode,
+                                const std::vector<double>& days,
+                                const std::vector<double>& rates) {
+        if (mode != "gas_rate" && mode != "water_rate") {
+            throw std::invalid_argument("Unsupported rate control mode: " + mode);
+        }
+        if (days.empty() || days.size() != rates.size()) {
+            throw std::invalid_argument("Rate control schedule requires equal non-empty days and rates.");
+        }
+        for (size_t i = 0; i < days.size(); ++i) {
+            if (!std::isfinite(days[i]) || !std::isfinite(rates[i]) || rates[i] < 0.0) {
+                throw std::invalid_argument("Rate control schedule contains invalid values.");
+            }
+            if (i > 0 && days[i] <= days[i - 1]) {
+                throw std::invalid_argument("Rate control days must be strictly increasing.");
+            }
+        }
+        well_control_mode = mode;
+        well_control_days = days;
+        well_control_rates = rates;
     }
 
     void setOilWaterProperties(double mu_w,
@@ -3989,6 +4026,157 @@ public:
         return false;
     }
 
+    void setAllWellBHP(double bhp) {
+        well_pressure = bhp;
+        for (auto& w : wells) w.P_bhp = bhp;
+    }
+
+    double rateControlTarget(double t) const {
+        if (well_control_days.empty()) return 0.0;
+        if (t <= well_control_days.front()) return well_control_rates.front();
+        for (size_t i = 1; i < well_control_days.size(); ++i) {
+            if (t <= well_control_days[i]) {
+                double span = std::max(well_control_days[i] - well_control_days[i - 1], 1e-12);
+                double frac = (t - well_control_days[i - 1]) / span;
+                return well_control_rates[i - 1] + frac * (well_control_rates[i] - well_control_rates[i - 1]);
+            }
+        }
+        return well_control_rates.back();
+    }
+
+    double rateControlMobilitySum(bool control_gas, const std::vector<State>& state_values) const {
+        double sum = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            sum += w.WI * mobility;
+        }
+        return sum;
+    }
+
+    double estimateRateControlBHP(bool control_gas,
+                                  double target_rate,
+                                  const std::vector<State>& state_values,
+                                  double high_bhp) const {
+        double numerator = 0.0;
+        double denominator = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            double coefficient = w.WI * mobility;
+            numerator += coefficient * state_values[u].P;
+            denominator += coefficient;
+        }
+        if (denominator <= EPS) return high_bhp;
+        return clampd((numerator - target_rate) / denominator, rate_control_bhp_min, high_bhp);
+    }
+
+    struct StepTrial {
+        bool ok{false};
+        double bhp{0.0};
+        double controlled_rate{0.0};
+        double step_water{0.0};
+        double step_gas{0.0};
+        int actual_iter{0};
+        std::vector<State> states_after;
+        std::vector<State> wr_states_after;
+    };
+
+    bool runBHPTrial(double dt,
+                     double bhp,
+                     bool control_gas,
+                     const std::vector<State>& start_states,
+                     const std::vector<State>& start_wr_states,
+                     StepTrial& trial) {
+        states = start_states;
+        wr_matrix_states = start_wr_states;
+        setAllWellBHP(bhp);
+
+        double trial_water = 0.0;
+        double trial_gas = 0.0;
+        int trial_iter = 0;
+        bool ok = solveStep(dt, trial_water, trial_gas, trial_iter);
+        if (!ok) {
+            trial.ok = false;
+            return false;
+        }
+
+        trial.ok = true;
+        trial.bhp = bhp;
+        trial.step_water = trial_water;
+        trial.step_gas = trial_gas;
+        trial.actual_iter = trial_iter;
+        trial.controlled_rate = (control_gas ? trial_gas : trial_water) / std::max(dt, 1e-30);
+        trial.states_after = states;
+        trial.wr_states_after = wr_matrix_states;
+        return true;
+    }
+
+    bool solveRateControlledStep(double t,
+                                 double dt,
+                                 double& step_water,
+                                 double& step_gas,
+                                 int& actual_iter,
+                                 double& used_bhp) {
+        bool control_gas = (well_control_mode == "gas_rate");
+        bool control_water = (well_control_mode == "water_rate");
+        if (!control_gas && !control_water) {
+            used_bhp = well_pressure;
+            return solveStep(dt, step_water, step_gas, actual_iter);
+        }
+
+        double target_rate = std::max(0.0, rateControlTarget(t + 0.5 * dt));
+        double high_bhp = std::max({rate_control_bhp_max, initial_pressure * 1.2, well_pressure + 100.0});
+        std::vector<State> start_states = states;
+        std::vector<State> start_wr_states = wr_matrix_states;
+
+        double bhp = target_rate <= 1e-12
+            ? high_bhp
+            : estimateRateControlBHP(control_gas, target_rate, start_states, high_bhp);
+        StepTrial best;
+        if (!runBHPTrial(dt, bhp, control_gas, start_states, start_wr_states, best)) {
+            states = start_states;
+            wr_matrix_states = start_wr_states;
+            return false;
+        }
+
+        double rate_tol = std::max(1e-6, 0.05 * std::max(target_rate, 1.0));
+        double slope = std::max(rateControlMobilitySum(control_gas, start_states), 1e-12);
+        for (int correction_iter = 0;
+             target_rate > 1e-12 && std::abs(best.controlled_rate - target_rate) > rate_tol && correction_iter < 8;
+             ++correction_iter) {
+            double corrected_bhp = clampd(best.bhp + (best.controlled_rate - target_rate) / slope,
+                                          rate_control_bhp_min,
+                                          high_bhp);
+            if (std::abs(corrected_bhp - best.bhp) <= 1e-8) break;
+            StepTrial corrected;
+            if (!runBHPTrial(dt, corrected_bhp, control_gas, start_states, start_wr_states, corrected)) {
+                states = start_states;
+                wr_matrix_states = start_wr_states;
+                return false;
+            }
+            if (std::abs(corrected.controlled_rate - target_rate) <
+                std::abs(best.controlled_rate - target_rate)) {
+                best = corrected;
+            } else {
+                break;
+            }
+        }
+
+        states = best.states_after;
+        wr_matrix_states = best.wr_states_after;
+        step_water = best.step_water;
+        step_gas = best.step_gas;
+        actual_iter = best.actual_iter;
+        used_bhp = best.bhp;
+        setAllWellBHP(best.bhp);
+        return best.ok;
+    }
+
     void checkGeometryConsistency() {
         double max_rel_err = 0.0;
         int worst_pid = -1;
@@ -4342,7 +4530,7 @@ public:
         std::string run_tag = enable_dual_porosity ? "_WR" : "_noWR";
         std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
         std::ofstream file("output_sim_lgr" + run_tag + ".csv");
-        file << "Time,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
+        file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -4365,10 +4553,13 @@ public:
                     return;
                 }
                 std::cout << "Step " << step << " t=" << t << " dt=" << dt_try << " ... " << std::flush;
-                ok = solveStep(dt_try, sw, sg, actual_iter);
+                double used_bhp = well_pressure;
+                ok = solveRateControlledStep(t, dt_try, sw, sg, actual_iter, used_bhp);
                 if (!ok) {
                     std::cout << "fail -> dt_try*=0.25" << std::endl;
                     dt_try *= 0.25;
+                } else {
+                    well_pressure = used_bhp;
                 }
             }
             std::cout << "ok" << std::endl;
@@ -4385,7 +4576,7 @@ public:
             double qw = sw / std::max(dt_try, 1e-30);
             double qg = sg / std::max(dt_try, 1e-30);
 
-            file << t << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
+            file << t << "," << well_pressure << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
                  << "," << n_leaf << "," << n_seg << "," << qw << "," << qg << "\n";
             file.flush();
 
@@ -4511,6 +4702,8 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("y_center") = -1.0,
              py::arg("z_center") = -1.0)
         .def("setWellParameters", &SimulatorLGR::setWellParameters)
+        .def("setGasRateControlSchedule", &SimulatorLGR::setGasRateControlSchedule)
+        .def("setWaterRateControlSchedule", &SimulatorLGR::setWaterRateControlSchedule)
         .def("setInitialStateParameters", &SimulatorLGR::setInitialStateParameters)
         .def("setSimulationParameters", &SimulatorLGR::setSimulationParameters)
         .def("setLGRParameters", &SimulatorLGR::setLGRParameters)
