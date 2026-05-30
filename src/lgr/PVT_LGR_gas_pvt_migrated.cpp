@@ -4423,7 +4423,7 @@ public:
     }
 
     py::array_t<double> getCellGeometryWithPressure() const {
-        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 29});
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 34});
         auto r = result.mutable_unchecked<2>();
         for (int i = 0; i < n_leaf; ++i) {
             const auto& c = leaves[i];
@@ -4437,6 +4437,11 @@ public:
                 r(i, 4 + j*3 + 2) = c.corners[j].z;
             }
             r(i, 28) = states[i].P;
+            r(i, 29) = c.K[0];
+            r(i, 30) = c.K[1];
+            r(i, 31) = c.K[2];
+            r(i, 32) = c.phi;
+            r(i, 33) = states[i].Sw;
         }
         return result;
     }
