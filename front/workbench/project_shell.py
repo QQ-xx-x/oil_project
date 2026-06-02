@@ -16,6 +16,7 @@ from .message_log import MessageLogPanel
 from .navigation_trees import (
     CasesTree, ModelsTree, ProcessesTree, TemplatesTree, WindowsTree,
 )
+from .project_state import ProjectState
 from .results_tree import ResultsTree
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
@@ -150,7 +151,7 @@ class ProjectShell(QWidget):
     def __init__(self, project_name, project_state=None, project_root=None, parent=None):
         super().__init__(parent)
         self.project_name = project_name
-        self.project_state = project_state
+        self.project_state = project_state or ProjectState(project_name=project_name)
         self.project_root = project_root or os.getcwd()
         self.workflow_runner = WorkbenchWorkflowRunner(self.project_root)
         self.result_store = self.workflow_runner.discover_results()
@@ -205,12 +206,17 @@ class ProjectShell(QWidget):
         left_container.setMaximumWidth(570)
 
         self.workspace = WorkspaceTabs()
+        self.workspace.workspace_message.connect(self._handle_workspace_message)
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(left_container)
         main_splitter.addWidget(self.workspace)
         main_splitter.setSizes([450, 1350])
         main_splitter.setCollapsible(0, False)
         layout.addWidget(main_splitter)
+
+    def _handle_workspace_message(self, message):
+        self.message_log.append_message(message)
+        self._show_status(message.replace("[窗口] ", ""))
 
     def _handle_module_selected(self, key, title):
         self.message_log.append_message(f"[选择] 当前输入模块：{title}")
@@ -227,6 +233,11 @@ class ProjectShell(QWidget):
         self._show_status(f"已更新参数：{title}")
 
     def _handle_result_selected(self, key, title, view):
+        if key == "layer_control":
+            self.workspace.update_context(*self._result_context(key, title), "3d", key)
+            self.message_log.append_message("[结果] 已激活图层控制")
+            self._show_status("当前查看结果图层控制")
+            return
         context_title, detail = self._result_context(key, title)
         if view == "chart":
             self._load_chart_data(key, title)

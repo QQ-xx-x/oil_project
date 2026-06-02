@@ -56,16 +56,19 @@ QTabWidget#mainRibbon QTabBar::tab {
     padding: 4px 10px 4px 10px;
     background: #edf0f6;
     border: none;
+    border-right: 1px solid #cfd5df;
     font-size: 11px;
     min-height: 18px;
     color: #222936;
 }
 QTabWidget#mainRibbon QTabBar::tab:first {
     background: #e0ad34;
+    border-right: 1px solid #bd8c20;
     color: #1d2530;
 }
 QTabWidget#mainRibbon QTabBar::tab:selected {
     background: #ffffff;
+    border-right: 1px solid #c8ced8;
     font-weight: bold;
 }
 QTabWidget#mainRibbon QTabBar::tab:hover {
@@ -326,30 +329,81 @@ QTabWidget#leftDockTabs QTabBar::tab:hover {
     background: #f7fbff;
 }
 QTabWidget#workspaceTabs::pane {
-    border: 1px solid #bfc5cf;
+    border: 1px solid #b9c1ce;
     background: #ffffff;
 }
+QTabWidget#workspaceTabs QTabBar {
+    background: #e8ebf1;
+}
 QTabWidget#workspaceTabs QTabBar::tab {
-    background: #d7dce6;
-    border: 1px solid #bfc5cf;
-    padding: 4px 12px;
-    min-width: 118px;
+    background: #dce2eb;
+    border: 1px solid #b9c1ce;
+    border-bottom-color: #b4bcc8;
+    padding: 3px 9px 3px 7px;
+    min-width: 106px;
+    min-height: 20px;
+    color: #1f2d3d;
 }
 QTabWidget#workspaceTabs QTabBar::tab:selected {
-    background: #f0c051;
+    background: #f2c24e;
+    border-color: #b68a28;
     font-weight: bold;
+}
+QTabWidget#workspaceTabs QTabBar::tab:hover {
+    background: #eef3fb;
+}
+QTabWidget#workspaceTabs QTabBar::close-button {
+    image: none;
+    subcontrol-position: right;
+    width: 11px;
+    height: 11px;
+    border: 1px solid transparent;
+}
+QTabWidget#workspaceTabs QTabBar::close-button:hover {
+    background: #ffe3a6;
+    border: 1px solid #c08f32;
+}
+QToolButton#workspaceAddButton {
+    background: #e8ebf1;
+    border: 1px solid #b9c1ce;
+    color: #26313f;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 0px;
+}
+QToolButton#workspaceAddButton:hover {
+    background: #fff4cf;
+    border: 1px solid #d7ad4e;
 }
 QFrame#viewPage {
     background: #ffffff;
 }
 QFrame#viewToolbar {
-    background: #f5f6f8;
+    background: #f7f8fa;
     border-bottom: 1px solid #cbd0d8;
-    min-height: 30px;
-    max-height: 30px;
+    min-height: 28px;
+    max-height: 28px;
+}
+QToolButton#viewToolbarButton {
+    border: 1px solid transparent;
+    background: transparent;
+    padding: 1px;
+}
+QToolButton#viewToolbarButton:hover {
+    background: #fff4cf;
+    border: 1px solid #d7ad4e;
+}
+QToolButton#viewToolbarButton[windowTool="true"] {
+    background: #eef1f6;
+    border: 1px solid #d4d9e2;
+}
+QFrame#viewToolbarDivider {
+    color: #c8ced8;
+    margin: 3px 4px;
 }
 QComboBox#viewSelector, QComboBox#scaleSelector {
-    min-width: 72px;
+    min-width: 68px;
+    max-height: 22px;
     border: 1px solid #bfc5cf;
     background: #ffffff;
     padding: 2px;
