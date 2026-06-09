@@ -63,6 +63,9 @@ MinSizeRel/
 *.csv
 !comparison/output_sim_lgr.csv
 
+# Binary output files
+*.bin
+
 # Temporary files
 *.tmp
 *.temp

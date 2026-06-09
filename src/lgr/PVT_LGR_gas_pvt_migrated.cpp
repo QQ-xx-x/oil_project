@@ -1029,15 +1029,18 @@ typedef Eigen::AutoDiffScalar<Deriv2> AD2;
 struct FluidProps {
 
     double mu_w = 1.0;
+    double mu_o = 5.0;
 
     double mu_g = 0.2;
     double cg   = 1e-3;
 
     double cw = 1e-8;
+    double co = 1e-5;
 
     double P_ref = 100.0;
 
     double Swi = 0.05;
+    double Sor = 0.01;
     double Sgc = 0.05;
 
     // Real gas PVT
@@ -1168,8 +1171,14 @@ static void calcRelPermGasWater(const T& Sw, T& krw, T& krg) {
         T zero(0.0), one(1.0);
         return (v < zero) ? zero : ((v > one) ? one : v);
     };
-    T Se = (Sw - g_props.Swi) / (1.0 - g_props.Swi - g_props.Sgc);
+
+    const double Swc = g_props.Swi;
+    const double Sgr = g_props.Sgc;
+    T denom = T(std::max(1e-12, 1.0 - Swc - Sgr));
+
+    T Se = (Sw - Swc) / denom;
     Se = clamp01_T(Se);
+
     krw = Se * Se;
     krg = (T(1.0) - Se) * (T(1.0) - Se);
 }
@@ -1177,7 +1186,7 @@ static void calcRelPermGasWater(const T& Sw, T& krw, T& krg) {
 template <typename T>
 struct StateT {
     T P{800.0};
-    T Sw{0.05};
+    T Sw{0.3};
 };
 
 template <typename T>
@@ -1297,6 +1306,11 @@ public:
     double hydraulic_center_z{-1.0};
     double well_radius{0.05};
     double well_pressure{50.0};
+    std::string well_control_mode{"bhp"};
+    std::vector<double> well_control_days;
+    std::vector<double> well_control_rates;
+    double rate_control_bhp_min{14.7};
+    double rate_control_bhp_max{1000.0};
     double initial_pressure{800.0};
     double initial_sw{0.05};
     double simulation_total_days{7300.0};
@@ -1387,36 +1401,80 @@ public:
         well_pressure = pressure;
     }
 
+    void setGasRateControlSchedule(const std::vector<double>& days,
+                                   const std::vector<double>& rates) {
+        setRateControlSchedule("gas_rate", days, rates);
+    }
+
+    void setWaterRateControlSchedule(const std::vector<double>& days,
+                                     const std::vector<double>& rates) {
+        setRateControlSchedule("water_rate", days, rates);
+    }
+
+    void setRateControlSchedule(const std::string& mode,
+                                const std::vector<double>& days,
+                                const std::vector<double>& rates) {
+        if (mode != "gas_rate" && mode != "water_rate") {
+            throw std::invalid_argument("Unsupported rate control mode: " + mode);
+        }
+        if (days.empty() || days.size() != rates.size()) {
+            throw std::invalid_argument("Rate control schedule requires equal non-empty days and rates.");
+        }
+        for (size_t i = 0; i < days.size(); ++i) {
+            if (!std::isfinite(days[i]) || !std::isfinite(rates[i]) || rates[i] < 0.0) {
+                throw std::invalid_argument("Rate control schedule contains invalid values.");
+            }
+            if (i > 0 && days[i] <= days[i - 1]) {
+                throw std::invalid_argument("Rate control days must be strictly increasing.");
+            }
+        }
+        well_control_mode = mode;
+        well_control_days = days;
+        well_control_rates = rates;
+    }
+
     void setOilWaterProperties(double mu_w,
+                               double mu_o,
                                double cw,
+                               double co,
                                double p_ref,
                                double swi,
+                               double sor,
                                double sgc,
                                double mu_g = 0.2,
                                double cg = 1e-3) {
         if (!(std::isfinite(mu_w) && mu_w > 0.0))
             throw std::invalid_argument("mu_w must be a finite positive value.");
+        if (!(std::isfinite(mu_o) && mu_o > 0.0))
+            throw std::invalid_argument("mu_o must be a finite positive value.");
         if (!(std::isfinite(mu_g) && mu_g > 0.0))
             throw std::invalid_argument("mu_g must be a finite positive value.");
         if (!(std::isfinite(cw) && cw >= 0.0))
             throw std::invalid_argument("cw must be finite and non-negative.");
+        if (!(std::isfinite(co) && co >= 0.0))
+            throw std::invalid_argument("co must be finite and non-negative.");
         if (!(std::isfinite(cg) && cg >= 0.0))
             throw std::invalid_argument("cg must be finite and non-negative.");
         if (!std::isfinite(p_ref))
             throw std::invalid_argument("p_ref must be finite.");
         if (!(std::isfinite(swi) && swi >= 0.0 && swi <= 1.0))
             throw std::invalid_argument("Swi must lie in [0, 1].");
+        if (!(std::isfinite(sor) && sor >= 0.0 && sor <= 1.0))
+            throw std::invalid_argument("Sor must lie in [0, 1].");
         if (!(std::isfinite(sgc) && sgc >= 0.0 && sgc <= 1.0))
             throw std::invalid_argument("Sgc must lie in [0, 1].");
         if (swi + sgc >= 1.0)
-            throw std::invalid_argument("Swi + Sgc must be smaller than 1.");
+            throw std::invalid_argument("Swi + Sgc must be smaller than 1 for gas-water two-phase flow.");
 
         g_props.mu_w = mu_w;
+        g_props.mu_o = mu_o;
         g_props.mu_g = mu_g;
         g_props.cw = cw;
+        g_props.co = co;
         g_props.cg = cg;
         g_props.P_ref = p_ref;
         g_props.Swi = swi;
+        g_props.Sor = sor;
         g_props.Sgc = sgc;
     }
 
@@ -1460,9 +1518,24 @@ public:
         invalidateGasPVTTable();
     }
 
-    void setInitialStateParameters(double pressure, double sw) {
+    void setInitialStateParameters(double pressure, double sw, double sg = -1.0) {
+        if (!std::isfinite(pressure) || pressure <= 0.0)
+            throw std::invalid_argument("initial pressure must be finite and positive.");
+        if (!std::isfinite(sw))
+            throw std::invalid_argument("initial Sw must be finite.");
+        const double sw_min = g_props.Swi + 1e-8;
+        const double sw_max = 1.0 - g_props.Sgc - 1e-8;
+        if (sw_max <= sw_min)
+            throw std::invalid_argument("Invalid saturation endpoints: require Swi + Sgc < 1.");
         initial_pressure = pressure;
-        initial_sw = sw;
+        initial_sw = clampd(sw, sw_min, sw_max);
+        if (std::isfinite(sg) && sg >= 0.0) {
+            double expected_sg = 1.0 - initial_sw;
+            if (std::abs(sg - expected_sg) > 1e-6) {
+                std::cout << "[INFO] Gas-water model ignores independent initial_sg; using Sg = 1 - Sw = "
+                          << expected_sg << std::endl;
+            }
+        }
     }
 
     void setSimulationParameters(double total_days) {
@@ -3482,9 +3555,21 @@ public:
         states.assign(n_total, {});
         for (int i=0; i<n_total; ++i) {
             states[i].P = initial_pressure;
-            states[i].Sw = initial_sw;
+            states[i].Sw = clampd(initial_sw, g_props.Swi + 1e-8, 1.0 - g_props.Sgc - 1e-8);
         }
         states_prev = states;
+
+        if (enable_dual_porosity) {
+            wr_matrix_states.assign(n_leaf, {});
+            for (int i = 0; i < n_leaf; ++i) {
+                wr_matrix_states[i].P = initial_pressure;
+                wr_matrix_states[i].Sw = clampd(initial_sw, g_props.Swi + 1e-8, 1.0 - g_props.Sgc - 1e-8);
+            }
+            wr_matrix_states_prev = wr_matrix_states;
+        } else {
+            wr_matrix_states.clear();
+            wr_matrix_states_prev.clear();
+        }
     }
 
     void buildJacobianPattern() {
@@ -3533,17 +3618,13 @@ public:
                 }
             }
         }
-        std::cout << "Jacobian static pattern built. Nonzeros: " << J.nonZeros() << std::endl;
-        // 诊断：检查 cell_J_idx 和 conn_J_idx 是否有 -1
+        std::cout << "Gas-water Jacobian static pattern built. Nonzeros: " << J.nonZeros() << std::endl;
         {
             int bad_diag = 0, bad_conn = 0;
             for (int i = 0; i < n_total; ++i)
                 for (int eq = 0; eq < 2; ++eq)
                     for (int var = 0; var < 2; ++var)
-                        if (cell_J_idx[i].diag[eq][var] < 0) {
-                            if (bad_diag < 5) std::cout << "  BAD diag idx: cell=" << i << " eq=" << eq << " var=" << var << " idx=" << cell_J_idx[i].diag[eq][var] << std::endl;
-                            bad_diag++;
-                        }
+                        if (cell_J_idx[i].diag[eq][var] < 0) bad_diag++;
             for (size_t ci = 0; ci < connections.size(); ++ci)
                 for (int eq = 0; eq < 2; ++eq)
                     for (int var = 0; var < 2; ++var) {
@@ -3605,6 +3686,7 @@ public:
         AD2 accum = vol * phi / dt;
         AD2 Sg_new = AD2(1.0) - s_new.Sw;
         AD2 Sg_old = AD2(1.0) - s_old.Sw;
+
         Eigen::Matrix<AD2, 2, 1> R;
         R(0) = accum * (s_new.Sw / p_new.Bw - s_old.Sw / p_old.Bw);
         R(1) = accum * (Sg_new / p_new.Bg - Sg_old / p_old.Bg);
@@ -3659,7 +3741,107 @@ public:
         sad.Sw.value() = s.Sw;  sad.Sw.derivatives() = Eigen::Vector2d::Unit(1);
     }
 
-    bool assembleLocalWRContributions(double, VectorXd&) {
+    void evalLocalWRMatrixEquation(int leaf, double dt,
+                                   const State& leaf_state,
+                                   const State& matrix_state,
+                                   Eigen::Vector2d* Rm,
+                                   Eigen::Matrix2d* Jm,
+                                   Eigen::Vector2d* flux,
+                                   Eigen::Matrix2d* dF_leaf,
+                                   Eigen::Matrix2d* dF_matrix) const {
+        StateAD2 leaf_ad, matrix_ad;
+        makeStateAD(leaf_state, leaf_ad);
+        makeStateAD(matrix_state, matrix_ad);
+
+        auto props_leaf = getProps(leaf_ad);
+        auto props_matrix = getProps(matrix_ad);
+        double matrix_vol = std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
+        auto R_acc = computeAccumulation_AD(
+            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol, phi_matrix);
+        auto F_lm = computeFlux_FastAD(
+            wr_transfer_T[leaf], leaf_ad, matrix_ad, props_leaf, props_matrix);
+
+        for (int eq = 0; eq < 2; ++eq) {
+            if (Rm) (*Rm)(eq) = R_acc(eq).value() - F_lm.val[eq];
+            if (flux) (*flux)(eq) = F_lm.val[eq];
+            for (int var = 0; var < 2; ++var) {
+                if (Jm) (*Jm)(eq, var) = R_acc(eq).derivatives()(var) - F_lm.d_dv[eq](var);
+                if (dF_leaf) (*dF_leaf)(eq, var) = F_lm.d_du[eq](var);
+                if (dF_matrix) (*dF_matrix)(eq, var) = F_lm.d_dv[eq](var);
+            }
+        }
+    }
+
+    bool solveLocalWRMatrixState(int leaf, double dt, const State& leaf_state, State& matrix_state) const {
+        if (!enable_dual_porosity || leaf < 0 || leaf >= n_leaf) return true;
+        if (leaf >= (int)wr_transfer_T.size() || wr_transfer_T[leaf] <= EPS) {
+            matrix_state = wr_matrix_states_prev[leaf];
+            return true;
+        }
+
+        if (!std::isfinite(matrix_state.P) || matrix_state.P <= 0.0) matrix_state = wr_matrix_states_prev[leaf];
+
+        for (int it = 0; it < 12; ++it) {
+            Eigen::Vector2d Rm;
+            Eigen::Matrix2d Jm;
+            evalLocalWRMatrixEquation(leaf, dt, leaf_state, matrix_state, &Rm, &Jm, nullptr, nullptr, nullptr);
+            if (Rm.lpNorm<Eigen::Infinity>() < 1e-6) return true;
+
+            Eigen::FullPivLU<Eigen::Matrix2d> lu(Jm);
+            if (!lu.isInvertible()) return false;
+            Eigen::Vector2d delta = lu.solve(-Rm);
+            if (!delta.allFinite()) return false;
+
+            double omega = 1.0;
+            const double MAX_DP = 50.0;
+            const double MAX_DS = 0.20;
+            if (std::abs(delta(0)) > MAX_DP) omega = std::min(omega, MAX_DP / std::abs(delta(0)));
+            if (std::abs(delta(1)) > MAX_DS) omega = std::min(omega, MAX_DS / std::abs(delta(1)));
+
+            matrix_state.P  += omega * delta(0);
+            matrix_state.Sw += omega * delta(1);
+            matrix_state.P = std::max(14.7, matrix_state.P);
+            matrix_state.Sw = clampd(matrix_state.Sw, g_props.Swi + 1e-8, 1.0 - g_props.Sgc - 1e-8);
+        }
+
+        Eigen::Vector2d Rm;
+        evalLocalWRMatrixEquation(leaf, dt, leaf_state, matrix_state, &Rm, nullptr, nullptr, nullptr, nullptr);
+        return Rm.lpNorm<Eigen::Infinity>() < 1e-4;
+    }
+
+    bool assembleLocalWRContributions(double dt, VectorXd& Rg) {
+        if (!enable_dual_porosity) return true;
+        if ((int)wr_matrix_states.size() != n_leaf ||
+            (int)wr_matrix_states_prev.size() != n_leaf ||
+            (int)wr_transfer_T.size() != n_leaf) {
+            return false;
+        }
+
+        for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            if (wr_transfer_T[leaf] <= EPS) continue;
+
+            State matrix_state = wr_matrix_states[leaf];
+            if (!solveLocalWRMatrixState(leaf, dt, states[leaf], matrix_state)) return false;
+            wr_matrix_states[leaf] = matrix_state;
+
+            Eigen::Vector2d flux;
+            Eigen::Matrix2d Jm, dF_leaf, dF_matrix;
+            evalLocalWRMatrixEquation(leaf, dt, states[leaf], matrix_state,
+                                      nullptr, &Jm, &flux, &dF_leaf, &dF_matrix);
+
+            Eigen::FullPivLU<Eigen::Matrix2d> lu(Jm);
+            if (!lu.isInvertible()) return false;
+            Eigen::Matrix2d dm_dleaf = lu.solve(dF_leaf);
+            if (!dm_dleaf.allFinite()) return false;
+            Eigen::Matrix2d dQ = dF_leaf + dF_matrix * dm_dleaf;
+
+            for (int eq = 0; eq < 2; ++eq) {
+                Rg(2 * leaf + eq) += flux(eq);
+                for (int var = 0; var < 2; ++var) {
+                    J.valuePtr()[cell_J_idx[leaf].diag[eq][var]] += dQ(eq, var);
+                }
+            }
+        }
         return true;
     }
 
@@ -3667,6 +3849,7 @@ public:
         const int max_iter = 15;
         const double tol = 1e-3;
         std::vector<State> backup = states;
+        std::vector<State> wr_backup = wr_matrix_states;
         std::vector<StateAD2> states_ad(n_total);
         std::vector<PropertiesT<AD2>> props_ad(n_total);
 
@@ -3721,6 +3904,12 @@ public:
                 }
             }
 
+            if (enable_dual_porosity && !assembleLocalWRContributions(dt, Rg)) {
+                states = backup;
+                wr_matrix_states = wr_backup;
+                return false;
+            }
+
             double max_res = Rg.lpNorm<Infinity>();
             if (max_res < tol) {
                 for (const auto& w : wells) {
@@ -3735,12 +3924,10 @@ public:
                 return true;
             }
 
-
-            // --- 诊断: 检查对角元 + 细胞体积 ---
             {
                 double diag_min = 1e100, diag_max = 0.0;
-                int zero_diag = 0, zero_leaf = 0, zero_seg = 0;
-                int zero_vol_leaf = 0, zero_vol_seg = 0;
+                int zero_diag = 0, zero_leaf = 0, zero_seg = 0, zero_wr = 0;
+                int zero_vol_leaf = 0, zero_vol_seg = 0, zero_vol_wr = 0;
                 for (int rr = 0; rr < 2 * n_total; ++rr) {
                     double d = std::abs(J.coeff(rr, rr));
                     if (d < 1e-15) {
@@ -3748,6 +3935,7 @@ public:
                         int ci = rr / 2;
                         if (isLeafNode(ci)) zero_leaf++;
                         else if (isSegmentNode(ci)) zero_seg++;
+                        else if (isWRMatrixNode(ci)) zero_wr++;
                     } else { diag_min = std::min(diag_min, d); diag_max = std::max(diag_max, d); }
                 }
                 for (int i = 0; i < n_leaf; ++i) {
@@ -3756,27 +3944,19 @@ public:
                 for (int i = 0; i < n_seg; ++i) {
                     if (rawNodeVolume(n_leaf + i) < 1e-15) zero_vol_seg++;
                 }
-                std::cout << "\n      [DIAG] min=" << diag_min << " max=" << diag_max
-                          << " zero=" << zero_diag << " n=" << 2*n_total
-                          << " nLeaf=" << n_leaf << " nSeg=" << n_seg
-                          << "\n      zero_leaf=" << zero_leaf << " zero_seg=" << zero_seg
-                          << " zeroVolLeaf=" << zero_vol_leaf << " zeroVolSeg=" << zero_vol_seg << std::endl;
-                if (zero_diag > 0 && zero_diag < 30) {
-                    for (int rr = 0; rr < 2 * n_total; ++rr) {
-                        if (std::abs(J.coeff(rr, rr)) < 1e-15) {
-                            int ci = rr / 2;
-                            int eq = rr % 2;
-                            double vol = (ci < n_leaf) ? leaves[ci].vol : (segments[ci - n_leaf].area * segments[ci - n_leaf].aperture);
-                            double phi = (ci < n_leaf) ? leaves[ci].phi : 1.0;
-                            const char* node_type = (ci < n_leaf) ? "L" : "S";
-                            std::cout << "        zero diag row=" << rr << " ci=" << ci
-                                      << " type=" << node_type << " eq=" << eq
-                                      << " vol=" << vol << " phi=" << phi << std::endl;
-                        }
-                    }
+                for (int i = 0; i < n_wr_matrix; ++i) {
+                    if (rawNodeVolume(wrMatrixBase() + i) < 1e-15) zero_vol_wr++;
                 }
+                std::cout << "\n      [DIAG-GW] min=" << diag_min << " max=" << diag_max
+                          << " zero=" << zero_diag << " n=" << 2*n_total
+                          << " nLeaf=" << n_leaf << " nSeg=" << n_seg;
+                if (enable_dual_porosity) std::cout << " nWRMatrix=" << n_wr_matrix;
+                std::cout << "\n      zero_leaf=" << zero_leaf << " zero_seg=" << zero_seg;
+                if (enable_dual_porosity) std::cout << " zero_wr=" << zero_wr;
+                std::cout << " zeroVolLeaf=" << zero_vol_leaf << " zeroVolSeg=" << zero_vol_seg;
+                if (enable_dual_porosity) std::cout << " zeroVolWR=" << zero_vol_wr;
+                std::cout << std::endl;
             }
-            // --- 诊断结束 ---
 
             std::cout << "\n      [Newton Iter " << iter+1 << "] 计算ILU预条件子..." << std::flush;
             BiCGSTAB<SparseMatrix<double>, IncompleteLUT<double>> solver;
@@ -3788,6 +3968,7 @@ public:
             if (solver.info() != Success) {
                 std::cout << " ILU分解失败!" << std::endl;
                 states = backup;
+                wr_matrix_states = wr_backup;
                 return false;
             }
 
@@ -3796,16 +3977,17 @@ public:
             if (solver.info() != Success) {
                 std::cout << " 求解失败! (迭代次数: " << solver.iterations() << ")" << std::endl;
                 states = backup;
+                wr_matrix_states = wr_backup;
                 return false;
             } else {
                 std::cout << "成功! (迭代次数: " << solver.iterations() << ", 误差: " << solver.error() << ")" << std::endl;
             }
 
-            const double Sw_min = g_props.Swi + 1e-8;
-            const double Sw_max = 1.0 - g_props.Sgc - 1e-8;
+            std::vector<State> states_before_ls = states;
+            double alpha = 1.0;
             for (int i=0; i<n_total; ++i) {
-                double dP_new  = delta(2*i+0);
-                double dSw_new = delta(2*i+1);
+                double dP_new  = delta(2*i+0) * alpha;
+                double dSw_new = delta(2*i+1) * alpha;
 
                 double lw = props_ad[i].lw.value();
                 double lg = props_ad[i].lg.value();
@@ -3814,33 +3996,185 @@ public:
                 double dlw_dSw = props_ad[i].lw.derivatives()(1);
                 double dlg_dSw = props_ad[i].lg.derivatives()(1);
                 double dlt_dSw = dlw_dSw + dlg_dSw;
+
                 double dfw_dSw = (dlw_dSw * lt - lw * dlt_dSw) / (lt * lt);
 
                 const double F_tol = 0.15;
-                double omega_frac = 1.0;
-                if (std::abs(dfw_dSw * dSw_new) > F_tol) {
-                    omega_frac = F_tol / std::max(1e-12, std::abs(dfw_dSw * dSw_new));
-                }
+                double omega_w = 1.0;
+                if (std::abs(dfw_dSw * dSw_new) > F_tol) omega_w = F_tol / std::max(1e-12, std::abs(dfw_dSw * dSw_new));
+                double omega_appleyard = omega_w;
 
                 const double MAX_DP = 50.0;
                 const double MAX_DS = 0.20;
                 double omega_P = (std::abs(dP_new) > MAX_DP) ? (MAX_DP / std::abs(dP_new)) : 1.0;
-                double omega_S = (std::abs(dSw_new * omega_frac) > MAX_DS)
-                               ? (MAX_DS / std::abs(dSw_new * omega_frac))
-                               : 1.0;
-                double omega_final = std::min({omega_frac, omega_P, omega_S});
 
-                states[i].P  = states[i].P + dP_new * omega_final;
-                states[i].Sw = states[i].Sw + dSw_new * omega_final;
+                double dSw_chopped = dSw_new * omega_appleyard;
+                double omega_S = 1.0;
+                if (std::abs(dSw_chopped) > MAX_DS) omega_S = std::min(omega_S, MAX_DS / std::abs(dSw_chopped));
+                double omega_final = std::min({omega_appleyard, omega_P, omega_S});
+
+                states[i].P  = states_before_ls[i].P  + dP_new * omega_final;
+                states[i].Sw = states_before_ls[i].Sw + dSw_new * omega_final;
 
                 states[i].P = std::max(14.7, states[i].P);
-                double Sw_clamped = (states[i].Sw < Sw_min) ? Sw_min : ((states[i].Sw > Sw_max) ? Sw_max : states[i].Sw);
-                states[i].Sw = Sw_clamped;
+                states[i].Sw = clampd(states[i].Sw, g_props.Swi + 1e-8, 1.0 - g_props.Sgc - 1e-8);
             }
         }
 
         states = backup;
+        wr_matrix_states = wr_backup;
         return false;
+    }
+
+    void setAllWellBHP(double bhp) {
+        well_pressure = bhp;
+        for (auto& w : wells) w.P_bhp = bhp;
+    }
+
+    double rateControlTarget(double t) const {
+        if (well_control_days.empty()) return 0.0;
+        if (t <= well_control_days.front()) return well_control_rates.front();
+        for (size_t i = 1; i < well_control_days.size(); ++i) {
+            if (t <= well_control_days[i]) {
+                double span = std::max(well_control_days[i] - well_control_days[i - 1], 1e-12);
+                double frac = (t - well_control_days[i - 1]) / span;
+                return well_control_rates[i - 1] + frac * (well_control_rates[i] - well_control_rates[i - 1]);
+            }
+        }
+        return well_control_rates.back();
+    }
+
+    double rateControlMobilitySum(bool control_gas, const std::vector<State>& state_values) const {
+        double sum = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            sum += w.WI * mobility;
+        }
+        return sum;
+    }
+
+    double estimateRateControlBHP(bool control_gas,
+                                  double target_rate,
+                                  const std::vector<State>& state_values,
+                                  double high_bhp) const {
+        double numerator = 0.0;
+        double denominator = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            double coefficient = w.WI * mobility;
+            numerator += coefficient * state_values[u].P;
+            denominator += coefficient;
+        }
+        if (denominator <= EPS) return high_bhp;
+        return clampd((numerator - target_rate) / denominator, rate_control_bhp_min, high_bhp);
+    }
+
+    struct StepTrial {
+        bool ok{false};
+        double bhp{0.0};
+        double controlled_rate{0.0};
+        double step_water{0.0};
+        double step_gas{0.0};
+        int actual_iter{0};
+        std::vector<State> states_after;
+        std::vector<State> wr_states_after;
+    };
+
+    bool runBHPTrial(double dt,
+                     double bhp,
+                     bool control_gas,
+                     const std::vector<State>& start_states,
+                     const std::vector<State>& start_wr_states,
+                     StepTrial& trial) {
+        states = start_states;
+        wr_matrix_states = start_wr_states;
+        setAllWellBHP(bhp);
+
+        double trial_water = 0.0;
+        double trial_gas = 0.0;
+        int trial_iter = 0;
+        bool ok = solveStep(dt, trial_water, trial_gas, trial_iter);
+        if (!ok) {
+            trial.ok = false;
+            return false;
+        }
+
+        trial.ok = true;
+        trial.bhp = bhp;
+        trial.step_water = trial_water;
+        trial.step_gas = trial_gas;
+        trial.actual_iter = trial_iter;
+        trial.controlled_rate = (control_gas ? trial_gas : trial_water) / std::max(dt, 1e-30);
+        trial.states_after = states;
+        trial.wr_states_after = wr_matrix_states;
+        return true;
+    }
+
+    bool solveRateControlledStep(double t,
+                                 double dt,
+                                 double& step_water,
+                                 double& step_gas,
+                                 int& actual_iter,
+                                 double& used_bhp) {
+        bool control_gas = (well_control_mode == "gas_rate");
+        bool control_water = (well_control_mode == "water_rate");
+        if (!control_gas && !control_water) {
+            used_bhp = well_pressure;
+            return solveStep(dt, step_water, step_gas, actual_iter);
+        }
+
+        double target_rate = std::max(0.0, rateControlTarget(t + 0.5 * dt));
+        double high_bhp = std::max({rate_control_bhp_max, initial_pressure * 1.2, well_pressure + 100.0});
+        std::vector<State> start_states = states;
+        std::vector<State> start_wr_states = wr_matrix_states;
+
+        double bhp = target_rate <= 1e-12
+            ? high_bhp
+            : estimateRateControlBHP(control_gas, target_rate, start_states, high_bhp);
+        StepTrial best;
+        if (!runBHPTrial(dt, bhp, control_gas, start_states, start_wr_states, best)) {
+            states = start_states;
+            wr_matrix_states = start_wr_states;
+            return false;
+        }
+
+        double rate_tol = std::max(1e-6, 0.05 * std::max(target_rate, 1.0));
+        double slope = std::max(rateControlMobilitySum(control_gas, start_states), 1e-12);
+        for (int correction_iter = 0;
+             target_rate > 1e-12 && std::abs(best.controlled_rate - target_rate) > rate_tol && correction_iter < 8;
+             ++correction_iter) {
+            double corrected_bhp = clampd(best.bhp + (best.controlled_rate - target_rate) / slope,
+                                          rate_control_bhp_min,
+                                          high_bhp);
+            if (std::abs(corrected_bhp - best.bhp) <= 1e-8) break;
+            StepTrial corrected;
+            if (!runBHPTrial(dt, corrected_bhp, control_gas, start_states, start_wr_states, corrected)) {
+                states = start_states;
+                wr_matrix_states = start_wr_states;
+                return false;
+            }
+            if (std::abs(corrected.controlled_rate - target_rate) <
+                std::abs(best.controlled_rate - target_rate)) {
+                best = corrected;
+            } else {
+                break;
+            }
+        }
+
+        states = best.states_after;
+        wr_matrix_states = best.wr_states_after;
+        step_water = best.step_water;
+        step_gas = best.step_gas;
+        actual_iter = best.actual_iter;
+        used_bhp = best.bhp;
+        setAllWellBHP(best.bhp);
+        return best.ok;
     }
 
     void checkGeometryConsistency() {
@@ -4089,7 +4423,7 @@ public:
     }
 
     py::array_t<double> getCellGeometryWithPressure() const {
-        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 29});
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 34});
         auto r = result.mutable_unchecked<2>();
         for (int i = 0; i < n_leaf; ++i) {
             const auto& c = leaves[i];
@@ -4103,6 +4437,11 @@ public:
                 r(i, 4 + j*3 + 2) = c.corners[j].z;
             }
             r(i, 28) = states[i].P;
+            r(i, 29) = c.K[0];
+            r(i, 30) = c.K[1];
+            r(i, 31) = c.K[2];
+            r(i, 32) = c.phi;
+            r(i, 33) = states[i].Sw;
         }
         return result;
     }
@@ -4193,8 +4532,10 @@ public:
     }
 
     void run(double total_days) {
-        std::ofstream file("output_sim_lgr.csv");
-        file << "Time,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
+        std::string run_tag = enable_dual_porosity ? "_WR" : "_noWR";
+        std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
+        std::ofstream file("output_sim_lgr" + run_tag + ".csv");
+        file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -4217,17 +4558,22 @@ public:
                     return;
                 }
                 std::cout << "Step " << step << " t=" << t << " dt=" << dt_try << " ... " << std::flush;
-                ok = solveStep(dt_try, sw, sg, actual_iter);
+                double used_bhp = well_pressure;
+                ok = solveRateControlledStep(t, dt_try, sw, sg, actual_iter, used_bhp);
                 if (!ok) {
                     std::cout << "fail -> dt_try*=0.25" << std::endl;
                     dt_try *= 0.25;
+                } else {
+                    well_pressure = used_bhp;
                 }
             }
             std::cout << "ok" << std::endl;
 
             t += dt_try;
             states_prev = states;
-            tot_w += sw; tot_g += sg;
+            if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
+            tot_w += sw;
+            tot_g += sg;
             double avgP = 0.0;
             for (int i = 0; i < n_leaf; ++i) avgP += states[i].P;
             avgP /= std::max(1, n_leaf);
@@ -4235,7 +4581,7 @@ public:
             double qw = sw / std::max(dt_try, 1e-30);
             double qg = sg / std::max(dt_try, 1e-30);
 
-            file << t << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
+            file << t << "," << well_pressure << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
                  << "," << n_leaf << "," << n_seg << "," << qw << "," << qg << "\n";
             file.flush();
 
@@ -4246,14 +4592,53 @@ public:
 
         file.close();
 
-        std::ofstream field("final_field_lgr.csv");
-        field << "leaf_id,parent_id,x,y,z,P,Sw,Sg\n";
+        std::cout << "Writing field data to final_field_lgr" << run_tag << ".csv/.bin" << std::endl;
+
+        std::ofstream field("final_field_lgr" + run_tag + ".csv");
+        std::ofstream bin("final_field_lgr" + run_tag + ".bin", std::ios::binary);
+
+        int32_t n_cols = enable_dual_porosity ? 11 : 8;
+        int32_t n_leaf_bin = static_cast<int32_t>(n_leaf);
+        bin.write(reinterpret_cast<const char*>(&n_leaf_bin), sizeof(int32_t));
+        bin.write(reinterpret_cast<const char*>(&n_cols),    sizeof(int32_t));
+
+        field << "leaf_id,parent_id,x,y,z,P,Sw,Sg";
+        if (enable_dual_porosity) field << ",P_matrix,Sw_matrix,Sg_matrix";
+        field << "\n";
+        field << std::setprecision(16);
         for (int i=0;i<n_leaf;++i) {
+            double sg_leaf = 1.0 - states[i].Sw;
             field << i << "," << leaves[i].parent_id << ","
                   << leaves[i].center.x << "," << leaves[i].center.y << "," << leaves[i].center.z << ","
-                  << states[i].P << "," << states[i].Sw << "," << (1.0 - states[i].Sw) << "\n";
+                  << states[i].P << "," << states[i].Sw << "," << sg_leaf;
+
+            double row[8] = {
+                static_cast<double>(i),
+                static_cast<double>(leaves[i].parent_id),
+                leaves[i].center.x,
+                leaves[i].center.y,
+                leaves[i].center.z,
+                states[i].P,
+                states[i].Sw,
+                sg_leaf
+            };
+            bin.write(reinterpret_cast<const char*>(row), sizeof(row));
+
+            if (enable_dual_porosity && (int)wr_matrix_states.size() == n_leaf) {
+                double sg_matrix = 1.0 - wr_matrix_states[i].Sw;
+                field << "," << wr_matrix_states[i].P << "," << wr_matrix_states[i].Sw << "," << sg_matrix;
+
+                double row_extra[3] = {
+                    wr_matrix_states[i].P,
+                    wr_matrix_states[i].Sw,
+                    sg_matrix
+                };
+                bin.write(reinterpret_cast<const char*>(row_extra), sizeof(row_extra));
+            }
+            field << "\n";
         }
         field.close();
+        bin.close();
     }
 
     bool preprocess() {
@@ -4352,6 +4737,8 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("y_center") = -1.0,
              py::arg("z_center") = -1.0)
         .def("setWellParameters", &SimulatorLGR::setWellParameters)
+        .def("setGasRateControlSchedule", &SimulatorLGR::setGasRateControlSchedule)
+        .def("setWaterRateControlSchedule", &SimulatorLGR::setWaterRateControlSchedule)
         .def("setInitialStateParameters", &SimulatorLGR::setInitialStateParameters)
         .def("setSimulationParameters", &SimulatorLGR::setSimulationParameters)
         .def("setLGRParameters", &SimulatorLGR::setLGRParameters)
@@ -4370,9 +4757,12 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("wr_shape_factor") = 0.12)
         .def("setOilWaterProperties", &SimulatorLGR::setOilWaterProperties,
              py::arg("mu_w"),
+             py::arg("mu_o"),
              py::arg("cw"),
+             py::arg("co"),
              py::arg("p_ref"),
              py::arg("swi"),
+             py::arg("sor"),
              py::arg("sgc"),
              py::arg("mu_g") = 0.2,
              py::arg("cg") = 1e-3)

@@ -223,6 +223,100 @@ def load_corner_grid_info(coord_file, zcorn_file):
     return nx, ny, nz, lx, ly, lz
 
 
+def apply_corner_fluid_properties(sim, params):
+    """If supported by the loaded module, forward oil/water rock-fluid settings."""
+    has_legacy_api = hasattr(sim, 'setOilWaterProperties')
+    has_gw_api = hasattr(sim, 'setGasWaterProperties')
+    if not has_legacy_api and not has_gw_api:
+        return
+
+    mu_w = float(params.get('mu_w', 1.0))
+    mu_o = float(params.get('mu_o', 5.0))
+    cw = float(params.get('cw', 1e-8))
+    co = float(params.get('co', 1e-5))
+    p_ref = float(params.get('p_ref', 100.0))
+    swi = float(params.get('swi', 0.05))
+    sor = float(params.get('sor', 0.01))
+    sgc = float(params.get('sgc', 0.05))
+    mu_g = float(params.get('mu_g', 0.2))
+    cg = float(params.get('cg', 1e-3))
+
+    if has_gw_api:
+        sim.setGasWaterProperties(mu_w, cw, p_ref, swi, sgc, mu_g, cg)
+        return
+
+    sim.setOilWaterProperties(
+        mu_w,
+        cw,
+        p_ref,
+        swi,
+        sgc,
+        mu_g,
+        cg,
+    )
+
+
+def apply_corner_gas_pvt_properties(sim, params):
+    """If supported by the loaded module, forward real-gas PVT settings."""
+    if not hasattr(sim, 'setGasPVTParameters'):
+        return
+
+    sim.setGasPVTParameters(
+        float(params.get('gas_t_C', 140.0)),
+        float(params.get('gas_Mg', 16.04)),
+        float(params.get('gas_Tc', 190.58)),
+        float(params.get('gas_Pc_bar', 45.44)),
+        float(params.get('gas_table_Pmin_bar', 1.0)),
+        float(params.get('gas_table_Pmax_bar', 1000.0)),
+        int(params.get('gas_table_n', 2000)),
+        float(params.get('gas_Psc_bar', 1.01325)),
+    )
+
+
+def _resolve_gas_water_initial_state(params):
+    """Normalize the gas-water initial state for both new and legacy bindings."""
+    pressure = float(params.get('pressure', 800.0))
+    sw = float(params.get('sw', 0.05))
+
+    sg_raw = params.get('sg')
+    sg = None
+    if sg_raw not in (None, ''):
+        try:
+            sg = float(sg_raw)
+        except (TypeError, ValueError):
+            sg = None
+
+    if sg is not None:
+        implied_sg = 1.0 - sw
+        if abs(sg - implied_sg) > 1e-6:
+            print(
+                f"Initial gas saturation {sg:.6f} is ignored by the gas-water LGR model; "
+                f"using Sg = 1 - Sw = {implied_sg:.6f}.",
+                flush=True,
+            )
+        sg = implied_sg
+
+    return pressure, sw, sg
+
+
+def apply_corner_initial_state(sim, params):
+    """Set the gas-water initial state while remaining compatible with old bindings."""
+    if not hasattr(sim, 'setInitialStateParameters'):
+        return
+
+    pressure, sw, sg = _resolve_gas_water_initial_state(params)
+
+    try:
+        sim.setInitialStateParameters(pressure, sw)
+        return
+    except TypeError:
+        pass
+
+    if sg is None:
+        sg = 1.0 - sw
+    sim.setInitialStateParameters(pressure, sw, sg)
+
+
 def run_corner_edfm_simulation(params):
     """执行 Corner EDFM 模拟并返回 SimulationData。"""
     refinement_mode = params.get('corner_grid_refinement', '不加密')
@@ -248,9 +342,11 @@ def run_corner_edfm_simulation(params):
         float(params.get('aperture', 0.1)),
         float(params.get('frac_perm', 100.0)),
     )
+    hf_count = int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0
+    hf_spacing = float(params.get('hf_spacing_x', 0.0))
     sim.setHydraulicFractureParameters(
-        int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0,
-        float(params.get('hf_well_length', 600.0)),
+        hf_count,
+        hf_spacing,
         float(params.get('hf_length', 120.0)),
         float(params.get('hf_height', 30.0)),
         float(params.get('hf_aperture', 0.1)),
@@ -263,11 +359,10 @@ def run_corner_edfm_simulation(params):
         float(params.get('well_radius', 0.05)),
         float(params.get('well_pressure', 50.0)),
     )
+    apply_corner_fluid_properties(sim, params)
+    apply_corner_gas_pvt_properties(sim, params)
     if use_lgr_module and hasattr(sim, 'setInitialStateParameters'):
-        sim.setInitialStateParameters(
-            float(params.get('pressure', 800.0)),
-            float(params.get('sw', 0.05)),
-        )
+        apply_corner_initial_state(sim, params)
     if use_lgr_module and hasattr(sim, 'setLGRParameters'):
         sim.setLGRParameters(
             bool(params.get('enable_lgr', True)),
@@ -276,6 +371,27 @@ def run_corner_edfm_simulation(params):
             int(params.get('lgr_nry', 2)),
             int(params.get('lgr_nrz', 2)),
         )
+    if use_lgr_module and hasattr(sim, 'setDualPorosityParameters'):
+        enable_dp = bool(params.get('enable_dual_porosity', False))
+        if enable_dp:
+            print("Setting dual porosity parameters (Warren-Root)...", flush=True)
+        sim.setDualPorosityParameters(
+            enable_dp,
+            float(params.get('phi_matrix', 0.04)),
+            float(params.get('phi_fracture', 0.4)),
+            float(params.get('k_matrix_x', 0.005)),
+            float(params.get('k_matrix_y', 0.005)),
+            float(params.get('k_matrix_z', 0.005)),
+            float(params.get('k_fracture_x', 1.0)),
+            float(params.get('k_fracture_y', 1.0)),
+            float(params.get('k_fracture_z', 0.1)),
+            float(params.get('matrix_volume_fraction', 0.98)),
+            float(params.get('fracture_volume_fraction', 0.02)),
+            float(params.get('wr_shape_factor', 0.12)),
+        )
+    elif use_lgr_module and not hasattr(sim, 'setDualPorosityParameters'):
+        print("Note: loaded module does not expose setDualPorosityParameters; dual porosity skipped.", flush=True)
+
     sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
 
     result = sim.runSimulation()
@@ -289,11 +405,40 @@ def run_corner_edfm_simulation(params):
     except:
         fracture_vertices = None
     
+    # 如果是LGR加密模式，获取加密网格几何
+    corner_lgr_grid_geometry = None
+    corner_lgr_parent_grid_geometry = None
+    corner_lgr_refined_grid_geometry = None
+    if use_lgr_module:
+        try:
+            corner_lgr_grid_geometry = sim.getLGRGridGeometry()
+            corner_lgr_parent_grid_geometry = sim.getParentGridGeometry()
+            corner_lgr_refined_grid_geometry = sim.getRefinedGridGeometry()
+        except Exception as e:
+            print(f"Warning: could not get LGR grid geometry: {e}", flush=True)
+    
     nx, ny, nz, lx, ly, lz = load_corner_grid_info(coord_file, zcorn_file)
 
     sim_data = SimulationData()
     sim_data.generate_from_cpp(result, nx, ny, nz, lx, ly, lz, [], [])
     sim_data.cell_geometry_with_pressure = cell_geometry
+    sim_data.corner_lgr_grid_geometry = corner_lgr_grid_geometry
+    sim_data.corner_lgr_parent_grid_geometry = corner_lgr_parent_grid_geometry
+    sim_data.corner_lgr_refined_grid_geometry = corner_lgr_refined_grid_geometry
+
+    dual_porosity_pressure = None
+    if use_lgr_module and hasattr(sim, 'getDualPorosityPressureData'):
+        try:
+            dual_porosity_pressure = sim.getDualPorosityPressureData()
+            if dual_porosity_pressure is not None and hasattr(dual_porosity_pressure, '__len__'):
+                print(f"Got dual porosity pressure data: {len(dual_porosity_pressure)} entries", flush=True)
+            else:
+                print("Dual porosity pressure data is empty or None.", flush=True)
+        except Exception as e:
+            print(f"Warning: getDualPorosityPressureData failed: {e}", flush=True)
+    if dual_porosity_pressure is not None:
+        sim_data.dual_porosity_pressure_field = dual_porosity_pressure
+    sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
     
     # 插值由C++算法完成，不再在Python中做插值
     return sim_data
