@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Chinese reservoir modeling workbench user interface."""
+"""储层建模工作台用户界面。"""
 
 from .window import WorkbenchWindow
 

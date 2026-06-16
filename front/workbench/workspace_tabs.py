@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Central multi-document workspace used after project open."""
+"""工程打开后使用的中央多窗口工作区。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QAction, QMenu, QTabWidget, QToolButton
@@ -163,6 +163,10 @@ class WorkspaceTabs(QTabWidget):
     def set_layer_state(self, layer_key, enabled):
         for page in self._pages_of_type("3d"):
             page.set_layer_state(layer_key, enabled)
+
+    def set_simulation_data(self, sim_data):
+        for page in self._pages_of_type("3d"):
+            page.set_simulation_data(sim_data)
 
     def set_chart_data(self, chart_key, data):
         for page in self._pages_of_type("chart"):

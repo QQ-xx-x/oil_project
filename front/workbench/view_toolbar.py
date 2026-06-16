@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Compact viewport toolbar used by placeholder windows."""
+"""视图窗口使用的紧凑工具栏。"""
 
 from PyQt5.QtCore import QSize, pyqtSignal
 from PyQt5.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolButton

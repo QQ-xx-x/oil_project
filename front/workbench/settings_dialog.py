@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Settings dialogs opened from the project input tree."""
+"""从工程输入树打开的参数设置对话框。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -81,11 +81,15 @@ class ParameterSettingsDialog(QDialog):
         super().__init__(parent)
         self.module_key = module_key
         self.project_state = project_state
+        self.values_were_applied = False
         self.panel = panel_factory()
         self._restore_saved_values()
         self.setObjectName("parameterSettingsDialog")
         self.setWindowTitle(f"{module_title} 参数设置")
-        self.resize(560, 520)
+        if self.panel.objectName() in {"caseDataPanel", "caseDataKeywordPanel"}:
+            self.resize(920, 650)
+        else:
+            self.resize(560, 520)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -108,6 +112,8 @@ class ParameterSettingsDialog(QDialog):
         root.addWidget(buttons)
 
     def _parameter_tab(self):
+        if self.panel.objectName() in {"caseDataPanel", "caseDataKeywordPanel"}:
+            return self.panel
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         holder = QWidget()
@@ -143,6 +149,7 @@ class ParameterSettingsDialog(QDialog):
         if hasattr(self.panel, "get_values"):
             values = self.panel.get_values()
             self.project_state.set_module_values(self.module_key, values)
+            self.values_were_applied = True
             self.values_applied.emit(dict(values))
 
     def _accept_with_apply(self):
@@ -172,6 +179,11 @@ class ParameterSettingsDialog(QDialog):
             "pressure": "spin_well_pressure",
             "radius": "spin_well_radius",
             "WI": "spin_well_WI",
+            "grdecl_file": "edit_grdecl_file",
+            "coord_file": "edit_coord_file",
+            "zcorn_file": "edit_zcorn_file",
+            "enable_lgr": "check_enable_lgr",
+            "d_threshold": "spin_d_threshold",
         }
         lower_attrs = {name.lower(): name for name in dir(self.panel)}
         for key, value in values.items():
@@ -195,3 +207,5 @@ class ParameterSettingsDialog(QDialog):
                 target.setChecked(value)
             elif hasattr(target, "setValue"):
                 target.setValue(value)
+            elif hasattr(target, "setText"):
+                target.setText(str(value))

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Standalone two-state window for the reservoir workflow UI."""
+"""储层工作流界面的独立双状态窗口。"""
 
 import os
 
@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
 from .message_log import MessageLogPanel
 from .project_shell import ProjectShell
 from .project_state import ProjectState
-from .projects_panel import ProjectsPanel
 from .ribbon import QuickAccessBar, RibbonWidget
 from .start_workspace import StartWorkspace
 
@@ -47,18 +46,10 @@ class WorkbenchWindow(QMainWindow):
         self.setStatusBar(status)
 
     def _create_start_page(self):
-        body = QSplitter(Qt.Horizontal)
-        self.projects = ProjectsPanel()
-        self.projects.open_requested.connect(lambda: self._handle_command("打开工程"))
-        self.projects.new_requested.connect(lambda: self._handle_command("新建工程"))
-        self.projects.project_requested.connect(self._open_project)
-        body.addWidget(self.projects)
-        body.addWidget(StartWorkspace())
-        body.setSizes([380, 1420])
-        body.setCollapsible(0, False)
-
         vertical = QSplitter(Qt.Vertical)
-        vertical.addWidget(body)
+        self.start_workspace = StartWorkspace()
+        self.start_workspace.module_requested.connect(self._open_module_workspace)
+        vertical.addWidget(self.start_workspace)
         self.message_log = MessageLogPanel()
         vertical.addWidget(self.message_log)
         vertical.setSizes([760, 175])
@@ -81,7 +72,7 @@ class WorkbenchWindow(QMainWindow):
         self.active_log().append_message(message)
         self.statusBar().showMessage(message, 4500)
 
-    def _open_project(self, name):
+    def _open_project(self, name, module_key=None):
         project_state = ProjectState(project_name=name)
         shell = ProjectShell(name, project_state, project_root=os.getcwd())
         self.pages.addWidget(shell)
@@ -90,7 +81,21 @@ class WorkbenchWindow(QMainWindow):
         self.ribbon.set_project_mode(True)
         message = f"[工程] 已打开 {name}，当前显示输入、结果和多窗口工作区。"
         shell.message_log.append_message(message)
+        if module_key:
+            shell.activate_module(module_key)
         self.statusBar().showMessage("Action performed OK", 4500)
+
+    def _open_module_workspace(self, module_key):
+        if module_key in {"help_license", "ai_assistant"}:
+            labels = {
+                "help_license": "帮助与许可",
+                "ai_assistant": "AI 助手",
+            }
+            message = f"[启动] {labels[module_key]} 模块将在后续阶段接入。"
+            self.active_log().append_message(message)
+            self.statusBar().showMessage(message, 4500)
+            return
+        self._open_project("默认工程.pet", module_key)
 
     def active_log(self):
         current = self.pages.currentWidget()

@@ -82,6 +82,7 @@ class PyVistaRenderer:
         return {
             "pressure_actor": None,
             "fracture_actors": [],
+            "fracture_actor_types": [],
             "scalar_bar": None,
             "grid_lines_actor": None,
             "data_hash": None,
@@ -560,11 +561,16 @@ class PyVistaRenderer:
     def render_fractures(self, sim_data):
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
+        self.cache["fracture_actor_types"] = []
 
         if not sim_data.fractures:
             return
 
         for fracture in sim_data.fractures:
+            fracture_type = "hydraulic" if (
+                int(fracture.get("is_hydraulic", 0)) == 1
+                or fracture.get("type") == "hydraulic"
+            ) else "natural"
             frac_points = fracture["points"]
             if len(frac_points) >= 3:
                 points = np.array(frac_points, dtype=float)
@@ -581,6 +587,7 @@ class PyVistaRenderer:
                     render=False,
                 )
                 self.cache["fracture_actors"].append(actor)
+                self.cache["fracture_actor_types"].append(fracture_type)
 
                 edge_lines = []
                 for index in range(len(frac_points)):
@@ -593,6 +600,7 @@ class PyVistaRenderer:
                         render=False,
                     )
                     self.cache["fracture_actors"].append(edge_actor)
+                    self.cache["fracture_actor_types"].append(fracture_type)
 
         self._render()
 
@@ -670,10 +678,13 @@ class PyVistaRenderer:
         self.render_fractures(sim_data)
         return self.has_fractures()
 
-    def toggle_fractures(self, show):
+    def toggle_fractures(self, show, fracture_type=None):
         if self.cache["pressure_actor"] is not None:
             self.cache["pressure_actor"].prop.opacity = 0.3 if show else 1.0
-        for actor in self.cache["fracture_actors"]:
+        actor_types = self.cache.get("fracture_actor_types") or []
+        for index, actor in enumerate(self.cache["fracture_actors"]):
+            if fracture_type and index < len(actor_types) and actor_types[index] != fracture_type:
+                continue
             actor.visibility = show
         self._render()
 
@@ -928,6 +939,7 @@ class PyVistaRenderer:
     def render_corner_fractures(self, sim_data):
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
+        self.cache["fracture_actor_types"] = []
 
         if not sim_data.fractures:
             return
@@ -946,6 +958,7 @@ class PyVistaRenderer:
             #   0 -> 天然裂缝
             # =========================================================
             is_hydraulic = int(fracture.get("is_hydraulic", 0)) == 1 or fracture.get("type") == "hydraulic"
+            fracture_type = "hydraulic" if is_hydraulic else "natural"
 
             if is_hydraulic:
                 # 人工裂缝
@@ -1000,12 +1013,14 @@ class PyVistaRenderer:
                 render=False,
             )
             self.cache["fracture_actors"].append(actor)
+            self.cache["fracture_actor_types"].append(fracture_type)
 
         self._render()
 
     def hide_fractures(self):
         self._remove_actor_list(self.cache["fracture_actors"])
         self.cache["fracture_actors"] = []
+        self.cache["fracture_actor_types"] = []
         self._render()
 
     #渲染井
@@ -1292,10 +1307,15 @@ class PyVistaRenderer:
             self.cache["corner_surface_actor"].visibility = visible
         if self.cache.get("layer_coarse_grid_actor") is not None:
             self.cache["layer_coarse_grid_actor"].visibility = visible
+        if self.cache.get("corner_lgr_parent_grid_actor") is not None:
+            self.cache["corner_lgr_parent_grid_actor"].visibility = visible
         self._render()
 
-    def toggle_fractures_visibility(self, visible):
-        for actor in self.cache.get("fracture_actors", []):
+    def toggle_fractures_visibility(self, visible, fracture_type=None):
+        actor_types = self.cache.get("fracture_actor_types") or []
+        for index, actor in enumerate(self.cache.get("fracture_actors", [])):
+            if fracture_type and index < len(actor_types) and actor_types[index] != fracture_type:
+                continue
             try:
                 actor.visibility = visible
             except Exception:
@@ -1601,8 +1621,6 @@ class PyVistaRenderer:
         self._render()
 
     def toggle_corner_lgr_grid_visibility(self, visible):
-        if self.cache["corner_lgr_parent_grid_actor"] is not None:
-            self.cache["corner_lgr_parent_grid_actor"].visibility = visible
         if self.cache["corner_lgr_refined_grid_actor"] is not None:
             self.cache["corner_lgr_refined_grid_actor"].visibility = visible
         self._render()

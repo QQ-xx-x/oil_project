@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Adapters that convert project input state into chart-ready data."""
+"""将工程输入状态转换为图表数据的适配器。"""
 
 import math
 

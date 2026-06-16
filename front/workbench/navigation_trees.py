@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Additional left-dock trees used by switchable project panels."""
+"""工程左侧可切换面板使用的辅助树。"""
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem

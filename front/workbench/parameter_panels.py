@@ -1,10 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Workbench-native parameter panels used by the new project UI."""
+"""新工程界面使用的工作台原生参数面板。"""
 
 from PyQt5.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QLabel,
-    QSpinBox, QVBoxLayout, QWidget,
+    QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
+    QWidget,
 )
+
+from ..grdecl_parser import convert_grdecl_to_temp_csv
+
+
+class NoWheelSpinBox(QSpinBox):
+    """忽略鼠标滚轮，避免滚动参数页时误改整数参数。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """忽略鼠标滚轮，避免滚动参数页时误改浮点参数。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 def _panel_layout(widget):
@@ -45,7 +62,7 @@ def _section(title):
 
 
 def _spinbox(minimum, maximum, value, step=1):
-    spin = QSpinBox()
+    spin = NoWheelSpinBox()
     spin.setObjectName("parameterSpinBox")
     spin.setRange(minimum, maximum)
     spin.setSingleStep(step)
@@ -55,7 +72,7 @@ def _spinbox(minimum, maximum, value, step=1):
 
 
 def _double_spinbox(minimum, maximum, value, decimals=3, step=1.0):
-    spin = QDoubleSpinBox()
+    spin = NoWheelDoubleSpinBox()
     spin.setObjectName("parameterSpinBox")
     spin.setRange(minimum, maximum)
     spin.setDecimals(decimals)
@@ -70,6 +87,31 @@ def _add_row(grid, row, label_text, editor):
     label.setObjectName("parameterLabel")
     grid.addWidget(label, row, 0)
     grid.addWidget(editor, row, 1)
+
+
+def _path_picker(line_edit, button_text, caption, file_filter, callback=None):
+    holder = QWidget()
+    layout = QHBoxLayout(holder)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    line_edit.setObjectName("parameterPathEdit")
+    button = QPushButton(button_text)
+    button.setObjectName("parameterBrowseButton")
+    button.setFixedWidth(74)
+
+    def choose_file():
+        path, _ = QFileDialog.getOpenFileName(holder, caption, "", file_filter)
+        if not path:
+            return
+        if callback is not None:
+            callback(path)
+        else:
+            line_edit.setText(path)
+
+    button.clicked.connect(choose_file)
+    layout.addWidget(line_edit, 1)
+    layout.addWidget(button)
+    return holder
 
 
 class WorkbenchGridPanel(QWidget):
@@ -99,6 +141,38 @@ class WorkbenchGridPanel(QWidget):
         _add_row(size_grid, 1, "Y 方向长度 Ly (m)", self.spin_ly)
         _add_row(size_grid, 2, "Z 方向长度 Lz (m)", self.spin_lz)
         layout.addWidget(size_group)
+
+        import_group, import_grid = _section("角点网格导入")
+        self.edit_grdecl_file = QLineEdit()
+        self.edit_coord_file = QLineEdit()
+        self.edit_zcorn_file = QLineEdit()
+
+        _add_row(import_grid, 0, "GRDECL 文件", _path_picker(
+            self.edit_grdecl_file, "导入", "导入 GRDECL 网格文件",
+            "ECLIPSE Grid Files (*.GRDECL *.grdecl);;All Files (*)",
+            self._convert_grdecl))
+        _add_row(import_grid, 1, "COORD CSV", _path_picker(
+            self.edit_coord_file, "选择", "选择 COORD CSV 文件",
+            "CSV Files (*.csv);;All Files (*)"))
+        _add_row(import_grid, 2, "ZCORN CSV", _path_picker(
+            self.edit_zcorn_file, "选择", "选择 ZCORN CSV 文件",
+            "CSV Files (*.csv);;All Files (*)"))
+        layout.addWidget(import_group)
+
+        lgr_group, lgr_grid = _section("LGR 加密")
+        self.check_enable_lgr = QCheckBox("默认启用角点网格加密")
+        self.check_enable_lgr.setObjectName("parameterCheckBox")
+        self.check_enable_lgr.setChecked(True)
+        self.spin_d_threshold = _double_spinbox(0.0, 1000000.0, 5.05, decimals=3, step=0.1)
+        self.spin_lgr_nrx = _spinbox(1, 20, 2)
+        self.spin_lgr_nry = _spinbox(1, 20, 2)
+        self.spin_lgr_nrz = _spinbox(1, 20, 2)
+        lgr_grid.addWidget(self.check_enable_lgr, 0, 0, 1, 2)
+        _add_row(lgr_grid, 1, "距离阈值 d_threshold", self.spin_d_threshold)
+        _add_row(lgr_grid, 2, "X 向加密数 lgr_nrx", self.spin_lgr_nrx)
+        _add_row(lgr_grid, 3, "Y 向加密数 lgr_nry", self.spin_lgr_nry)
+        _add_row(lgr_grid, 4, "Z 向加密数 lgr_nrz", self.spin_lgr_nrz)
+        layout.addWidget(lgr_group)
         layout.addStretch()
 
     def get_values(self):
@@ -109,7 +183,22 @@ class WorkbenchGridPanel(QWidget):
             "lx": self.spin_lx.value(),
             "ly": self.spin_ly.value(),
             "lz": self.spin_lz.value(),
+            "grdecl_file": self.edit_grdecl_file.text().strip(),
+            "coord_file": self.edit_coord_file.text().strip(),
+            "zcorn_file": self.edit_zcorn_file.text().strip(),
+            "corner_grid_refinement": "加密",
+            "enable_lgr": self.check_enable_lgr.isChecked(),
+            "d_threshold": self.spin_d_threshold.value(),
+            "lgr_nrx": self.spin_lgr_nrx.value(),
+            "lgr_nry": self.spin_lgr_nry.value(),
+            "lgr_nrz": self.spin_lgr_nrz.value(),
         }
+
+    def _convert_grdecl(self, path):
+        coord_file, zcorn_file = convert_grdecl_to_temp_csv(path)
+        self.edit_grdecl_file.setText(path)
+        self.edit_coord_file.setText(coord_file)
+        self.edit_zcorn_file.setText(zcorn_file)
 
 
 class WorkbenchInitialStatePanel(QWidget):
@@ -390,11 +479,11 @@ class WorkbenchNaturalFracturesPanel(QWidget):
             "设置天然裂缝数量、长度范围、开度和渗透率。"))
 
         group, grid = _section("天然裂缝属性")
-        self.spin_num_fracs = _spinbox(0, 500, 10)
-        self.spin_min_len = _double_spinbox(0.0, 100000.0, 30.0, decimals=2, step=1.0)
-        self.spin_max_len = _double_spinbox(0.0, 100000.0, 80.0, decimals=2, step=1.0)
-        self.spin_aperture = _double_spinbox(0.0, 10.0, 0.01, decimals=4, step=0.001)
-        self.spin_perm = _double_spinbox(0.0, 1000000.0, 1000.0, decimals=2, step=10.0)
+        self.spin_num_fracs = _spinbox(0, 500, 100)
+        self.spin_min_len = _double_spinbox(0.0, 100000.0, 10.0, decimals=2, step=1.0)
+        self.spin_max_len = _double_spinbox(0.0, 100000.0, 20.0, decimals=2, step=1.0)
+        self.spin_aperture = _double_spinbox(0.0, 10.0, 0.1, decimals=4, step=0.001)
+        self.spin_perm = _double_spinbox(0.0, 1000000.0, 100.0, decimals=2, step=10.0)
         _add_row(grid, 0, "裂缝数量", self.spin_num_fracs)
         _add_row(grid, 1, "最小长度 Min Length (m)", self.spin_min_len)
         _add_row(grid, 2, "最大长度 Max Length (m)", self.spin_max_len)

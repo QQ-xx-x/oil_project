@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""In-memory result registry for the workbench UI."""
+"""工作台界面的内存结果登记表。"""
 
 from dataclasses import dataclass, field
 
@@ -10,6 +10,9 @@ class ResultStore:
     output_sim_path: str = ""
     final_field_path: str = ""
     gas_pvt_table_path: str = ""
+    result_json_path: str = ""
+    run_status: str = "idle"
+    simulation_data: object = None
     production_data: dict = field(default_factory=dict)
     pvt_data: dict = field(default_factory=dict)
 

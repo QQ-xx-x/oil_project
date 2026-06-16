@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Log dock for startup and project-state workflow messages."""
+"""显示启动、工程状态和流程消息的日志面板。"""
+
+from html import escape
 
 from PyQt5.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QPlainTextEdit,
+    QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QTextEdit,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -41,7 +43,7 @@ class MessageLogPanel(QWidget):
         tools_layout = QHBoxLayout(self.tools)
         tools_layout.setContentsMargins(6, 3, 6, 2)
         tools_layout.setSpacing(4)
-        for tooltip, kind in [("清空日志", "new"), ("复制日志", "generic"),
+        for tooltip, kind in [("清空日志", "new"), ("复制日志", "copy"),
                               ("保存日志", "save")]:
             button = QToolButton()
             button.setIcon(painted_icon(kind, 21))
@@ -57,16 +59,20 @@ class MessageLogPanel(QWidget):
         tools_layout.addStretch()
         self.root_layout.addWidget(self.tools)
 
-        self.text = QPlainTextEdit()
+        self.text = QTextEdit()
+        self.text.setObjectName("messageLogText")
         self.text.setReadOnly(True)
-        self.text.appendPlainText("诊断信息采集已启用")
-        self.text.appendPlainText("[系统] 平台初始化完成，等待打开工程。")
+        self.append_message("诊断信息采集已启用")
+        self.append_message("[系统] 平台初始化完成，等待打开工程。")
         self.root_layout.addWidget(self.text, 1)
 
         self._setup_menu()
 
     def append_message(self, message):
-        self.text.appendPlainText(message)
+        color = self._message_color(message)
+        safe_message = escape(str(message)).replace("\n", "<br>")
+        self.text.append(
+            f'<span style="color:{color};">{safe_message}</span>')
 
     def clear_messages(self):
         self.text.clear()
@@ -75,6 +81,22 @@ class MessageLogPanel(QWidget):
     def copy_messages(self):
         QApplication.clipboard().setText(self.text.toPlainText())
         self.append_message("[面板] 消息日志已复制到剪贴板")
+
+    def _message_color(self, message):
+        text = str(message).lower()
+        if any(token in text for token in ("error", "错误", "失败", "runner error", "traceback")):
+            return "#b42318"
+        if any(token in text for token in ("warning", "警告", "缺失")):
+            return "#9a6700"
+        if any(token in text for token in ("[运行]", "运行", "simulation")):
+            return "#245c8a"
+        if any(token in text for token in ("[casedata]", "casedata")):
+            return "#2f6f78"
+        if any(token in text for token in ("[结果]", "result")):
+            return "#257253"
+        if any(token in text for token in ("[系统]", "[面板]")):
+            return "#59636f"
+        return "#30343a"
 
     def _header_button(self, text, tooltip):
         button = QToolButton()

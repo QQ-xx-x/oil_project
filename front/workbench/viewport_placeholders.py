@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Placeholder 2D/3D/chart viewports for the project-state shell."""
+"""工程主界面使用的二维、三维和图表视图窗口。"""
 
 import math
 
@@ -75,16 +75,21 @@ class ThreeDViewport(QWidget):
         super().__init__(parent)
         self.setObjectName("threeDViewport")
         self.setMinimumHeight(360)
+        self._real_view = None
+        self._real_renderer = None
+        self._real_view_error = ""
+        self.simulation_data = None
         self.context_title = "当前结果：三维视图"
         self.context_detail = "在结果树中选择结果或图层后，这里显示对应占位视图。"
         self.display_key = "permeability_field"
+        self._rendered_display_key = None
         self.layers = {
             "grid": True,
             "well": True,
             "natural_fractures": True,
             "hydraulic_fractures": True,
             "dual_porosity": False,
-            "grid_refinement": False,
+            "grid_refinement": True,
         }
 
     def set_context(self, title, detail, display_key=None):
@@ -92,14 +97,107 @@ class ThreeDViewport(QWidget):
         self.context_detail = detail
         if display_key:
             self.display_key = display_key
+        should_render = (
+            self.simulation_data is not None
+            and self._rendered_display_key != self.display_key
+        )
+        if should_render and self._ensure_real_view():
+            self._render_real_result()
+        self.update()
+
+    def set_simulation_data(self, sim_data):
+        self.simulation_data = sim_data
+        if self._ensure_real_view():
+            self._render_real_result()
         self.update()
 
     def set_layer_state(self, layer_key, enabled):
         if layer_key in self.layers:
             self.layers[layer_key] = bool(enabled)
+            if self.simulation_data is not None and self._real_renderer is not None:
+                self._apply_real_layer_state(layer_key, enabled)
             self.update()
 
+    def _ensure_real_view(self):
+        if self._real_renderer is not None:
+            return True
+        if self._real_view_error:
+            return False
+        try:
+            from visual.pyvista_renderer import PyVistaRenderer
+            from visual.pyvista_view import PyVistaView
+        except Exception as exc:
+            self._real_view_error = str(exc)
+            return False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._real_view = PyVistaView(self)
+        layout.addWidget(self._real_view)
+        self._real_renderer = PyVistaRenderer(self._real_view)
+        self._real_view.show()
+        return True
+
+    def _render_real_result(self):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return
+        renderer.clear_cache()
+        self._rendered_display_key = self.display_key
+        if getattr(sim_data, "corner_point_grid", None) is not None:
+            renderer.render_corner_point_grid(sim_data)
+        if getattr(sim_data, "cell_geometry_with_pressure", None) is not None:
+            renderer.render_corner_pressure_field(sim_data)
+        elif getattr(sim_data, "pressure_field", None):
+            renderer.render_mode3_smooth_pressure(sim_data)
+        if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None or (
+                getattr(sim_data, "corner_lgr_refined_grid_geometry", None) is not None):
+            renderer.render_corner_lgr_grid(sim_data)
+        if getattr(sim_data, "fractures", None):
+            if hasattr(renderer, "render_corner_fractures"):
+                renderer.render_corner_fractures(sim_data)
+            else:
+                renderer.render_fractures(sim_data)
+        if getattr(sim_data, "wells", None):
+            renderer.render_wells(sim_data)
+        for layer_key, enabled in self.layers.items():
+            self._apply_real_layer_state(layer_key, enabled)
+
+    def _apply_real_layer_state(self, layer_key, enabled):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return
+        if layer_key == "grid":
+            if hasattr(renderer, "toggle_grid_visibility"):
+                renderer.toggle_grid_visibility(bool(enabled))
+            elif hasattr(renderer, "ensure_grid_lines"):
+                renderer.ensure_grid_lines(sim_data)
+                renderer.toggle_grid_lines(bool(enabled))
+        elif layer_key == "grid_refinement":
+            if hasattr(renderer, "toggle_corner_lgr_grid_visibility"):
+                renderer.toggle_corner_lgr_grid_visibility(bool(enabled))
+        elif layer_key in {"natural_fractures", "hydraulic_fractures"}:
+            if hasattr(renderer, "ensure_fractures"):
+                renderer.ensure_fractures(sim_data)
+            fracture_type = "hydraulic" if layer_key == "hydraulic_fractures" else "natural"
+            if hasattr(renderer, "toggle_fractures_visibility"):
+                renderer.toggle_fractures_visibility(bool(enabled), fracture_type)
+            elif hasattr(renderer, "toggle_fractures"):
+                renderer.toggle_fractures(bool(enabled), fracture_type)
+        elif layer_key == "well":
+            if enabled and hasattr(renderer, "render_wells"):
+                renderer.render_wells(sim_data)
+            if hasattr(renderer, "toggle_wells_visibility"):
+                renderer.toggle_wells_visibility(bool(enabled))
+        elif layer_key == "pressure":
+            if hasattr(renderer, "toggle_pressure_visibility"):
+                renderer.toggle_pressure_visibility(bool(enabled))
+
     def paintEvent(self, event):
+        if self._real_view is not None and self._real_view.isVisible():
+            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#050505"))
@@ -702,6 +800,10 @@ class ViewPage(QFrame):
     def set_layer_state(self, layer_key, enabled):
         if hasattr(self.viewport, "set_layer_state"):
             self.viewport.set_layer_state(layer_key, enabled)
+
+    def set_simulation_data(self, sim_data):
+        if hasattr(self.viewport, "set_simulation_data"):
+            self.viewport.set_simulation_data(sim_data)
 
     def set_chart_data(self, chart_key, data):
         if hasattr(self.viewport, "set_chart_data"):

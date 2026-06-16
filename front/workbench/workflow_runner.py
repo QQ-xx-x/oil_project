@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Minimal workflow runner for discovering existing simulation outputs."""
+"""用于发现现有模拟输出的轻量流程运行器。"""
 
 import csv
 import os

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Top quick-access area and mixed-size Chinese ribbon."""
+"""顶部快速访问区和中文功能区。"""
 
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .icon_registry import canonical_icon_kind
 from .icons import painted_icon
 
 
@@ -22,6 +23,41 @@ def _action(text, kind="generic", size="medium", tooltip=None, command=None,
         "requires_project": requires_project,
         "requires_results": requires_results,
     }
+
+
+def _semantic_icon_kind(kind, text="", tooltip="", command=""):
+    content = f"{text} {tooltip} {command}".lower()
+    if any(token in content for token in ("校验", "检查", "质控", "qc", "validate", "check")):
+        return "validate"
+    if any(token in content for token in ("运行", "模拟", "run simulation", "flow simulation")):
+        return "run"
+    if any(token in content for token in ("结果", "result")):
+        return "result"
+    if any(token in content for token in ("图层", "layer")):
+        return "layer"
+    if any(token in content for token in ("压力", "pressure")):
+        return "pressure"
+    if any(token in content for token in ("饱和度", "saturation")):
+        return "saturation"
+    if any(token in content for token in ("渗透率", "permeability")):
+        return "permeability"
+    if any(token in content for token in ("孔隙", "poro")):
+        return "porosity"
+    if any(token in content for token in ("裂缝", "fracture", "dfn")):
+        return "fracture"
+    if any(token in content for token in ("井", "well")):
+        return "well"
+    if any(token in content for token in ("流体", "pvt", "fluid")):
+        return "fluid"
+    if any(token in content for token in ("岩石", "rock", "petrophysical")):
+        return "rock"
+    if any(token in content for token in ("网格加密", "局部网格", "lgr")):
+        return "lgr"
+    if any(token in content for token in ("网格", "grid", "mesh")):
+        return "grid"
+    if any(token in content for token in ("曲线", "图表", "plot", "chart")):
+        return "chart"
+    return canonical_icon_kind(kind)
 
 
 def _tool_button(action):
@@ -56,7 +92,8 @@ def _tool_button(action):
         button.setFixedWidth(70)
         button.setFixedHeight(64)
 
-    button.setIcon(painted_icon(action["kind"], icon_size))
+    button.setIcon(painted_icon(_semantic_icon_kind(
+        action["kind"], action["text"], action["tooltip"], action["command"]), icon_size))
     return button
 
 
@@ -85,7 +122,7 @@ class QuickAccessBar(QWidget):
             for text, kind in group:
                 button = QToolButton()
                 button.setObjectName("quickAccessButton")
-                button.setIcon(painted_icon(kind, 15))
+                button.setIcon(painted_icon(_semantic_icon_kind(kind, text), 15))
                 button.setIconSize(QSize(15, 15))
                 button.setToolTip(text)
                 button.setFixedSize(22, 21)
@@ -244,7 +281,7 @@ class FileMenuPopup(QFrame):
         button = QToolButton()
         button.setObjectName("fileMenuCommand")
         button.setText(f"{text}  ›" if has_submenu else text)
-        button.setIcon(painted_icon(kind, 24))
+        button.setIcon(painted_icon(_semantic_icon_kind(kind, text, tooltip, command), 24))
         button.setIconSize(QSize(24, 24))
         button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         button.setToolTip(tooltip)

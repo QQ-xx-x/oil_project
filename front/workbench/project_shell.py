@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Project-open shell with switchable left panels and central work tabs."""
+"""工程打开后的主界面，包含左侧切换面板和中央工作窗口。"""
 
 import os
 
@@ -18,6 +18,7 @@ from .navigation_trees import (
 )
 from .project_state import ProjectState
 from .results_tree import ResultsTree
+from .simulation_service import WorkbenchSimulationService
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
 
@@ -155,6 +156,8 @@ class ProjectShell(QWidget):
         self.project_root = project_root or os.getcwd()
         self.workflow_runner = WorkbenchWorkflowRunner(self.project_root)
         self.result_store = self.workflow_runner.discover_results()
+        self.simulation_service = WorkbenchSimulationService(self.project_root, self)
+        self._last_simulation_params = {}
         self.setObjectName("projectShell")
 
         layout = QHBoxLayout(self)
@@ -187,6 +190,10 @@ class ProjectShell(QWidget):
         self.message_log = MessageLogPanel()
         self.upper_tabs.panel_message.connect(self.message_log.append_message)
         self.lower_tabs.panel_message.connect(self.message_log.append_message)
+        self.simulation_service.started.connect(self._handle_simulation_started)
+        self.simulation_service.log_message.connect(self.message_log.append_message)
+        self.simulation_service.finished.connect(self._handle_simulation_finished)
+        self.simulation_service.failed.connect(self._handle_simulation_failed)
         self.message_log.append_message(f"[工程] 已打开 {project_name}")
         self._report_discovered_results(prefix="[结果]")
         left_splitter.addWidget(self.upper_tabs)
@@ -217,6 +224,55 @@ class ProjectShell(QWidget):
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
         self._show_status(message.replace("[窗口] ", ""))
+
+    def activate_module(self, module_key):
+        routes = {
+            "reservoir_model": ("input", "grid_basic"),
+            "grid_import": ("input", "grid_basic"),
+            "fracture_modeling": ("input", "natural_fractures"),
+            "well_engineering": ("input", "well_parameters"),
+            "fluid_pvt": ("input", "gas_pvt"),
+            "simulation": ("input", "simulation_control"),
+            "results_visualization": ("result", "pressure_field"),
+            "relative_perm": ("result", "relative_permeability_curve"),
+            "reservoir_analysis": ("result", "production_curve"),
+            "project_management": ("input", "grid_foundation"),
+        }
+        route = routes.get(module_key)
+        if route is None:
+            self.message_log.append_message(f"[启动] 模块 {module_key} 暂未接入。")
+            return
+
+        area, key = route
+        if area == "input":
+            index = self.upper_tabs.tab_widget.indexOf(self.input_tree)
+            if index >= 0:
+                self.upper_tabs.tab_widget.setCurrentIndex(index)
+            self.input_tree.select_key(key)
+        elif area == "result":
+            index = self.lower_tabs.tab_widget.indexOf(self.results_tree)
+            if index >= 0:
+                self.lower_tabs.tab_widget.setCurrentIndex(index)
+            self.results_tree.select_key(key)
+
+        title = self._module_title(module_key)
+        self.message_log.append_message(f"[启动] 已进入模块：{title}")
+        self._show_status(f"当前模块：{title}")
+
+    def _module_title(self, module_key):
+        titles = {
+            "reservoir_model": "储层建模",
+            "grid_import": "网格导入",
+            "fracture_modeling": "裂缝建模",
+            "well_engineering": "井工程",
+            "fluid_pvt": "流体与 PVT",
+            "simulation": "数值模拟",
+            "results_visualization": "结果可视化",
+            "relative_perm": "相渗设计",
+            "reservoir_analysis": "储层分析",
+            "project_management": "工程管理",
+        }
+        return titles.get(module_key, module_key)
 
     def _handle_module_selected(self, key, title):
         self.message_log.append_message(f"[选择] 当前输入模块：{title}")
@@ -288,18 +344,190 @@ class ProjectShell(QWidget):
             key, (f"当前结果：{title}", "该结果节点后续接入真实模拟输出。"))
 
     def run_simulation_scan(self):
-        self.message_log.append_message("[运行] 正在收集输入参数")
-        self.result_store, messages = self.workflow_runner.run_simulation(self.project_state)
-        for message in messages:
-            self.message_log.append_message(message)
+        self.message_log.append_message("[运行] 正在收集 Corner Grid LGR 输入参数")
+        self.simulation_service.run(self.project_state)
+
+    def _handle_simulation_started(self, params):
+        self._last_simulation_params = dict(params)
+        self.result_store.run_status = "running"
+        self.message_log.append_message(
+            f"[运行] 算法=corner_edfm，加密={params.get('corner_grid_refinement')}")
+        self.message_log.append_message(
+            f"[运行] COORD={os.path.basename(params.get('coord_file', ''))}, "
+            f"ZCORN={os.path.basename(params.get('zcorn_file', ''))}")
+        self.message_log.append_message(
+            f"[运行] HF count={params.get('hf_count')}, "
+            f"center=({params.get('hf_center_x')}, {params.get('hf_center_y')}, {params.get('hf_center_z')})")
+        self._show_status("Corner Grid LGR 模拟运行中")
+
+    def _handle_simulation_finished(self, sim_data, result_path):
+        self._augment_corner_visual_layers(sim_data)
+        self.result_store.run_status = "done"
+        self.result_store.simulation_data = sim_data
+        self.result_store.result_json_path = result_path
+        self.workspace.set_simulation_data(sim_data)
+        self.workspace.update_context(
+            "当前结果：Corner Grid 压力场",
+            "三维窗口显示导入角点网格的 LGR 加密模拟结果。",
+            "3d",
+            "pressure_field",
+        )
         self._publish_loaded_charts()
-        self._show_status("运行模拟扫描完成")
+        self._log_simulation_summary(sim_data)
+        self.message_log.append_message(f"[结果] 已加载模拟结果 JSON：{result_path}")
+        self._show_status("Corner Grid LGR 模拟完成")
+
+    def _handle_simulation_failed(self, message):
+        self.result_store.run_status = "failed"
+        self.message_log.append_message(f"[运行] {message}")
+        self._show_status("Corner Grid LGR 模拟失败")
 
     def _publish_loaded_charts(self):
         for key in ["production_curve", "pvt_curve"]:
             data = self.result_store.chart_data(key)
             if data:
                 self.workspace.set_chart_data(key, data)
+
+    def _augment_corner_visual_layers(self, sim_data):
+        params = self._last_simulation_params or {}
+        fractures = getattr(sim_data, "fractures", []) or []
+        self._apply_corner_origin_offset(sim_data, fractures)
+        natural_count = int(params.get("num_fracs", 0) or 0)
+        region_count = int(params.get("region_num_fracs", 0) or 0)
+        hydraulic_count = int(params.get("hf_count", 0) or 0)
+        region_start = natural_count
+        hydraulic_start = natural_count + region_count
+        hydraulic_end = hydraulic_start + hydraulic_count
+        hydraulic_centers = []
+
+        for index, frac in enumerate(fractures):
+            try:
+                frac_id = int(frac.get("id", index))
+            except (TypeError, ValueError):
+                frac_id = index
+
+            is_region = region_start <= frac_id < hydraulic_start
+            is_hydraulic = hydraulic_start <= frac_id < hydraulic_end
+            if is_hydraulic:
+                frac["type"] = "hydraulic"
+                frac["is_hydraulic"] = 1
+                points = frac.get("points", []) or []
+                if points:
+                    hydraulic_centers.append(tuple(
+                        sum(float(point[axis]) for point in points) / len(points)
+                        for axis in range(3)
+                    ))
+            elif is_region:
+                frac["type"] = "region"
+                frac["is_hydraulic"] = 0
+            else:
+                frac["type"] = "natural"
+                frac["is_hydraulic"] = 0
+
+        if hydraulic_centers and not getattr(sim_data, "wells", None):
+            hydraulic_centers.sort(key=lambda point: point[0])
+            mid = hydraulic_centers[len(hydraulic_centers) // 2]
+            sim_data.wells = [{
+                "id": 0,
+                "node_idx": 0,
+                "type": "Fracture",
+                "x": mid[0],
+                "y": mid[1],
+                "z": mid[2],
+                "WI": 0.0,
+                "P_bhp": float(params.get("well_pressure", 50.0)),
+            }]
+
+    def _apply_corner_origin_offset(self, sim_data, fractures):
+        if not fractures:
+            return
+
+        bounds = self._corner_grid_bounds(sim_data)
+        if bounds is None:
+            return
+        min_x, max_x, min_y, max_y, min_z, max_z = bounds
+        origin = (min_x, min_y, min_z)
+        if all(abs(value) < 1e-9 for value in origin):
+            return
+
+        margin = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0) * 1e-6
+        for frac in fractures:
+            for point in frac.get("points", []) or []:
+                x, y, z = (float(point[0]), float(point[1]), float(point[2]))
+                if (min_x - margin <= x <= max_x + margin
+                        and min_y - margin <= y <= max_y + margin
+                        and min_z - margin <= z <= max_z + margin):
+                    return
+
+        for frac in fractures:
+            shifted = []
+            for point in frac.get("points", []) or []:
+                shifted.append((
+                    float(point[0]) + origin[0],
+                    float(point[1]) + origin[1],
+                    float(point[2]) + origin[2],
+                ))
+            frac["points"] = shifted
+
+    def _corner_grid_bounds(self, sim_data):
+        cpg = getattr(sim_data, "corner_point_grid", None)
+        if cpg is not None and getattr(cpg, "cells", None):
+            xs, ys, zs = [], [], []
+            for cell in cpg.cells:
+                for corner in cell.corners:
+                    xs.append(float(corner[0]))
+                    ys.append(float(corner[1]))
+                    zs.append(float(corner[2]))
+            if xs:
+                return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+
+        cell_geometry = getattr(sim_data, "cell_geometry_with_pressure", None)
+        if cell_geometry is None:
+            return None
+        xs, ys, zs = [], [], []
+        for row in cell_geometry:
+            if len(row) < 28:
+                continue
+            for offset in range(4, 28, 3):
+                xs.append(float(row[offset]))
+                ys.append(float(row[offset + 1]))
+                zs.append(float(row[offset + 2]))
+        if not xs:
+            return None
+        return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+
+    def _log_simulation_summary(self, sim_data):
+        pressures = []
+        cell_geometry = getattr(sim_data, "cell_geometry_with_pressure", None)
+        if cell_geometry is not None:
+            for row in cell_geometry:
+                if len(row) > 0:
+                    try:
+                        pressures.append(float(row[-1]))
+                    except (TypeError, ValueError):
+                        pass
+        if not pressures:
+            for item in getattr(sim_data, "pressure_field", []) or []:
+                if len(item) >= 4:
+                    try:
+                        pressures.append(float(item[3]))
+                    except (TypeError, ValueError):
+                        pass
+
+        fractures = len(getattr(sim_data, "fractures", []) or [])
+        wells = len(getattr(sim_data, "wells", []) or [])
+        if pressures:
+            min_p = min(pressures)
+            max_p = max(pressures)
+            unique_count = len(set(pressures))
+            self.message_log.append_message(
+                f"[诊断] 压力范围={min_p:.6g} - {max_p:.6g} bar，唯一值数量={unique_count}")
+            if unique_count <= 1:
+                self.message_log.append_message(
+                    "[诊断] 压力场仍为常数，优先检查人工裂缝是否生成、井是否接入。")
+        else:
+            self.message_log.append_message("[诊断] 未读取到压力数据。")
+        self.message_log.append_message(f"[诊断] 裂缝数量={fractures}，井数量={wells}")
 
     def _load_chart_data(self, key, title):
         if key == "relative_permeability_curve":

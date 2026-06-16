@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Recent-project panel shown before a reservoir project is opened."""
+"""打开储层工程前显示的最近工程面板。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
