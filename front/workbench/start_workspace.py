@@ -93,17 +93,17 @@ class StartWorkspace(QWidget):
         grid.setVerticalSpacing(16)
         cards = [
             ("reservoir_model", "储层建模", "角点网格、基质属性、初始状态与双重介质", "grid", "steel", True, 0, 0, 1, 1),
-            ("fracture_modeling", "裂缝建模", "天然裂缝、人工裂缝与裂缝参数", "process", "steel", True, 0, 1, 1, 1),
+            ("fracture_modeling", "裂缝建模", "天然裂缝、人工裂缝与裂缝参数", "fracture", "steel", True, 0, 1, 1, 1),
             ("well_engineering", "井工程", "井位置、井底压力、井半径与井轨迹", "well", "steel", True, 0, 2, 1, 1),
-            ("simulation", "数值模拟", "Corner Grid LGR 求解与运行控制", "monitor", "accent", True, 0, 3, 1, 1),
-            ("results_visualization", "结果可视化", "压力场、饱和度、渗透率与三维视图", "chart", "accent", True, 0, 4, 1, 1),
-            ("grid_import", "网格导入", "GRDECL、COORD、ZCORN 文件导入", "import", "steel", False, 1, 0, 1, 1),
-            ("fluid_pvt", "流体与 PVT", "油水参数、真实气体 PVT 和表格", "database", "steel", False, 1, 1, 1, 1),
-            ("relative_perm", "相渗设计", "相对渗透率参数与曲线", "chart", "steel", False, 1, 2, 1, 1),
-            ("reservoir_analysis", "储层分析", "生产曲线、Blasingame 与结果分析", "search", "neutral", False, 1, 3, 1, 1),
-            ("project_management", "工程管理", "最近工程、工程设置、导入导出", "folder", "neutral", False, 1, 4, 1, 1),
-            ("help_license", "帮助与许可", "使用说明、许可证状态和日志", "warning", "support", False, 2, 0, 1, 1),
-            ("ai_assistant", "AI 助手", "后续接入智能辅助建模与分析", "generic", "support", False, 2, 1, 1, 1),
+            ("simulation", "数值模拟", "Corner Grid LGR 求解与运行控制", "solver", "accent", True, 0, 3, 1, 1),
+            ("results_visualization", "结果可视化", "压力场、饱和度、渗透率与三维视图", "result", "accent", True, 0, 4, 1, 1),
+            ("grid_import", "网格导入", "GRDECL、COORD、ZCORN 文件导入", "grid_file", "steel", False, 1, 0, 1, 1),
+            ("fluid_pvt", "流体与 PVT", "油水参数、真实气体 PVT 和表格", "fluid", "steel", False, 1, 1, 1, 1),
+            ("relative_perm", "相渗设计", "相对渗透率参数与曲线", "permeability", "steel", False, 1, 2, 1, 1),
+            ("reservoir_analysis", "储层分析", "生产曲线、Blasingame 与结果分析", "result", "neutral", False, 1, 3, 1, 1),
+            ("project_management", "工程管理", "最近工程、工程设置、导入导出", "settings", "neutral", False, 1, 4, 1, 1),
+            ("help_license", "帮助与许可", "使用说明、许可证状态和日志", "help", "support", False, 2, 0, 1, 1),
+            ("ai_assistant", "AI 助手", "后续接入智能辅助建模与分析", "object", "support", False, 2, 1, 1, 1),
         ]
 
         for module_key, title, subtitle, icon, tone, featured, row, col, row_span, col_span in cards:

@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .icon_registry import canonical_icon_kind
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 
 
@@ -26,38 +26,7 @@ def _action(text, kind="generic", size="medium", tooltip=None, command=None,
 
 
 def _semantic_icon_kind(kind, text="", tooltip="", command=""):
-    content = f"{text} {tooltip} {command}".lower()
-    if any(token in content for token in ("校验", "检查", "质控", "qc", "validate", "check")):
-        return "validate"
-    if any(token in content for token in ("运行", "模拟", "run simulation", "flow simulation")):
-        return "run"
-    if any(token in content for token in ("结果", "result")):
-        return "result"
-    if any(token in content for token in ("图层", "layer")):
-        return "layer"
-    if any(token in content for token in ("压力", "pressure")):
-        return "pressure"
-    if any(token in content for token in ("饱和度", "saturation")):
-        return "saturation"
-    if any(token in content for token in ("渗透率", "permeability")):
-        return "permeability"
-    if any(token in content for token in ("孔隙", "poro")):
-        return "porosity"
-    if any(token in content for token in ("裂缝", "fracture", "dfn")):
-        return "fracture"
-    if any(token in content for token in ("井", "well")):
-        return "well"
-    if any(token in content for token in ("流体", "pvt", "fluid")):
-        return "fluid"
-    if any(token in content for token in ("岩石", "rock", "petrophysical")):
-        return "rock"
-    if any(token in content for token in ("网格加密", "局部网格", "lgr")):
-        return "lgr"
-    if any(token in content for token in ("网格", "grid", "mesh")):
-        return "grid"
-    if any(token in content for token in ("曲线", "图表", "plot", "chart")):
-        return "chart"
-    return canonical_icon_kind(kind)
+    return semantic_icon_kind(kind, text, tooltip, command)
 
 
 def _tool_button(action):

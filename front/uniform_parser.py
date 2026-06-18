@@ -63,7 +63,7 @@ def expand_rle(text: str, expected_len: Optional[int] = None) -> List[float]:
 
 
 def _read_text(path: str) -> str:
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:
         return f.read()
 
 

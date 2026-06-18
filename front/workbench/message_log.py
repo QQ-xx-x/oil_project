@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 
 
@@ -46,7 +47,7 @@ class MessageLogPanel(QWidget):
         for tooltip, kind in [("清空日志", "new"), ("复制日志", "copy"),
                               ("保存日志", "save")]:
             button = QToolButton()
-            button.setIcon(painted_icon(kind, 21))
+            button.setIcon(painted_icon(semantic_icon_kind(kind, tooltip), 21))
             button.setToolTip(tooltip)
             if tooltip == "清空日志":
                 button.clicked.connect(self.clear_messages)

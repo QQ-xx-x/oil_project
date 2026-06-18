@@ -31,6 +31,7 @@ class InputTree(QTreeWidget):
     module_selected = pyqtSignal(str, str)
     module_checked = pyqtSignal(str, str, bool)
     parameters_saved = pyqtSignal(str, str, dict)
+    case_dataset_built = pyqtSignal(str, dict)
 
     def __init__(self, project_state=None, parent=None):
         super().__init__(parent)
@@ -80,21 +81,22 @@ class InputTree(QTreeWidget):
         self._building = True
         module_tree = [
             ("CaseData 输入", "case_data_manifest", "CaseData 文件", "case_root", True, [
-                (section, f"case_data_section:{section}", "CaseData Section", "case_section", True)
+                (section, f"case_data_section:{section}", "CaseData Section",
+                 self._case_section_icon(section), True)
                 for section in self._case_section_names()
             ]),
             ("网格与基础参数", "grid_foundation", "文件夹", "grid", True, [
                 ("网格加密", "grid_refinement_enabled", "网格开关", "lgr", False),
                 ("网格文件导入", "grid_file_import", "导入操作", "grid_file", False),
                 ("网格参数", "grid_basic", "网格参数", "grid", True),
-                ("初始状态", "initial_state", "初始状态参数", "keyword_param", True),
-                ("基质属性", "matrix_properties", "岩石参数", "rock", True),
-                ("双重介质", "dual_porosity", "岩石参数", "porosity", False),
+                ("初始状态", "initial_state", "初始状态参数", "initial", True),
+                ("基质属性", "matrix_properties", "岩石参数", "matrix", True),
+                ("双重介质", "dual_porosity", "岩石参数", "dual_porosity", False),
                 ("模拟控制", "simulation_control", "模拟参数", "solver", True),
             ]),
             ("流体属性", "fluid_properties", "文件夹", "fluid", True, [
-                ("油水相基础参数", "oil_water_properties", "流体参数", "fluid", True),
-                ("气相真实气体 PVT", "gas_pvt", "流体参数", "fluid", False),
+                ("油水相基础参数", "oil_water_properties", "流体参数", "oil_water", True),
+                ("气相真实气体 PVT", "gas_pvt", "流体参数", "gas", False),
             ]),
             ("井参数", "well_system", "文件夹", "well", True, [
                 ("井基础参数", "well_parameters", "井参数", "well", True),
@@ -154,6 +156,8 @@ class InputTree(QTreeWidget):
             if hasattr(dialog.panel, "case_data_saved"):
                 dialog.panel.case_data_saved.connect(
                     lambda: self.refresh_case_data_sections(preserve_expanded=True))
+            if hasattr(dialog.panel, "case_dataset_built"):
+                dialog.panel.case_dataset_built.connect(self.case_dataset_built.emit)
         else:
             dialog = ObjectSettingsDialog(item.text(0), object_type, self)
         result = dialog.exec_()
@@ -248,7 +252,7 @@ class InputTree(QTreeWidget):
         for section in self._case_section_names():
             section_item = self._item(
                 section, f"case_data_section:{section}",
-                "CaseData Section", True, "case_section",
+                "CaseData Section", True, self._case_section_icon(section),
                 tooltip=self._case_section_tooltip(section))
             for keyword in self._case_section_keywords(section):
                 icon_name, icon_status = self._case_keyword_icon(keyword)
@@ -309,6 +313,23 @@ class InputTree(QTreeWidget):
                 return section.get("keywords", []) or []
         return []
 
+    def _case_section_icon(self, section_name):
+        name = str(section_name or "").upper()
+        return {
+            "GRID": "grid",
+            "ROCK": "rock",
+            "FRACTURE": "fracture",
+            "LGR": "lgr",
+            "FLUID": "fluid",
+            "GAS": "gas",
+            "INITIAL": "initial",
+            "WELL": "well",
+            "SOLVER": "solver",
+            "OUTPUT": "output",
+            "WR": "wr",
+            "RETURN_SCHEMA": "case_section",
+        }.get(name, "case_section")
+
     def _case_section_tooltip(self, section_name):
         count = len(self._case_section_keywords(section_name))
         return f"CaseData section: {section_name}\n关键字数量: {count}"
@@ -323,6 +344,14 @@ class InputTree(QTreeWidget):
                 icon_name = "grid_file"
             elif key == "fracture_file":
                 icon_name = "dfn_file"
+            elif key == "actnum_file":
+                icon_name = "actnum_file"
+            elif key == "sigma_file":
+                icon_name = "sigma_file"
+            elif key.startswith("matrix_"):
+                icon_name = "matrix_property_file"
+            elif key.startswith("fracture_"):
+                icon_name = "fracture_property_file"
             elif key.endswith("_file"):
                 icon_name = "property_file"
             else:

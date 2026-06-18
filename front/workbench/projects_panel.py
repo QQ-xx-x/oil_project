@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QScrollArea, QToolButton, QVBoxLayout, QWidget,
 )
 
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon, project_thumbnail
 
 
@@ -74,12 +75,12 @@ class ProjectsPanel(QWidget):
         command_layout.setContentsMargins(6, 4, 6, 4)
         command_layout.setSpacing(4)
         open_button = QToolButton()
-        open_button.setIcon(painted_icon("folder"))
         open_button.setToolTip("打开工程")
+        open_button.setIcon(painted_icon(semantic_icon_kind("folder", open_button.toolTip())))
         open_button.clicked.connect(self.open_requested)
         new_button = QToolButton()
-        new_button.setIcon(painted_icon("new"))
         new_button.setToolTip("新建工程")
+        new_button.setIcon(painted_icon(semantic_icon_kind("new", new_button.toolTip())))
         new_button.clicked.connect(self.new_requested)
         command_layout.addWidget(open_button)
         command_layout.addWidget(new_button)

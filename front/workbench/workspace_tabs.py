@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """工程打开后使用的中央多窗口工作区。"""
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import QAction, QMenu, QTabWidget, QToolButton
 
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 from .viewport_placeholders import ChartViewport, ThreeDViewport, TwoDViewport, ViewPage
 
@@ -43,7 +44,8 @@ class WorkspaceTabs(QTabWidget):
     def _create_add_button(self):
         button = QToolButton()
         button.setObjectName("workspaceAddButton")
-        button.setText("+")
+        button.setIcon(painted_icon("new", 16))
+        button.setIconSize(QSize(16, 16))
         button.setToolTip("新建工作窗口")
         button.setFixedSize(24, 23)
         button.setPopupMode(QToolButton.InstantPopup)
@@ -52,10 +54,22 @@ class WorkspaceTabs(QTabWidget):
 
     def _new_window_menu(self):
         menu = QMenu(self)
-        menu.addAction("新建 2D 窗口", lambda: self.add_window("2d"))
-        menu.addAction("新建 3D 窗口", lambda: self.add_window("3d"))
-        menu.addAction("新建图表窗口", lambda: self.add_window("chart"))
+        for text, view_type, kind in [
+            ("新建 2D 窗口", "2d", "window"),
+            ("新建 3D 窗口", "3d", "grid"),
+            ("新建图表窗口", "chart", "chart"),
+        ]:
+            menu.addAction(self._menu_action(
+                text, kind, lambda checked=False, vt=view_type: self.add_window(vt)))
         return menu
+
+    def _menu_action(self, text, kind, callback, enabled=True):
+        icon_kind = semantic_icon_kind(kind, text)
+        action = QAction(painted_icon(icon_kind, 16), text, self)
+        action.setEnabled(enabled)
+        if enabled:
+            action.triggered.connect(callback)
+        return action
 
     def _create_page(self, view_type):
         viewport = {
@@ -71,7 +85,8 @@ class WorkspaceTabs(QTabWidget):
 
     def _add_page(self, page, view_type, title):
         icon_map = {"2d": "window", "3d": "grid", "chart": "chart"}
-        index = self.addTab(page, painted_icon(icon_map[view_type], 16), title)
+        icon_kind = semantic_icon_kind(icon_map[view_type], title)
+        index = self.addTab(page, painted_icon(icon_kind, 16), title)
         page.setProperty("viewType", view_type)
         return index
 
@@ -140,16 +155,19 @@ class WorkspaceTabs(QTabWidget):
         if index < 0:
             return
         menu = QMenu(self)
-        menu.addAction("关闭窗口", lambda: self.close_window(index))
-        menu.addAction("关闭其他窗口", lambda: self.close_other_windows(index))
-        menu.addAction("复制窗口", lambda: self.clone_window(index))
-        rename = QAction("重命名窗口", self)
-        rename.setEnabled(False)
-        menu.addAction(rename)
+        menu.addAction(self._menu_action("关闭窗口", "close", lambda: self.close_window(index)))
+        menu.addAction(self._menu_action(
+            "关闭其他窗口", "close", lambda: self.close_other_windows(index)))
+        menu.addAction(self._menu_action("复制窗口", "copy", lambda: self.clone_window(index)))
+        menu.addAction(self._menu_action("重命名窗口", "edit", lambda: None, enabled=False))
         menu.addSeparator()
-        menu.addAction("新建 2D 窗口", lambda: self.add_window("2d"))
-        menu.addAction("新建 3D 窗口", lambda: self.add_window("3d"))
-        menu.addAction("新建图表窗口", lambda: self.add_window("chart"))
+        for text, view_type, kind in [
+            ("新建 2D 窗口", "2d", "window"),
+            ("新建 3D 窗口", "3d", "grid"),
+            ("新建图表窗口", "chart", "chart"),
+        ]:
+            menu.addAction(self._menu_action(
+                text, kind, lambda checked=False, vt=view_type: self.add_window(vt)))
         menu.exec_(self.tabBar().mapToGlobal(pos))
 
     def update_context(self, title, detail, preferred_view="3d", display_key=None):

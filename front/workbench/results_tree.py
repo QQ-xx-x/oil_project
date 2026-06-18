@@ -108,11 +108,11 @@ class ResultsTree(QTreeWidget):
             icon_name="folder", tooltip="属性和 PVT 分析分组")
         study_2.addChild(self._item(
             "Chart 1 - 相对渗透率曲线", "relative_permeability_curve",
-            "chart", "chart", checked=False, icon_name="chart",
+            "chart", "chart", checked=False, icon_name="permeability",
             tooltip="打开相对渗透率曲线"))
         study_2.addChild(self._item(
             "PVT 表曲线", "pvt_curve", "chart", "chart",
-            checked=False, icon_name="chart", tooltip="打开 PVT 表曲线"))
+            checked=False, icon_name="fluid", tooltip="打开 PVT 表曲线"))
         study_2.addChild(self._item(
             "Blasingame 曲线", "blasingame_curve", "chart", "chart",
             checked=False, icon_name="chart", tooltip="打开 Blasingame 分析曲线"))

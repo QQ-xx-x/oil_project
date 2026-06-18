@@ -4,6 +4,7 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
 
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 
 
@@ -17,7 +18,7 @@ class SimpleTree(QTreeWidget):
 
     def _item(self, text, icon_name="generic", checked=False, checkable=True):
         item = QTreeWidgetItem([text])
-        item.setIcon(0, painted_icon(icon_name, 16))
+        item.setIcon(0, painted_icon(semantic_icon_kind(icon_name, text), 16))
         if checkable:
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
@@ -53,7 +54,7 @@ class CasesTree(SimpleTree):
                     {"text": "33", "icon": "warning"},
                     {"text": "44", "icon": "warning"},
                     {"text": "55", "icon": "warning"},
-                    {"text": "new1", "icon": "generic", "checked": True},
+                    {"text": "new1", "icon": "new", "checked": True},
                     {"text": "400ABC", "icon": "warning"},
                     {"text": "26zhi36", "icon": "warning"},
                     {"text": "26zhi36new", "icon": "warning"},
@@ -78,8 +79,8 @@ class TemplatesTree(SimpleTree):
                 "text": "导入模板", "icon": "folder", "checked": True, "children": [
                     {"text": "井数据模板", "icon": "well"},
                     {"text": "网格模板", "icon": "grid"},
-                    {"text": "PVT 模板", "icon": "database"},
-                    {"text": "结果模板", "icon": "chart"},
+                    {"text": "PVT 模板", "icon": "fluid"},
+                    {"text": "结果模板", "icon": "result"},
                 ],
             },
         ], parent)
@@ -107,12 +108,12 @@ class ProcessesTree(SimpleTree):
                 {"text": "岩石物理建模", "icon": "database"},
             ]},
             {"text": "升尺度", "icon": "process", "checked": True},
-            {"text": "裂缝网络建模", "icon": "folder", "checked": True},
+            {"text": "裂缝网络建模", "icon": "fracture", "checked": True},
             {"text": "井工程", "icon": "well", "checked": True},
-            {"text": "模拟", "icon": "monitor", "checked": True},
-            {"text": "工具", "icon": "generic", "checked": True},
-            {"text": "插件", "icon": "generic", "checked": True},
-            {"text": "碳封存模型构建", "icon": "database", "checked": True},
+            {"text": "模拟", "icon": "solver", "checked": True},
+            {"text": "工具", "icon": "settings", "checked": True},
+            {"text": "插件", "icon": "object", "checked": True},
+            {"text": "碳封存模型构建", "icon": "fluid", "checked": True},
             {"text": "用户资源导出", "icon": "import", "checked": True},
             {"text": "用户资源文件夹导出", "icon": "folder", "checked": True},
             {"text": "勘探评价", "icon": "search", "checked": True},
@@ -153,7 +154,7 @@ class ModelsTree(SimpleTree):
 class WindowsTree(SimpleTree):
     def __init__(self, parent=None):
         super().__init__("windowsTree", [
-            {"text": "Cursor tracking", "icon": "generic", "checked": False},
+            {"text": "Cursor tracking", "icon": "select", "checked": False},
             {"text": "Output sheet", "icon": "window", "checked": False},
             {"text": "Stratigraphy", "icon": "folder", "checked": False},
             {"text": "Map window 1", "icon": "chart", "checked": False},

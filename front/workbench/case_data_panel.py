@@ -15,12 +15,14 @@ from .case_file_analyzer import (
     read_expanded_array_preview, read_text_preview,
 )
 from .case_data_parser import parse_case_data, save_case_data, update_keyword_value
+from .case_dataset_builder import build_case_dataset
 
 
 class CaseDataPanel(QWidget):
     """显示并编辑 CaseData 关键字，不在主表格中加载大数组内容。"""
 
     case_data_saved = pyqtSignal()
+    case_dataset_built = pyqtSignal(str, dict)
 
     HEADERS = ["关键字", "值", "类型", "状态"]
 
@@ -87,6 +89,7 @@ class CaseDataPanel(QWidget):
         root.addWidget(splitter, 1)
 
         self._load_saved_path()
+        self._load_saved_dataset_path()
 
     def _build_header(self):
         frame = QFrame()
@@ -136,6 +139,31 @@ class CaseDataPanel(QWidget):
         row.addWidget(reload_button)
         row.addWidget(self.save_button)
         layout.addLayout(row)
+
+        if not self.section_locked:
+            dataset_row = QHBoxLayout()
+            dataset_row.setSpacing(6)
+            dataset_label = QLabel("Dataset")
+            self.dataset_path_edit = QLineEdit()
+            self.dataset_path_edit.setObjectName("parameterPathEdit")
+            self.dataset_path_edit.setPlaceholderText("选择 case_dataset 输出目录")
+            self.dataset_path_edit.setText(self._default_dataset_dir())
+            dataset_browse = QPushButton("选择目录")
+            dataset_browse.setObjectName("parameterBrowseButton")
+            dataset_browse.clicked.connect(self._choose_dataset_dir)
+            self.dataset_button = QPushButton("生成 Dataset")
+            self.dataset_button.setObjectName("parameterBrowseButton")
+            self.dataset_button.clicked.connect(self.build_dataset)
+            dataset_row.addWidget(dataset_label)
+            dataset_row.addWidget(self.dataset_path_edit, 1)
+            dataset_row.addWidget(dataset_browse)
+            dataset_row.addWidget(self.dataset_button)
+            layout.addLayout(dataset_row)
+
+            self.dataset_status_label = QLabel("Dataset 尚未生成")
+            self.dataset_status_label.setObjectName("caseDataSummary")
+            self.dataset_status_label.setWordWrap(True)
+            layout.addWidget(self.dataset_status_label)
         return frame
 
     def _load_saved_path(self):
@@ -143,6 +171,20 @@ class CaseDataPanel(QWidget):
         if path:
             self.path_edit.setText(path)
             self.load_path(path)
+
+    def _load_saved_dataset_path(self):
+        if self.section_locked or not hasattr(self, "dataset_path_edit"):
+            return
+        path = getattr(self.project_state, "case_dataset_path", "") if self.project_state else ""
+        if path:
+            self.dataset_path_edit.setText(path)
+        self._update_dataset_status()
+
+    def _default_dataset_dir(self):
+        path = getattr(self.project_state, "case_dataset_path", "") if self.project_state else ""
+        if path:
+            return path
+        return os.path.abspath(os.path.join(os.getcwd(), ".tmp", "case_dataset"))
 
     def _choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -160,6 +202,17 @@ class CaseDataPanel(QWidget):
         if path:
             self.load_path(path)
 
+    def _choose_dataset_dir(self):
+        current = self.dataset_path_edit.text().strip() if hasattr(self, "dataset_path_edit") else ""
+        start_dir = current if current and os.path.isdir(current) else os.getcwd()
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择 case_dataset 输出目录",
+            start_dir,
+        )
+        if path:
+            self.dataset_path_edit.setText(path)
+
     def save(self):
         if self.case_data is None:
             QMessageBox.warning(self, "保存 CaseData", "尚未加载 CaseData 文件。")
@@ -173,10 +226,58 @@ class CaseDataPanel(QWidget):
         self.values_were_saved = True
         if self.project_state is not None:
             self.project_state.set_case_data(self.case_data)
+            if hasattr(self.project_state, "mark_case_dataset_stale"):
+                self.project_state.mark_case_dataset_stale()
         self.case_data_saved.emit()
         self._populate_keywords()
         self._update_summary()
+        self._update_dataset_status()
         QMessageBox.information(self, "保存 CaseData", "CaseData 参数已保存。")
+        return True
+
+    def build_dataset(self):
+        """把当前 CaseData 文件生成统一 case_dataset 数据目录。"""
+        if self.case_data is None:
+            QMessageBox.warning(self, "生成 Dataset", "尚未加载 CaseData 文件。")
+            return False
+        if self.case_data.dirty:
+            QMessageBox.warning(
+                self,
+                "生成 Dataset",
+                "CaseData 参数有未保存修改，请先保存后再生成 Dataset。",
+            )
+            return False
+        output_dir = self.dataset_path_edit.text().strip() if hasattr(self, "dataset_path_edit") else ""
+        if not output_dir:
+            output_dir = self._default_dataset_dir()
+            if hasattr(self, "dataset_path_edit"):
+                self.dataset_path_edit.setText(output_dir)
+        try:
+            result = build_case_dataset(self.case_data.path, output_dir)
+        except Exception as exc:
+            QMessageBox.critical(self, "生成 Dataset 失败", str(exc))
+            return False
+        if self.project_state is not None:
+            self.project_state.set_case_dataset(
+                result.output_dir, result.manifest, result.validation)
+        if hasattr(self, "dataset_path_edit"):
+            self.dataset_path_edit.setText(result.output_dir)
+        self._update_dataset_status(result)
+        self.case_dataset_built.emit(result.output_dir, result.manifest)
+        error_count = len(result.validation.get("errors", []) or [])
+        warning_count = len(result.validation.get("warnings", []) or [])
+        if error_count:
+            QMessageBox.warning(
+                self,
+                "生成 Dataset",
+                f"Dataset 已生成，但存在 {error_count} 个错误、{warning_count} 个警告。",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "生成 Dataset",
+                f"Dataset 已生成，警告 {warning_count} 个。",
+            )
         return True
 
     def load_path(self, path):
@@ -186,6 +287,7 @@ class CaseDataPanel(QWidget):
             self.project_state.set_case_data(self.case_data)
         self._populate_sections()
         self._update_summary()
+        self._update_dataset_status()
 
     def _populate_sections(self):
         self.section_list.clear()
@@ -311,6 +413,38 @@ class CaseDataPanel(QWidget):
         self.summary_label.setText(text)
         if hasattr(self, "save_button"):
             self.save_button.setEnabled(bool(self.case_data.dirty))
+
+    def _update_dataset_status(self, result=None):
+        if not hasattr(self, "dataset_status_label"):
+            return
+        if result is not None:
+            validation = result.validation or {}
+            manifest = result.manifest or {}
+            text = (
+                f"Dataset 已生成：{result.output_dir} | "
+                f"数组 {len(manifest.get('arrays', {}) or {})} 个，"
+                f"文件 {len(manifest.get('source_files', []) or [])} 个，"
+                f"错误 {len(validation.get('errors', []) or [])} 个，"
+                f"警告 {len(validation.get('warnings', []) or [])} 个"
+            )
+            self.dataset_status_label.setText(text)
+            return
+        path = getattr(self.project_state, "case_dataset_path", "") if self.project_state else ""
+        summary = getattr(self.project_state, "case_dataset_summary", {}) if self.project_state else {}
+        if not path:
+            self.dataset_status_label.setText("Dataset 尚未生成")
+            return
+        if summary.get("stale"):
+            reason = summary.get("stale_reason") or "CaseData 已修改，请重新生成 Dataset"
+            self.dataset_status_label.setText(f"Dataset 需要重新生成：{path} | {reason}")
+            return
+        self.dataset_status_label.setText(
+            f"Dataset 已生成：{path} | "
+            f"数组 {summary.get('array_count', 0)} 个，"
+            f"文件 {summary.get('source_file_count', 0)} 个，"
+            f"错误 {summary.get('error_count', 0)} 个，"
+            f"警告 {summary.get('warning_count', 0)} 个"
+        )
 
     def get_values(self):
         if self.case_data is None:

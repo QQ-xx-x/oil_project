@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 from .input_tree import InputTree
 from .message_log import MessageLogPanel
@@ -69,15 +70,15 @@ class DockTabPanel(QFrame):
 
     def _tab_icon(self, title):
         icon_map = {
-            "输入": "folder",
-            "算例": "database",
-            "模板": "window",
-            "流程": "generic",
-            "模型": "database",
+            "输入": "case_root",
+            "算例": "case",
+            "模板": "folder",
+            "流程": "process",
+            "模型": "grid",
             "窗口": "window",
-            "结果": "import",
+            "结果": "result",
         }
-        return painted_icon(icon_map.get(title, "generic"), 16)
+        return painted_icon(semantic_icon_kind(icon_map.get(title, "generic"), title), 16)
 
     def _header_button(self, text, tooltip):
         button = QToolButton()
@@ -168,6 +169,7 @@ class ProjectShell(QWidget):
         self.input_tree.module_selected.connect(self._handle_module_selected)
         self.input_tree.module_checked.connect(self._handle_module_checked)
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
+        self.input_tree.case_dataset_built.connect(self._handle_case_dataset_built)
 
         self.results_tree = ResultsTree()
         self.results_tree.result_selected.connect(self._handle_result_selected)
@@ -287,6 +289,22 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[参数] 已更新 {title}：{self._compact_values(values)}")
         self._show_status(f"已更新参数：{title}")
+
+    def _handle_case_dataset_built(self, dataset_path, manifest):
+        validation = manifest.get("validation", {}) if isinstance(manifest, dict) else {}
+        array_count = len(manifest.get("arrays", {}) or {}) if isinstance(manifest, dict) else 0
+        source_file_count = len(manifest.get("source_files", []) or []) if isinstance(manifest, dict) else 0
+        error_count = validation.get("error_count")
+        warning_count = validation.get("warning_count")
+        if error_count is None:
+            error_count = len(validation.get("errors", []) or [])
+        if warning_count is None:
+            warning_count = len(validation.get("warnings", []) or [])
+        self.message_log.append_message(f"[CaseData] Dataset 已生成：{dataset_path}")
+        self.message_log.append_message(
+            f"[CaseData] Dataset 校验：数组 {array_count} 个，文件 {source_file_count} 个，"
+            f"错误 {error_count} 个，警告 {warning_count} 个")
+        self._show_status("CaseData Dataset 已生成")
 
     def _handle_result_selected(self, key, title, view):
         if key == "layer_control":

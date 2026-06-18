@@ -4,6 +4,7 @@
 from PyQt5.QtCore import QSize, pyqtSignal
 from PyQt5.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolButton
 
+from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 
 
@@ -14,19 +15,19 @@ class ViewToolbar(QFrame):
 
     TOOLSETS = {
         "3d": [
-            ("选择对象", "generic"), ("旋转视图", "undo"), ("平移视图", "window"),
-            ("缩放视图", "search"), ("适配全部", "monitor"), ("显示图例", "chart"),
-            ("切换背景", "window"), ("截图", "camera"),
+            ("选择对象", "select"), ("旋转视图", "undo"), ("平移视图", "pan"),
+            ("缩放视图", "search"), ("适配全部", "fit_view"), ("显示图例", "chart"),
+            ("切换背景", "background"), ("截图", "camera"),
         ],
         "2d": [
-            ("选择对象", "generic"), ("平移视图", "window"), ("缩放视图", "search"),
-            ("适配全部", "monitor"), ("比例尺", "chart"), ("显示网格", "grid"),
-            ("测量", "process"), ("截图", "camera"),
+            ("选择对象", "select"), ("平移视图", "pan"), ("缩放视图", "search"),
+            ("适配全部", "fit_view"), ("比例尺", "measure"), ("显示网格", "grid"),
+            ("测量", "measure"), ("截图", "camera"),
         ],
         "chart": [
-            ("刷新图表", "import"), ("框选缩放", "search"), ("重置视图", "undo"),
-            ("保存图像", "save"), ("显示图例", "chart"), ("曲线设置", "process"),
-            ("导出数据", "database"),
+            ("刷新图表", "refresh"), ("框选缩放", "search"), ("重置视图", "undo"),
+            ("保存图像", "save"), ("显示图例", "chart"), ("曲线设置", "settings"),
+            ("导出数据", "export"),
         ],
     }
 
@@ -40,7 +41,7 @@ class ViewToolbar(QFrame):
 
         for tooltip, kind, signal in [
             ("新建窗口", "new", self.new_window_requested),
-            ("复制当前窗口", "window", self.clone_window_requested),
+            ("复制当前窗口", "copy", self.clone_window_requested),
             ("关闭当前窗口", "warning", self.close_window_requested),
         ]:
             button = self._button(tooltip, kind)
@@ -78,7 +79,7 @@ class ViewToolbar(QFrame):
     def _button(self, tooltip, kind):
         button = QToolButton()
         button.setObjectName("viewToolbarButton")
-        button.setIcon(painted_icon(kind, 18))
+        button.setIcon(painted_icon(semantic_icon_kind(kind, tooltip), 18))
         button.setIconSize(QSize(18, 18))
         button.setToolTip(tooltip)
         button.setFixedSize(24, 23)
