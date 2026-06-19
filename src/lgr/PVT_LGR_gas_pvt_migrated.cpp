@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <utility>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -1322,6 +1323,11 @@ public:
     // --- 可配置参数 (通过 pybind 设置) ---
     std::string coord_file_path{"COORD.csv"};
     std::string zcorn_file_path{"ZCORN.csv"};
+    bool use_external_corner_point_grid{false};
+    int external_grid_nx{0}, external_grid_ny{0}, external_grid_nz{0};
+    std::vector<double> external_grid_coord;
+    std::vector<double> external_grid_zcorn;
+    std::vector<int> external_grid_actnum;
     int natural_frac_count{100};
     double natural_min_length{10.0};
     double natural_max_length{20.0};
@@ -1380,6 +1386,80 @@ public:
     void setCornerPointFiles(const std::string& coord_file, const std::string& zcorn_file) {
         coord_file_path = coord_file;
         zcorn_file_path = zcorn_file;
+        use_external_corner_point_grid = false;
+    }
+
+    void setCornerPointGrid(
+        int nx,
+        int ny,
+        int nz,
+        py::array_t<double, py::array::c_style | py::array::forcecast> coord_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> zcorn_array,
+        py::array_t<int, py::array::c_style | py::array::forcecast> actnum_array) {
+
+        if (nx <= 0 || ny <= 0 || nz <= 0) {
+            throw std::invalid_argument("Corner-point grid dimensions must be positive.");
+        }
+
+        const size_t npx = (size_t)nx + 1;
+        const size_t npy = (size_t)ny + 1;
+        const size_t n_parent = (size_t)nx * (size_t)ny * (size_t)nz;
+        const size_t expected_coord = npx * npy * 6;
+        const size_t expected_zcorn = n_parent * 8;
+
+        auto coord_buf = coord_array.request();
+        auto zcorn_buf = zcorn_array.request();
+        auto actnum_buf = actnum_array.request();
+        if (coord_buf.ndim != 1 || zcorn_buf.ndim != 1 || actnum_buf.ndim != 1) {
+            throw std::invalid_argument("Corner-point grid coord, zcorn, and actnum must be 1D arrays.");
+        }
+        if ((size_t)coord_buf.shape[0] != expected_coord) {
+            throw std::invalid_argument("grid_coord length must equal (nx + 1) * (ny + 1) * 6.");
+        }
+        if ((size_t)zcorn_buf.shape[0] != expected_zcorn) {
+            throw std::invalid_argument("grid_zcorn length must equal nx * ny * nz * 8.");
+        }
+        if ((size_t)actnum_buf.shape[0] != n_parent) {
+            throw std::invalid_argument("grid_actnum length must equal nx * ny * nz.");
+        }
+
+        auto coord = coord_array.unchecked<1>();
+        auto zcorn = zcorn_array.unchecked<1>();
+        auto actnum = actnum_array.unchecked<1>();
+
+        external_grid_coord.assign(expected_coord, 0.0);
+        external_grid_zcorn.assign(expected_zcorn, 0.0);
+        external_grid_actnum.assign(n_parent, 0);
+
+        for (size_t i = 0; i < expected_coord; ++i) {
+            double v = coord((py::ssize_t)i);
+            if (!std::isfinite(v)) {
+                throw std::invalid_argument("grid_coord contains non-finite values.");
+            }
+            external_grid_coord[i] = v;
+        }
+        for (size_t i = 0; i < expected_zcorn; ++i) {
+            double v = zcorn((py::ssize_t)i);
+            if (!std::isfinite(v)) {
+                throw std::invalid_argument("grid_zcorn contains non-finite values.");
+            }
+            external_grid_zcorn[i] = v;
+        }
+        int active_count = 0;
+        for (size_t i = 0; i < n_parent; ++i) {
+            int v = actnum((py::ssize_t)i);
+            external_grid_actnum[i] = v;
+            if (v == 1) active_count++;
+        }
+
+        external_grid_nx = nx;
+        external_grid_ny = ny;
+        external_grid_nz = nz;
+        use_external_corner_point_grid = true;
+        std::cout << "Loaded external corner-point grid arrays: "
+                  << nx << " x " << ny << " x " << nz
+                  << ", active cells = " << active_count << " / " << n_parent
+                  << std::endl;
     }
 
     void setDFNFractures(
@@ -2494,39 +2574,77 @@ public:
         return pc;
     }
 
-    bool buildParentGridFromCornerPointCSV(const std::string& coordFile, const std::string& zcornFile) {
+    double clampZToPillarRange(const Pillar& p, double z) const {
+        double zmin = std::min(p.top.z, p.bot.z);
+        double zmax = std::max(p.top.z, p.bot.z);
+        return clampd(z, zmin, zmax);
+    }
+
+    std::pair<double, double> normalizeCornerZPair(
+        const Pillar& p,
+        double raw_top,
+        double raw_bottom) const {
+
+        if (!p.has_top || !p.has_bot) {
+            throw std::runtime_error("pillar missing top or bottom endpoint.");
+        }
+        double z_top = clampZToPillarRange(p, raw_top);
+        double z_bottom = clampZToPillarRange(p, raw_bottom);
+
+        if (!(z_top > z_bottom)) {
+            z_top = p.top.z;
+            z_bottom = p.bot.z;
+        }
+        if (!(z_top > z_bottom)) {
+            throw std::runtime_error("cannot normalize corner Z pair because pillar top is not above bottom.");
+        }
+        return {z_top, z_bottom};
+    }
+
+    bool buildParentGridFromPillarsAndZCorn(
+        const std::vector<Pillar>& pillars,
+        int coord_max_i,
+        int coord_max_j,
+        const std::vector<std::array<double, 8>>& zcorn_cells,
+        int grid_nx,
+        int grid_ny,
+        int grid_nz,
+        const std::string& source_name) {
+
         parents.clear();
 
-        std::vector<Pillar> pillars;
-        std::vector<std::array<double, 8>> zcorn_cells;
-        int coord_max_i = 0, coord_max_j = 0;
-        int zcorn_max_i = 0, zcorn_max_j = 0, zcorn_max_k = 0;
-
-        if (!loadCOORD(coordFile, pillars, coord_max_i, coord_max_j)) {
-            std::cerr << "Error: failed to load COORD file." << std::endl;
+        if (grid_nx <= 0 || grid_ny <= 0 || grid_nz <= 0) {
+            std::cerr << "Error: corner-point grid dimensions must be positive." << std::endl;
             return false;
         }
-        if (!loadZCORN(zcornFile, zcorn_cells, zcorn_max_i, zcorn_max_j, zcorn_max_k)) {
-            std::cerr << "Error: failed to load ZCORN file." << std::endl;
-            return false;
-        }
-
-        if (coord_max_i != zcorn_max_i + 1) {
+        if (coord_max_i != grid_nx + 1) {
             std::cerr << "Error: inconsistent grid size in I direction: COORD max I = "
-                      << coord_max_i << ", but ZCORN max I = " << zcorn_max_i
-                      << " , expected COORD max I = ZCORN max I + 1." << std::endl;
+                      << coord_max_i << ", but grid Nx = " << grid_nx
+                      << " , expected COORD max I = Nx + 1." << std::endl;
             return false;
         }
-        if (coord_max_j != zcorn_max_j + 1) {
+        if (coord_max_j != grid_ny + 1) {
             std::cerr << "Error: inconsistent grid size in J direction: COORD max J = "
-                      << coord_max_j << ", but ZCORN max J = " << zcorn_max_j
-                      << " , expected COORD max J = ZCORN max J + 1." << std::endl;
+                      << coord_max_j << ", but grid Ny = " << grid_ny
+                      << " , expected COORD max J = Ny + 1." << std::endl;
+            return false;
+        }
+        const size_t expected_pillars = (size_t)coord_max_i * (size_t)coord_max_j;
+        const size_t expected_cells = (size_t)grid_nx * (size_t)grid_ny * (size_t)grid_nz;
+        if (pillars.size() != expected_pillars) {
+            std::cerr << "Error: pillar array size mismatch, got " << pillars.size()
+                      << ", expected " << expected_pillars << "." << std::endl;
+            return false;
+        }
+        if (zcorn_cells.size() != expected_cells) {
+            std::cerr << "Error: zcorn cell array size mismatch, got " << zcorn_cells.size()
+                      << ", expected " << expected_cells << "." << std::endl;
             return false;
         }
 
-        Nx = zcorn_max_i;
-        Ny = zcorn_max_j;
-        Nz = zcorn_max_k;
+        Nx = grid_nx;
+        Ny = grid_ny;
+        Nz = grid_nz;
 
         int n_parent = Nx * Ny * Nz;
         parents.resize(n_parent);
@@ -2604,11 +2722,136 @@ public:
             dx = dy = dz = 0.0;
         }
 
-        std::cout << "Parent corner-point grid initialized from CSV successfully." << std::endl;
+        std::cout << "Parent corner-point grid initialized from " << source_name
+                  << " successfully." << std::endl;
         std::cout << "Nx = " << Nx << ", Ny = " << Ny << ", Nz = " << Nz << std::endl;
         std::cout << "Pillars = " << coord_max_i << " x " << coord_max_j << std::endl;
         std::cout << "Parents = " << n_parent << std::endl;
         return true;
+    }
+
+    bool buildParentGridFromCornerPointCSV(const std::string& coordFile, const std::string& zcornFile) {
+        std::vector<Pillar> pillars;
+        std::vector<std::array<double, 8>> zcorn_cells;
+        int coord_max_i = 0, coord_max_j = 0;
+        int zcorn_max_i = 0, zcorn_max_j = 0, zcorn_max_k = 0;
+
+        if (!loadCOORD(coordFile, pillars, coord_max_i, coord_max_j)) {
+            std::cerr << "Error: failed to load COORD file." << std::endl;
+            return false;
+        }
+        if (!loadZCORN(zcornFile, zcorn_cells, zcorn_max_i, zcorn_max_j, zcorn_max_k)) {
+            std::cerr << "Error: failed to load ZCORN file." << std::endl;
+            return false;
+        }
+
+        return buildParentGridFromPillarsAndZCorn(
+            pillars,
+            coord_max_i,
+            coord_max_j,
+            zcorn_cells,
+            zcorn_max_i,
+            zcorn_max_j,
+            zcorn_max_k,
+            "CSV");
+    }
+
+    bool buildParentGridFromExternalArrays() {
+        if (!use_external_corner_point_grid) {
+            std::cerr << "Error: external corner-point grid arrays have not been set." << std::endl;
+            return false;
+        }
+
+        const int coord_max_i = external_grid_nx + 1;
+        const int coord_max_j = external_grid_ny + 1;
+        const size_t n_parent = (size_t)external_grid_nx * (size_t)external_grid_ny * (size_t)external_grid_nz;
+        const size_t expected_coord = (size_t)coord_max_i * (size_t)coord_max_j * 6;
+        const size_t expected_zcorn = n_parent * 8;
+
+        if (external_grid_coord.size() != expected_coord ||
+            external_grid_zcorn.size() != expected_zcorn ||
+            external_grid_actnum.size() != n_parent) {
+            std::cerr << "Error: external corner-point grid array cache is inconsistent." << std::endl;
+            return false;
+        }
+
+        std::vector<Pillar> pillars((size_t)coord_max_i * (size_t)coord_max_j);
+        for (int j = 0; j < coord_max_j; ++j) {
+            for (int i = 0; i < coord_max_i; ++i) {
+                size_t base = ((size_t)j * (size_t)coord_max_i + (size_t)i) * 6;
+                Point3 p0{external_grid_coord[base + 0],
+                          external_grid_coord[base + 1],
+                          external_grid_coord[base + 2]};
+                Point3 p1{external_grid_coord[base + 3],
+                          external_grid_coord[base + 4],
+                          external_grid_coord[base + 5]};
+                if (std::abs(p0.z - p1.z) < EPS) {
+                    std::cerr << "Error: external grid pillar(" << (i + 1) << "," << (j + 1)
+                              << ") has equal endpoint Z values." << std::endl;
+                    return false;
+                }
+                Pillar& p = pillars[flatPillarIndex(i, j, coord_max_i)];
+                if (p0.z > p1.z) {
+                    p.top = p0;
+                    p.bot = p1;
+                } else {
+                    p.top = p1;
+                    p.bot = p0;
+                }
+                p.has_top = true;
+                p.has_bot = true;
+            }
+        }
+
+        const size_t xy = (size_t)external_grid_nx * (size_t)external_grid_ny;
+        auto rawZ = [&](int i, int j, int k, int is_top_plane, int is_y_plus, int is_x_plus) -> double {
+            size_t plane = (size_t)(2 * k + (is_top_plane ? 1 : 0));
+            size_t idx = plane * 4 * xy
+                       + (size_t)j * 4 * (size_t)external_grid_nx
+                       + (size_t)is_y_plus * 2 * (size_t)external_grid_nx
+                       + (size_t)i * 2
+                       + (size_t)is_x_plus;
+            return external_grid_zcorn[idx];
+        };
+
+        std::vector<std::array<double, 8>> zcorn_cells(n_parent);
+        try {
+            for (int k = 0; k < external_grid_nz; ++k) {
+                for (int j = 0; j < external_grid_ny; ++j) {
+                    for (int i = 0; i < external_grid_nx; ++i) {
+                        const Pillar& p_ll = pillars[flatPillarIndex(i,     j,     coord_max_i)];
+                        const Pillar& p_lr = pillars[flatPillarIndex(i + 1, j,     coord_max_i)];
+                        const Pillar& p_ul = pillars[flatPillarIndex(i,     j + 1, coord_max_i)];
+                        const Pillar& p_ur = pillars[flatPillarIndex(i + 1, j + 1, coord_max_i)];
+
+                        auto z15 = normalizeCornerZPair(p_ll, rawZ(i, j, k, 1, 0, 0), rawZ(i, j, k, 0, 0, 0));
+                        auto z26 = normalizeCornerZPair(p_lr, rawZ(i, j, k, 1, 0, 1), rawZ(i, j, k, 0, 0, 1));
+                        auto z37 = normalizeCornerZPair(p_ul, rawZ(i, j, k, 1, 1, 1), rawZ(i, j, k, 0, 1, 1));
+                        auto z48 = normalizeCornerZPair(p_ur, rawZ(i, j, k, 1, 1, 0), rawZ(i, j, k, 0, 1, 0));
+
+                        std::array<double, 8> z{{
+                            z15.first, z26.first, z37.first, z48.first,
+                            z15.second, z26.second, z37.second, z48.second
+                        }};
+                        zcorn_cells[flatCellIndex(i, j, k, external_grid_nx, external_grid_ny)] = z;
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error while converting external corner-point arrays: "
+                      << e.what() << std::endl;
+            return false;
+        }
+
+        return buildParentGridFromPillarsAndZCorn(
+            pillars,
+            coord_max_i,
+            coord_max_j,
+            zcorn_cells,
+            external_grid_nx,
+            external_grid_ny,
+            external_grid_nz,
+            "external arrays");
     }
 
     std::array<Point3, 4> buildParentFaceSubQuad(const ParentCell& p, int face_id,
@@ -4749,11 +4992,15 @@ public:
     }
 
     SimulationResult runSimulation() {
-        if (coord_file_path.empty() || zcorn_file_path.empty()) {
-            throw std::runtime_error("Corner-point input files are not set. Call setCornerPointFiles(coord, zcorn) first.");
+        if (!use_external_corner_point_grid &&
+            (coord_file_path.empty() || zcorn_file_path.empty())) {
+            throw std::runtime_error(
+                "Corner-point grid is not set. Call setCornerPointGrid(...) or setCornerPointFiles(coord, zcorn) first.");
         }
 
-        std::cout << "Preprocessing (corner-point CSV parent grid + LGR + EDFM)..." << std::endl;
+        std::cout << "Preprocessing (corner-point "
+                  << (use_external_corner_point_grid ? "array" : "CSV")
+                  << " parent grid + LGR + EDFM)..." << std::endl;
         if (!preprocess()) {
             throw std::runtime_error("Preprocess failed.");
         }
@@ -4853,7 +5100,10 @@ public:
     bool preprocess() {
         if (enable_dual_porosity) validateDualPorosityParameters();
         buildGasPVTTable();
-        if (!buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path)) return false;
+        bool grid_ok = use_external_corner_point_grid
+            ? buildParentGridFromExternalArrays()
+            : buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path);
+        if (!grid_ok) return false;
         applyDFNContinuumPropertiesToParents();
         if (use_external_dfn_fractures) {
             fractures = external_dfn_fractures;
@@ -4940,6 +5190,7 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
     py::class_<SimulatorLGR>(m, "EDFMSimulator")
         .def(py::init<>())
         .def("setCornerPointFiles", &SimulatorLGR::setCornerPointFiles)
+        .def("setCornerPointGrid", &SimulatorLGR::setCornerPointGrid)
         .def("setDFNFractures", &SimulatorLGR::setDFNFractures)
         .def("setDFNContinuumProperties", &SimulatorLGR::setDFNContinuumProperties)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
