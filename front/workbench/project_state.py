@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """工作台工程面板共享的轻量状态。"""
 
+import copy
 import os
 from dataclasses import dataclass, field
 
@@ -10,6 +11,7 @@ class ProjectState:
     """Store UI-side project parameters without touching the legacy workflow."""
 
     project_name: str = ""
+    project_file_path: str = ""
     algorithm: str = "corner_edfm"
     corner_grid_refinement: str = "加密"
     case_data_path: str = ""
@@ -20,6 +22,7 @@ class ProjectState:
     case_dataset_summary: dict = field(default_factory=dict)
     checked_items: dict = field(default_factory=dict)
     module_values: dict = field(default_factory=dict)
+    ui_state: dict = field(default_factory=dict)
 
     def set_checked(self, key, checked):
         if key:
@@ -85,3 +88,44 @@ class ProjectState:
             return
         self.case_dataset_summary["stale"] = True
         self.case_dataset_summary["stale_reason"] = reason
+
+    def to_dict(self):
+        """导出轻量工程状态，用于写入 .oilproj。"""
+        return {
+            "project_name": self.project_name,
+            "project_file_path": self.project_file_path,
+            "algorithm": self.algorithm,
+            "corner_grid_refinement": self.corner_grid_refinement,
+            "case_data_path": self.case_data_path,
+            "case_data_summary": copy.deepcopy(self.case_data_summary),
+            "case_data_sections": copy.deepcopy(self.case_data_sections),
+            "case_data_schema": copy.deepcopy(self.case_data_schema),
+            "case_dataset_path": self.case_dataset_path,
+            "case_dataset_summary": copy.deepcopy(self.case_dataset_summary),
+            "checked_items": copy.deepcopy(self.checked_items),
+            "module_values": copy.deepcopy(self.module_values),
+            "ui_state": copy.deepcopy(self.ui_state),
+        }
+
+    @classmethod
+    def from_dict(cls, payload):
+        """从 .oilproj 载入轻量工程状态。"""
+        payload = payload or {}
+        state = cls(project_name=payload.get("project_name", ""))
+        for field_name in (
+            "project_file_path",
+            "algorithm",
+            "corner_grid_refinement",
+            "case_data_path",
+            "case_data_summary",
+            "case_data_sections",
+            "case_data_schema",
+            "case_dataset_path",
+            "case_dataset_summary",
+            "checked_items",
+            "module_values",
+            "ui_state",
+        ):
+            if field_name in payload:
+                setattr(state, field_name, copy.deepcopy(payload.get(field_name)))
+        return state

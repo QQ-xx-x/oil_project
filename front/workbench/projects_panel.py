@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon, project_thumbnail
+from .recent_projects import load_recent_projects
 
 
 class ProjectCard(QFrame):
@@ -16,6 +17,7 @@ class ProjectCard(QFrame):
     def __init__(self, name, path, accent, parent=None):
         super().__init__(parent)
         self.name = name
+        self.path = path
         self.setObjectName("projectCard")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 5, 6, 5)
@@ -40,7 +42,7 @@ class ProjectCard(QFrame):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.selected.emit(self.name)
+            self.selected.emit(self.path)
         super().mouseDoubleClickEvent(event)
 
 
@@ -94,15 +96,21 @@ class ProjectsPanel(QWidget):
         list_layout = QVBoxLayout(list_widget)
         list_layout.setContentsMargins(5, 5, 5, 5)
         list_layout.setSpacing(3)
-        projects = [
-            ("3.18.pet", r"E:\EdgeDownload\400jingju1200\400jingju1200", "#23b777"),
-            ("裂缝油藏示例.pet", r"D:\reservoir\projects\fracture_demo", "#dc9b22"),
-            ("三维网格对比.pet", r"D:\reservoir\projects\grid_compare", "#6694be"),
-            ("水平井开发.pet", r"D:\reservoir\projects\horizontal_well", "#5eab84"),
-            ("压力场分析.pet", r"D:\reservoir\projects\pressure_case", "#cf765a"),
-        ]
-        for name, path, accent in projects:
-            card = ProjectCard(name, path, accent)
+        accents = ["#23b777", "#dc9b22", "#6694be", "#5eab84", "#cf765a"]
+        projects = load_recent_projects(limit=8)
+        if not projects:
+            empty = QLabel("暂无最近工程")
+            empty.setObjectName("projectPath")
+            list_layout.addWidget(empty)
+        for index, item in enumerate(projects):
+            path = item.get("path", "")
+            display_path = path if item.get("exists", True) else f"{path}  (缺失)"
+            card = ProjectCard(
+                item.get("name", ""),
+                display_path,
+                accents[index % len(accents)],
+            )
+            card.path = path
             card.selected.connect(self.project_requested)
             list_layout.addWidget(card)
         list_layout.addStretch()

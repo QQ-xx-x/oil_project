@@ -72,9 +72,13 @@ class InputTree(QTreeWidget):
         if foreground:
             item.setForeground(0, QBrush(QColor(foreground)))
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+        effective_checked = checked
         if self.project_state is not None:
-            self.project_state.set_checked(key, checked)
+            if key in getattr(self.project_state, "checked_items", {}):
+                effective_checked = self.project_state.is_checked(key, checked)
+            else:
+                self.project_state.set_checked(key, checked)
+        item.setCheckState(0, Qt.Checked if effective_checked else Qt.Unchecked)
         return item
 
     def _populate(self):
@@ -128,7 +132,10 @@ class InputTree(QTreeWidget):
     def _emit_selection(self, current, previous):
         if current is None:
             return
-        self.module_selected.emit(current.data(0, KEY_ROLE), current.text(0))
+        key = current.data(0, KEY_ROLE)
+        if self.project_state is not None:
+            self.project_state.ui_state["input_tree_current_key"] = key
+        self.module_selected.emit(key, current.text(0))
 
     def _open_settings(self, item, column):
         key = item.data(0, KEY_ROLE)
@@ -274,6 +281,26 @@ class InputTree(QTreeWidget):
         if current_key:
             self.select_key(current_key)
 
+    def export_ui_state(self):
+        """导出输入树当前展开和选中状态。"""
+        current_key = None
+        if self.currentItem() is not None:
+            current_key = self.currentItem().data(0, KEY_ROLE)
+        return {
+            "current_key": current_key,
+            "expanded_keys": sorted(self._all_expanded_keys()),
+        }
+
+    def restore_ui_state(self, state):
+        """恢复输入树展开和选中状态。"""
+        state = state or {}
+        if "expanded_keys" in state:
+            self.collapseAll()
+        self._restore_expanded_keys_for_all(set(state.get("expanded_keys") or []))
+        current_key = state.get("current_key")
+        if current_key:
+            self.select_key(current_key)
+
     def _expanded_keys(self, root):
         keys = set()
 
@@ -286,6 +313,16 @@ class InputTree(QTreeWidget):
 
         visit(root)
         return keys
+
+    def _all_expanded_keys(self):
+        keys = set()
+        for index in range(self.topLevelItemCount()):
+            keys.update(self._expanded_keys(self.topLevelItem(index)))
+        return keys
+
+    def _restore_expanded_keys_for_all(self, keys):
+        for index in range(self.topLevelItemCount()):
+            self._restore_expanded_keys(self.topLevelItem(index), keys)
 
     def _restore_expanded_keys(self, root, keys):
         def visit(item):

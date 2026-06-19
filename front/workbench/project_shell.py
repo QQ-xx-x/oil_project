@@ -222,10 +222,63 @@ class ProjectShell(QWidget):
         main_splitter.setSizes([450, 1350])
         main_splitter.setCollapsible(0, False)
         layout.addWidget(main_splitter)
+        self.restore_ui_state()
 
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
         self._show_status(message.replace("[窗口] ", ""))
+
+    def collect_ui_state(self):
+        """保存工程前收集当前界面状态。"""
+        state = dict(getattr(self.project_state, "ui_state", {}) or {})
+        state["input_tree"] = self.input_tree.export_ui_state()
+        state["upper_tab_index"] = self.upper_tabs.tab_widget.currentIndex()
+        state["lower_tab_index"] = self.lower_tabs.tab_widget.currentIndex()
+        state["workspace_tab_index"] = self.workspace.currentIndex()
+        self.project_state.ui_state = state
+        return state
+
+    def restore_ui_state(self):
+        """打开工程后恢复可恢复的界面状态。"""
+        state = getattr(self.project_state, "ui_state", {}) or {}
+        tree_state = state.get("input_tree") or {}
+        if not tree_state and state.get("input_tree_current_key"):
+            tree_state = {"current_key": state.get("input_tree_current_key")}
+        self.input_tree.restore_ui_state(tree_state)
+        self._restore_tab_index(self.upper_tabs.tab_widget, state.get("upper_tab_index"))
+        self._restore_tab_index(self.lower_tabs.tab_widget, state.get("lower_tab_index"))
+        self._restore_tab_index(self.workspace, state.get("workspace_tab_index"))
+
+    def _restore_tab_index(self, tab_widget, index):
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return
+        if 0 <= index < tab_widget.count():
+            tab_widget.setCurrentIndex(index)
+
+    def log_project_references(self, validation=None):
+        """在日志里报告工程引用的数据状态。"""
+        case_data_path = getattr(self.project_state, "case_data_path", "")
+        dataset_path = getattr(self.project_state, "case_dataset_path", "")
+        if case_data_path:
+            self.message_log.append_message(f"[工程] CaseData：{case_data_path}")
+        else:
+            self.message_log.append_message("[工程] 尚未绑定 CaseData 文件")
+        if dataset_path:
+            summary = getattr(self.project_state, "case_dataset_summary", {}) or {}
+            self.message_log.append_message(
+                f"[工程] Dataset：{dataset_path} | "
+                f"数组 {summary.get('array_count', 0)} 个，"
+                f"错误 {summary.get('error_count', 0)} 个，"
+                f"警告 {summary.get('warning_count', 0)} 个")
+        else:
+            self.message_log.append_message("[工程] 尚未绑定 Dataset 目录")
+        validation = validation or {}
+        for warning in validation.get("warnings", []) or []:
+            self.message_log.append_message(f"[工程警告] {warning}")
+        for error in validation.get("errors", []) or []:
+            self.message_log.append_message(f"[工程错误] {error}")
 
     def activate_module(self, module_key):
         routes = {

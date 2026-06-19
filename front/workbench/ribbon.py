@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
+from .recent_projects import load_recent_projects
 
 
 def _action(text, kind="generic", size="medium", tooltip=None, command=None,
@@ -163,6 +164,42 @@ class RibbonGroup(QFrame):
         return column
 
 
+class RecentProjectCard(QFrame):
+    selected = pyqtSignal(str)
+
+    def __init__(self, index, name, path, exists=True, parent=None):
+        super().__init__(parent)
+        self.project_path = path
+        self.setObjectName("fileMenuRecentCard")
+        self.setCursor(Qt.PointingHandCursor)
+        state_text = "存在" if exists else "文件缺失"
+        self.setToolTip(f"最近工程：{path}\n状态：{state_text}")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 7, 10, 7)
+        layout.setSpacing(9)
+
+        number = QLabel(str(index))
+        number.setObjectName("fileMenuRecentIndex")
+        layout.addWidget(number)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(1)
+        title = QLabel(name)
+        title.setObjectName("fileMenuRecentName")
+        path_label = QLabel(path if exists else f"{path}  (缺失)")
+        path_label.setObjectName("fileMenuRecentPath")
+        text_layout.addWidget(title)
+        text_layout.addWidget(path_label)
+        layout.addLayout(text_layout, 1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.selected.emit(self.project_path)
+        super().mousePressEvent(event)
+
+
 class FileMenuPopup(QFrame):
     command_requested = pyqtSignal(str)
     _project_commands = {"保存工程", "工程另存为", "工程设置", "工程工具", "打印"}
@@ -224,13 +261,13 @@ class FileMenuPopup(QFrame):
         recent_column.setContentsMargins(24, 18, 24, 18)
         recent_column.setSpacing(10)
         recent_column.addWidget(self._title("最近工程"))
-        for idx, (name, path) in enumerate([
-            ("3.18.pet", r"E:\...\3.18.pet"),
-            ("400jingju", r"D:\petrelobject\400jingju"),
-            ("4501200.pet", r"D:\petrelobject\4501200.pet"),
-        ], start=1):
-            recent_column.addWidget(self._recent_card(idx, name, path))
+        self.recent_list = QWidget()
+        self.recent_list_layout = QVBoxLayout(self.recent_list)
+        self.recent_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.recent_list_layout.setSpacing(10)
+        recent_column.addWidget(self.recent_list)
         recent_column.addStretch()
+        self.refresh_recent_projects()
 
         root.addWidget(menu_panel)
         root.addWidget(content_panel, 1)
@@ -260,29 +297,34 @@ class FileMenuPopup(QFrame):
         self._command_buttons.setdefault(command, []).append(button)
         return button
 
-    def _recent_card(self, index, name, path):
-        card = QFrame()
-        card.setObjectName("fileMenuRecentCard")
-        card.setToolTip(f"最近打开的工程：{path}")
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(10, 7, 10, 7)
-        layout.setSpacing(9)
+    def refresh_recent_projects(self):
+        self._clear_recent_projects()
+        projects = load_recent_projects(limit=6)
+        if not projects:
+            empty = QLabel("暂无最近工程")
+            empty.setObjectName("fileMenuRecentPath")
+            self.recent_list_layout.addWidget(empty)
+            return
+        for index, item in enumerate(projects, start=1):
+            card = RecentProjectCard(
+                index,
+                item.get("name", ""),
+                item.get("path", ""),
+                item.get("exists", True),
+            )
+            card.selected.connect(self._emit_recent_project)
+            self.recent_list_layout.addWidget(card)
 
-        number = QLabel(str(index))
-        number.setObjectName("fileMenuRecentIndex")
-        layout.addWidget(number)
+    def _clear_recent_projects(self):
+        while self.recent_list_layout.count():
+            item = self.recent_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-        text_layout = QVBoxLayout()
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(1)
-        title = QLabel(name)
-        title.setObjectName("fileMenuRecentName")
-        path_label = QLabel(path)
-        path_label.setObjectName("fileMenuRecentPath")
-        text_layout.addWidget(title)
-        text_layout.addWidget(path_label)
-        layout.addLayout(text_layout, 1)
-        return card
+    def _emit_recent_project(self, path):
+        self.hide()
+        self.command_requested.emit(f"open_recent_project::{path}")
 
     def set_project_mode(self, enabled):
         for command in self._project_commands:
@@ -336,6 +378,10 @@ class RibbonWidget(QTabWidget):
             return
         self._project_mode = enabled
         self._rebuild_tabs()
+
+    def refresh_recent_projects(self):
+        if self.file_menu is not None:
+            self.file_menu.refresh_recent_projects()
 
     def _rebuild_tabs(self):
         self._suppress_tab_handler = True
@@ -399,6 +445,7 @@ class RibbonWidget(QTabWidget):
             self.file_menu = FileMenuPopup(self)
             self.file_menu.command_requested.connect(self.command_requested)
         self.file_menu.set_project_mode(self._project_mode)
+        self.file_menu.refresh_recent_projects()
         tab_bar = self.tabBar()
         menu_pos = tab_bar.mapToGlobal(tab_bar.rect().bottomLeft())
         self.file_menu.move(menu_pos)
@@ -487,9 +534,7 @@ class RibbonWidget(QTabWidget):
                 _action("退出", "warning", "medium", "退出软件"),
             ]),
             ("最近工程", [
-                _action("3.18.pet", "folder", "small", "最近打开的工程：E:\\...\\3.18.pet"),
-                _action("400jingju", "folder", "small", "最近打开的工程目录"),
-                _action("教学算例", "folder", "small", "最近打开的教学算例"),
+                _action("打开工程", "folder", "small", "在文件菜单右侧查看最近工程", command="打开工程"),
             ]),
         ])
         return page
