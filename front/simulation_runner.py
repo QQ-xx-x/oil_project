@@ -273,6 +273,43 @@ def apply_corner_gas_pvt_properties(sim, params):
     )
 
 
+def apply_corner_rock_property_arrays(sim, params):
+    """将 MATRIX_* / DFN_* / SIGMA 文件的 per-cell 数组传入 C++。
+
+    如果模块不支持 setRockPropertyArrays 或数据文件未指定，静默跳过。
+    """
+    if not hasattr(sim, 'setRockPropertyArrays'):
+        return
+
+    data_dir = params.get('property_data_dir', '')
+    if not data_dir or not os.path.isdir(data_dir):
+        return
+
+    try:
+        from .uniform_parser import parse_property
+    except Exception:
+        print("uniform_parser not available; rock property arrays skipped")
+        return
+
+    def _load(name):
+        path = os.path.join(data_dir, name)
+        if os.path.isfile(path):
+            return parse_property(path)
+        return []
+
+    sim.setRockPropertyArrays(
+        _load('MATRIX_PORO.txt'),
+        _load('MATRIX_PERMX.txt'),
+        _load('MATRIX_PERMY.txt'),
+        _load('MATRIX_PERMZ.txt'),
+        _load('DFN_PORO.txt'),
+        _load('DFN_PERMX.txt'),
+        _load('DFN_PERMY.txt'),
+        _load('DFN_PERMZ.txt'),
+        _load('SIGMA.txt'),
+    )
+
+
 def _resolve_gas_water_initial_state(params):
     """Normalize the gas-water initial state for both new and legacy bindings."""
     pressure = float(params.get('pressure', 800.0))
@@ -361,6 +398,7 @@ def run_corner_edfm_simulation(params):
     )
     apply_corner_fluid_properties(sim, params)
     apply_corner_gas_pvt_properties(sim, params)
+    apply_corner_rock_property_arrays(sim, params)
     if use_lgr_module and hasattr(sim, 'setInitialStateParameters'):
         apply_corner_initial_state(sim, params)
     if use_lgr_module and hasattr(sim, 'setLGRParameters'):

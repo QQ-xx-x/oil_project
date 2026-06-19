@@ -178,13 +178,18 @@ struct Fracture {
     bool is_hydraulic{false};
 };
 
+struct RockProps {
+    double phi{0.0};
+    double K[3]{0.0, 0.0, 0.0};
+};
+
 struct ParentCell {
     int parent_id{-1};
     int ix{}, iy{}, iz{};
     Point3 center{0,0,0};
     double dx{}, dy{}, dz{}, vol{0.0};
-    double phi{0.0};
-    double K[3]{};
+    RockProps matrix_rock;
+    RockProps fracture_continuum_rock;
     double depth{0.0};
     std::array<Point3, 8> corners{};
     std::array<int, 6> face_ids{{-1,-1,-1,-1,-1,-1}};
@@ -201,8 +206,8 @@ struct LeafCell {
     uint16_t lix{0}, liy{0}, liz{0};
     Point3 center{0,0,0};
     double dx{}, dy{}, dz{}, vol{0.0};
-    double phi{0.0};
-    double K[3]{};
+    RockProps matrix_rock;
+    RockProps fracture_continuum_rock;
     double depth{0.0};
     std::array<Point3, 8> corners{};
     std::array<int, 6> face_ids{{-1,-1,-1,-1,-1,-1}};
@@ -611,12 +616,11 @@ static double dbarHexQuad(const HexCell& cell, const Fracture& f, int nsu, int n
     return (cnt > 0) ? (sum / cnt) : 1e30;
 }
 
-template<typename HexCell>
-static double normalProjectedPerm(const HexCell& c, const Point3& n_unit) {
+static double normalProjectedPerm(const RockProps& rock, const Point3& n_unit) {
     return
-        n_unit.x * n_unit.x * c.K[0] +
-        n_unit.y * n_unit.y * c.K[1] +
-        n_unit.z * n_unit.z * c.K[2];
+        n_unit.x * n_unit.x * rock.K[0] +
+        n_unit.y * n_unit.y * rock.K[1] +
+        n_unit.z * n_unit.z * rock.K[2];
 }
 
 template<typename HexCell>
@@ -626,11 +630,13 @@ static double centerToFaceNormalDistance(const HexCell& c, const FaceGeom& f) {
 }
 
 template<typename HexCell>
-static double computeMMTransmissibilityTPFA(const HexCell& cu, const HexCell& cv, const FaceGeom& f) {
+static double computeMMTransmissibilityTPFA(const HexCell& cu, const RockProps& rock_u,
+                                           const HexCell& cv, const RockProps& rock_v,
+                                           const FaceGeom& f) {
     double Af = f.area;
     if (Af <= EPS) return 0.0;
-    double kn_u = normalProjectedPerm(cu, f.normal);
-    double kn_v = normalProjectedPerm(cv, f.normal);
+    double kn_u = normalProjectedPerm(rock_u, f.normal);
+    double kn_v = normalProjectedPerm(rock_v, f.normal);
     if (kn_u <= EPS || kn_v <= EPS) return 0.0;
     double du = centerToFaceNormalDistance(cu, f);
     double dv = centerToFaceNormalDistance(cv, f);
@@ -662,13 +668,14 @@ static double averageDistanceCellToPlane(const HexCell& cell, const Point3& plan
 }
 
 template<typename HexCell>
-static double computeMatrixFractureTransmissibility(const HexCell& cell, const Segment& seg, int nxs = 2, int nys = 2, int nzs = 2) {
+static double computeMatrixFractureTransmissibility(const HexCell& cell, const RockProps& rock,
+                                                   const Segment& seg, int nxs = 2, int nys = 2, int nzs = 2) {
     if (seg.area <= EPS) return 0.0;
     Point3 n = seg.normal;
     double nn = n.norm();
     if (nn < EPS) return 0.0;
     n = n * (1.0 / nn);
-    double Kn = normalProjectedPerm(cell, n);
+    double Kn = normalProjectedPerm(rock, n);
     if (Kn <= EPS) return 0.0;
     double d_avg = averageDistanceCellToPlane(cell, seg.center, n, nxs, nys, nzs);
     double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
@@ -680,6 +687,7 @@ static double computeMatrixFractureTransmissibility(const HexCell& cell, const S
 
 template<typename HexCell>
 static double computeContinuumToExplicitFractureTransmissibility(const HexCell& cell,
+                                                                 const RockProps& rock,
                                                                  const Segment& seg,
                                                                  int nxs = 2,
                                                                  int nys = 2,
@@ -689,7 +697,7 @@ static double computeContinuumToExplicitFractureTransmissibility(const HexCell& 
     double nn = n.norm();
     if (nn < EPS) return 0.0;
     n = n * (1.0 / nn);
-    double Kn = normalProjectedPerm(cell, n);
+    double Kn = normalProjectedPerm(rock, n);
     if (Kn <= EPS) return 0.0;
     double d_avg = averageDistanceCellToPlane(cell, seg.center, n, nxs, nys, nzs);
     double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
@@ -1328,6 +1336,21 @@ public:
     double fracture_volume_fraction{0.02};
     double wr_shape_factor{0.12};
 
+    // per-cell 属性数组（外部文件读入后灌入，空 = 回退到以上全局常数）
+    std::vector<double> matrix_phi_arr;
+    std::vector<double> matrix_kx_arr;
+    std::vector<double> matrix_ky_arr;
+    std::vector<double> matrix_kz_arr;
+    std::vector<double> fracture_phi_arr;
+    std::vector<double> fracture_kx_arr;
+    std::vector<double> fracture_ky_arr;
+    std::vector<double> fracture_kz_arr;
+    std::vector<double> sigma_arr;
+
+    /// 数组已加载且索引有效时返回 true
+    bool hasPerCellRockData() const { return !matrix_phi_arr.empty(); }
+    bool hasPerCellSigma()     const { return !sigma_arr.empty(); }
+
     SimulatorLGR() {
         dx = Lx / Nx;
         dy = Ly / Ny;
@@ -1611,6 +1634,30 @@ public:
         wr_shape_factor = wr_shape_factor_val;
     }
 
+    /// 从 Python 端传入 per-cell 数组（MATRIX_* / DFN_* / SIGMA 文件解析结果）
+    /// 数组为空表示该属性不覆盖，沿用全局常数
+    void setRockPropertyArrays(
+        const std::vector<double>& matrix_phi,
+        const std::vector<double>& matrix_kx,
+        const std::vector<double>& matrix_ky,
+        const std::vector<double>& matrix_kz,
+        const std::vector<double>& fracture_phi,
+        const std::vector<double>& fracture_kx,
+        const std::vector<double>& fracture_ky,
+        const std::vector<double>& fracture_kz,
+        const std::vector<double>& sigma)
+    {
+        matrix_phi_arr    = matrix_phi;
+        matrix_kx_arr     = matrix_kx;
+        matrix_ky_arr     = matrix_ky;
+        matrix_kz_arr     = matrix_kz;
+        fracture_phi_arr  = fracture_phi;
+        fracture_kx_arr   = fracture_kx;
+        fracture_ky_arr   = fracture_ky;
+        fracture_kz_arr   = fracture_kz;
+        sigma_arr         = sigma;
+    }
+
     void validateDualPorosityParameters() const {
         auto require_positive = [](double v, const char* name) {
             if (!std::isfinite(v) || v <= 0.0) {
@@ -1644,19 +1691,53 @@ public:
         }
     }
 
+    static RockProps makeRockProps(double phi, double kx, double ky, double kz) {
+        RockProps rock;
+        rock.phi = phi;
+        rock.K[0] = kx;
+        rock.K[1] = ky;
+        rock.K[2] = kz;
+        return rock;
+    }
+
     void applyRockProperties(ParentCell& pc) const {
-        if (enable_dual_porosity) {
-            double vf = std::max(fracture_volume_fraction, 1e-12);
-            pc.phi = phi_fracture;
-            pc.K[0] = k_fracture_x * vf;
-            pc.K[1] = k_fracture_y * vf;
-            pc.K[2] = k_fracture_z * vf;
+        int idx = flatCellIndex(pc.ix, pc.iy, pc.iz, Nx, Ny);
+        int total = Nx * Ny * Nz;
+
+        // ------ 基质属性 ------
+        if (hasPerCellRockData() && idx >= 0 && idx < (int)matrix_phi_arr.size()) {
+            pc.matrix_rock = makeRockProps(
+                matrix_phi_arr[idx],
+                matrix_kx_arr[idx],
+                matrix_ky_arr[idx],
+                matrix_kz_arr[idx]);
         } else {
-            pc.phi = phi_matrix;
-            pc.K[0] = k_matrix_x;
-            pc.K[1] = k_matrix_y;
-            pc.K[2] = k_matrix_z;
+            pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
         }
+
+        // ------ 裂缝等效连续介质属性 ------
+        double vf = std::max(fracture_volume_fraction, 1e-12);
+        if (hasPerCellRockData() && idx >= 0 && idx < (int)fracture_phi_arr.size()) {
+            pc.fracture_continuum_rock = makeRockProps(
+                fracture_phi_arr[idx],
+                fracture_kx_arr[idx] * vf,
+                fracture_ky_arr[idx] * vf,
+                fracture_kz_arr[idx] * vf);
+        } else {
+            pc.fracture_continuum_rock = makeRockProps(
+                phi_fracture,
+                k_fracture_x * vf,
+                k_fracture_y * vf,
+                k_fracture_z * vf);
+        }
+    }
+
+    const RockProps& activeContinuumRock(const ParentCell& pc) const {
+        return enable_dual_porosity ? pc.fracture_continuum_rock : pc.matrix_rock;
+    }
+
+    const RockProps& activeContinuumRock(const LeafCell& lc) const {
+        return enable_dual_porosity ? lc.fracture_continuum_rock : lc.matrix_rock;
     }
 
     int wrMatrixBase() const {
@@ -2624,10 +2705,8 @@ public:
         lc.lix = li;
         lc.liy = lj;
         lc.liz = lk;
-        lc.phi = p.phi;
-        lc.K[0] = p.K[0];
-        lc.K[1] = p.K[1];
-        lc.K[2] = p.K[2];
+        lc.matrix_rock = p.matrix_rock;
+        lc.fracture_continuum_rock = p.fracture_continuum_rock;
 
         double u0 = (double)li / (double)p.Nrx;
         double u1 = (double)(li + 1) / (double)p.Nrx;
@@ -3173,8 +3252,8 @@ public:
                 lc.leaf_id = lid;
                 lc.parent_id = p.parent_id;
                 lc.lix = 0; lc.liy = 0; lc.liz = 0;
-                lc.phi = p.phi;
-                lc.K[0] = p.K[0]; lc.K[1] = p.K[1]; lc.K[2] = p.K[2];
+                lc.matrix_rock = p.matrix_rock;
+                lc.fracture_continuum_rock = p.fracture_continuum_rock;
                 lc.corners = p.corners;
                 lc.face_ids = {{-1,-1,-1,-1,-1,-1}};
                 computeCellDerivedGeometry(lc);
@@ -3203,7 +3282,10 @@ public:
         for (const auto& f : mm_faces) {
             if (f.owner < 0 || f.neighbor < 0) continue;
             int u = f.owner, v = f.neighbor;
-            double T = computeMMTransmissibilityTPFA(leaves[u], leaves[v], f);
+            double T = computeMMTransmissibilityTPFA(
+                leaves[u], activeContinuumRock(leaves[u]),
+                leaves[v], activeContinuumRock(leaves[v]),
+                f);
             if (T <= EPS) continue;
             int a = std::min(u, v);
             int b = std::max(u, v);
@@ -3274,9 +3356,10 @@ public:
                             seg.poly = poly;
                             if (enable_dual_porosity) {
                                 seg.T_mf = computeContinuumToExplicitFractureTransmissibility(
-                                    lc, seg, 2, 2, 2);
+                                    lc, activeContinuumRock(lc), seg, 2, 2, 2);
                             } else {
-                                seg.T_mf = computeMatrixFractureTransmissibility(lc, seg, 2, 2, 2);
+                                seg.T_mf = computeMatrixFractureTransmissibility(
+                                    lc, lc.matrix_rock, seg, 2, 2, 2);
                             }
                             fillSegmentFaceGeom(seg, lc, mm_faces);
 
@@ -3413,8 +3496,9 @@ public:
         std::cout << "FF edges built (real-geometry): " << ff_out.size() << std::endl;
     }
 
-    double matrixPermForWarrenRootTransfer() const {
-        return (k_matrix_x + k_matrix_y + k_matrix_z) / 3.0;
+    double matrixPermForWarrenRootTransfer(const LeafCell& leaf) const {
+        const RockProps& rock = leaf.matrix_rock;
+        return (rock.K[0] + rock.K[1] + rock.K[2]) / 3.0;
     }
 
     void buildDualPorosityTransferConnections(std::vector<Connection>& wr_mf_out) {
@@ -3425,11 +3509,17 @@ public:
 
         validateDualPorosityParameters();
 
-        double k_eff = matrixPermForWarrenRootTransfer();
         int n_local_wr = 0;
         for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            double k_eff = matrixPermForWarrenRootTransfer(leaves[leaf]);
+            int parent_idx = leaves[leaf].parent_id;
+            double sigma_val = wr_shape_factor; // 默认回退
+            if (hasPerCellSigma() && parent_idx >= 0 && parent_idx < (int)sigma_arr.size()) {
+                double s = sigma_arr[parent_idx];
+                if (s != 99999.0 && std::isfinite(s)) sigma_val = s;
+            }
             double T_wr = FLOW_BETA
-                        * wr_shape_factor
+                        * sigma_val
                         * k_eff
                         * std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
             if (!std::isfinite(T_wr) || T_wr <= EPS) continue;
@@ -3662,7 +3752,7 @@ public:
 
     double nodePhi(int i) const {
         if (isLeafNode(i)) {
-            return enable_dual_porosity ? phi_fracture : leaves[i].phi;
+            return activeContinuumRock(leaves[i]).phi;
         }
 
         if (isSegmentNode(i)) {
@@ -3670,7 +3760,8 @@ public:
         }
 
         if (isWRMatrixNode(i)) {
-            return phi_matrix;
+            int leaf = i - wrMatrixBase();
+            return leaves[leaf].matrix_rock.phi;
         }
 
         return 1e-12;
@@ -3757,7 +3848,8 @@ public:
         auto props_matrix = getProps(matrix_ad);
         double matrix_vol = std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
         auto R_acc = computeAccumulation_AD(
-            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol, phi_matrix);
+            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol,
+            leaves[leaf].matrix_rock.phi);
         auto F_lm = computeFlux_FastAD(
             wr_transfer_T[leaf], leaf_ad, matrix_ad, props_leaf, props_matrix);
 
@@ -4427,6 +4519,7 @@ public:
         auto r = result.mutable_unchecked<2>();
         for (int i = 0; i < n_leaf; ++i) {
             const auto& c = leaves[i];
+            const RockProps& rock = activeContinuumRock(c);
             r(i, 0) = static_cast<double>(c.leaf_id);
             r(i, 1) = static_cast<double>(c.parent_id);
             r(i, 2) = static_cast<double>(c.lix);
@@ -4437,10 +4530,10 @@ public:
                 r(i, 4 + j*3 + 2) = c.corners[j].z;
             }
             r(i, 28) = states[i].P;
-            r(i, 29) = c.K[0];
-            r(i, 30) = c.K[1];
-            r(i, 31) = c.K[2];
-            r(i, 32) = c.phi;
+            r(i, 29) = rock.K[0];
+            r(i, 30) = rock.K[1];
+            r(i, 31) = rock.K[2];
+            r(i, 32) = rock.phi;
             r(i, 33) = states[i].Sw;
         }
         return result;
@@ -4592,53 +4685,23 @@ public:
 
         file.close();
 
-        std::cout << "Writing field data to final_field_lgr" << run_tag << ".csv/.bin" << std::endl;
-
+        std::cout << "Writing field data to final_field_lgr" << run_tag << ".csv" << std::endl;
         std::ofstream field("final_field_lgr" + run_tag + ".csv");
-        std::ofstream bin("final_field_lgr" + run_tag + ".bin", std::ios::binary);
-
-        int32_t n_cols = enable_dual_porosity ? 11 : 8;
-        int32_t n_leaf_bin = static_cast<int32_t>(n_leaf);
-        bin.write(reinterpret_cast<const char*>(&n_leaf_bin), sizeof(int32_t));
-        bin.write(reinterpret_cast<const char*>(&n_cols),    sizeof(int32_t));
-
         field << "leaf_id,parent_id,x,y,z,P,Sw,Sg";
         if (enable_dual_porosity) field << ",P_matrix,Sw_matrix,Sg_matrix";
         field << "\n";
-        field << std::setprecision(16);
         for (int i=0;i<n_leaf;++i) {
             double sg_leaf = 1.0 - states[i].Sw;
             field << i << "," << leaves[i].parent_id << ","
                   << leaves[i].center.x << "," << leaves[i].center.y << "," << leaves[i].center.z << ","
                   << states[i].P << "," << states[i].Sw << "," << sg_leaf;
-
-            double row[8] = {
-                static_cast<double>(i),
-                static_cast<double>(leaves[i].parent_id),
-                leaves[i].center.x,
-                leaves[i].center.y,
-                leaves[i].center.z,
-                states[i].P,
-                states[i].Sw,
-                sg_leaf
-            };
-            bin.write(reinterpret_cast<const char*>(row), sizeof(row));
-
             if (enable_dual_porosity && (int)wr_matrix_states.size() == n_leaf) {
                 double sg_matrix = 1.0 - wr_matrix_states[i].Sw;
                 field << "," << wr_matrix_states[i].P << "," << wr_matrix_states[i].Sw << "," << sg_matrix;
-
-                double row_extra[3] = {
-                    wr_matrix_states[i].P,
-                    wr_matrix_states[i].Sw,
-                    sg_matrix
-                };
-                bin.write(reinterpret_cast<const char*>(row_extra), sizeof(row_extra));
             }
             field << "\n";
         }
         field.close();
-        bin.close();
     }
 
     bool preprocess() {
@@ -4755,6 +4818,16 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("matrix_volume_fraction") = 0.98,
              py::arg("fracture_volume_fraction") = 0.02,
              py::arg("wr_shape_factor") = 0.12)
+        .def("setRockPropertyArrays", &SimulatorLGR::setRockPropertyArrays,
+             py::arg("matrix_phi"),
+             py::arg("matrix_kx"),
+             py::arg("matrix_ky"),
+             py::arg("matrix_kz"),
+             py::arg("fracture_phi"),
+             py::arg("fracture_kx"),
+             py::arg("fracture_ky"),
+             py::arg("fracture_kz"),
+             py::arg("sigma"))
         .def("setOilWaterProperties", &SimulatorLGR::setOilWaterProperties,
              py::arg("mu_w"),
              py::arg("mu_o"),
