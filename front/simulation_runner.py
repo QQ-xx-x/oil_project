@@ -43,6 +43,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 def run_simulation(params):
     """执行模拟并返回 SimulationData。"""
+    if params.get('interface_source') == 'case_data':
+        return run_case_data_simulation(params)
     algorithm = params.get('algorithm', 'black_oil')
     if algorithm == 'corner_edfm':
         return run_corner_edfm_simulation(params)
@@ -320,6 +322,154 @@ def apply_corner_initial_state(sim, params):
     sim.setInitialStateParameters(pressure, sw, sg)
 
 
+def run_case_data_simulation(params):
+    """执行 CaseData 接入流程的模拟。
+
+    这个分支面向新的 CaseData 输入链路。当前算法 pybind 还没有最终确认，
+    因此 grid.inc 和属性文件使用显式接口探测：接口存在就调用，不存在就给出
+    清晰错误或警告，避免误走旧的 coord_file/zcorn_file 流程。
+    """
+    refinement_mode = params.get('corner_grid_refinement', '不加密')
+    use_lgr_module = refinement_mode == '加密'
+    edfm_core_corner = load_corner_edfm_lgr_module() if use_lgr_module else load_corner_edfm_module()
+    sim = edfm_core_corner.EDFMSimulator()
+
+    _apply_case_data_grid_file(sim, params)
+    _apply_case_data_property_files(sim, params)
+    _apply_case_data_fracture_file(sim, params)
+
+    if hasattr(sim, 'setWellParameters'):
+        sim.setWellParameters(
+            float(params.get('well_radius', 0.05)),
+            float(params.get('well_pressure', 100.0)),
+        )
+    apply_corner_fluid_properties(sim, params)
+    apply_corner_gas_pvt_properties(sim, params)
+    apply_corner_initial_state(sim, params)
+
+    if hasattr(sim, 'setLGRParameters'):
+        sim.setLGRParameters(
+            bool(params.get('enable_lgr', True)),
+            float(params.get('d_threshold', 5.05)),
+            int(params.get('lgr_nrx', 2)),
+            int(params.get('lgr_nry', 2)),
+            int(params.get('lgr_nrz', 2)),
+        )
+    _apply_case_data_solver_parameters(sim, params)
+
+    result = sim.runSimulation()
+    return _collect_case_data_simulation_result(sim, result, params)
+
+
+def _apply_case_data_grid_file(sim, params):
+    grid_file = params.get('grid_file', '')
+    if not grid_file:
+        raise ValueError("CaseData 缺少 grid_file，无法运行模拟")
+    if hasattr(sim, 'setGridFile'):
+        sim.setGridFile(grid_file)
+        return
+    if hasattr(sim, 'setGridIncFile'):
+        sim.setGridIncFile(grid_file)
+        return
+    raise RuntimeError(
+        "当前算法 pybind 尚未提供 grid.inc 接口。"
+        "请在 C++ 侧新增 setGridFile(grid_file) 或 setGridIncFile(grid_file)。"
+    )
+
+
+def _apply_case_data_property_files(sim, params):
+    property_args = (
+        params.get('matrix_phi_file', ''),
+        params.get('matrix_kx_file', ''),
+        params.get('matrix_ky_file', ''),
+        params.get('matrix_kz_file', ''),
+        params.get('fracture_phi_file', ''),
+        params.get('fracture_kx_file', ''),
+        params.get('fracture_ky_file', ''),
+        params.get('fracture_kz_file', ''),
+        params.get('sigma_file', ''),
+    )
+    if hasattr(sim, 'setPropertyFiles'):
+        sim.setPropertyFiles(*property_args)
+        return
+    if any(property_args):
+        print(
+            "WARNING: 当前算法 pybind 尚未提供 setPropertyFiles(...); "
+            "CaseData 属性文件路径已生成，但本次运行不会传入 C++。",
+            flush=True,
+        )
+
+
+def _apply_case_data_fracture_file(sim, params):
+    fracture_file = params.get('fracture_file', '')
+    if not fracture_file:
+        return
+    if hasattr(sim, 'setFractureFile'):
+        sim.setFractureFile(fracture_file)
+        return
+    print(
+        "WARNING: 当前算法 pybind 尚未提供 setFractureFile(fracture_file); "
+        "CaseData 裂缝几何文件路径已生成，但本次运行不会传入 C++。",
+        flush=True,
+    )
+
+
+def _apply_case_data_solver_parameters(sim, params):
+    if hasattr(sim, 'setSolverParameters'):
+        sim.setSolverParameters(
+            float(params.get('simulation_time', 100.0)),
+            float(params.get('time_step', 1.0)),
+            float(params.get('dt_min', 1e-6)),
+            float(params.get('dt_max', 30.0)),
+            int(params.get('newton_max_iter', 15)),
+            float(params.get('newton_tol', 1e-3)),
+            float(params.get('linear_tol', 1e-8)),
+            int(params.get('linear_max_iter', 1000)),
+        )
+        return
+    if hasattr(sim, 'setSimulationParameters'):
+        sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
+
+
+def _collect_case_data_simulation_result(sim, result, params):
+    nx = int(params.get('nx', 0))
+    ny = int(params.get('ny', 0))
+    nz = int(params.get('nz', 0))
+    lx = float(params.get('lx', 0.0))
+    ly = float(params.get('ly', 0.0))
+    lz = float(params.get('lz', 0.0))
+
+    sim_data = SimulationData()
+    sim_data.generate_from_cpp(result, nx, ny, nz, lx, ly, lz, [], [])
+    if hasattr(sim, 'getCellGeometryWithPressure'):
+        try:
+            sim_data.cell_geometry_with_pressure = sim.getCellGeometryWithPressure()
+        except Exception as exc:
+            print(f"WARNING: getCellGeometryWithPressure failed: {exc}", flush=True)
+    if hasattr(sim, 'getLGRGridGeometry'):
+        try:
+            sim_data.corner_lgr_grid_geometry = sim.getLGRGridGeometry()
+        except Exception as exc:
+            print(f"WARNING: getLGRGridGeometry failed: {exc}", flush=True)
+    if hasattr(sim, 'getParentGridGeometry'):
+        try:
+            sim_data.corner_lgr_parent_grid_geometry = sim.getParentGridGeometry()
+        except Exception as exc:
+            print(f"WARNING: getParentGridGeometry failed: {exc}", flush=True)
+    if hasattr(sim, 'getRefinedGridGeometry'):
+        try:
+            sim_data.corner_lgr_refined_grid_geometry = sim.getRefinedGridGeometry()
+        except Exception as exc:
+            print(f"WARNING: getRefinedGridGeometry failed: {exc}", flush=True)
+    if hasattr(sim, 'getDualPorosityPressureData'):
+        try:
+            sim_data.dual_porosity_pressure_field = sim.getDualPorosityPressureData()
+        except Exception as exc:
+            print(f"WARNING: getDualPorosityPressureData failed: {exc}", flush=True)
+    sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
+    return sim_data
+
+
 def run_corner_edfm_simulation(params):
     """执行 Corner EDFM 模拟并返回 SimulationData。"""
     refinement_mode = params.get('corner_grid_refinement', '不加密')
@@ -345,6 +495,33 @@ def run_corner_edfm_simulation(params):
         float(params.get('aperture', 0.1)),
         float(params.get('frac_perm', 100.0)),
     )
+    region_num_fracs = int(params.get('region_num_fracs', 0))
+    if region_num_fracs > 0:
+        region_args = (
+            region_num_fracs,
+            float(params.get('region_x_min', 0.0)),
+            float(params.get('region_x_max', 0.0)),
+            float(params.get('region_y_min', 0.0)),
+            float(params.get('region_y_max', 0.0)),
+            float(params.get('region_z_min', 0.0)),
+            float(params.get('region_z_max', 0.0)),
+        )
+        if hasattr(sim, 'setRegionFractureParameters'):
+            print(
+                "Setting region fracture parameters: "
+                f"N={region_args[0]}, "
+                f"X[{region_args[1]}, {region_args[2]}], "
+                f"Y[{region_args[3]}, {region_args[4]}], "
+                f"Z[{region_args[5]}, {region_args[6]}]",
+                flush=True,
+            )
+            sim.setRegionFractureParameters(*region_args)
+        else:
+            print(
+                "WARNING: corner EDFM module missing setRegionFractureParameters(); "
+                "region fractures disabled",
+                flush=True,
+            )
     hf_count = int(params.get('hf_count', 20)) if params.get('hf_enabled', True) else 0
     hf_spacing = float(params.get('hf_spacing_x', 0.0))
     sim.setHydraulicFractureParameters(

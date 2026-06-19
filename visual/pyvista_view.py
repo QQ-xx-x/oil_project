@@ -46,7 +46,7 @@ class PyVistaView(QWidget):
         self.vtk_widget = self.plotter
         self.renderer = self.plotter.renderer
 
-        self.plotter.set_background("black")
+        self.plotter.set_background("#f7f9fc")
         self.plotter.setMouseTracking(True)
 
         # 选区交互：使用 Qt 事件模型，不再依赖 VTK observer / interactor。
