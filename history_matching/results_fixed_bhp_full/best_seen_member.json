@@ -1,0 +1,12 @@
+{
+  "iteration": 3,
+  "member": 17,
+  "objective": 3.268265843804723,
+  "params": {
+    "initial_sw": 0.4065154523287128,
+    "hf_perm": 1242.3929101173505,
+    "frac_perm": 134.52456762726578,
+    "wr_shape_factor": 0.2437832566946105
+  },
+  "output_path": "D:\\c++code\\oil_project\\history_matching\\runs_fixed_bhp_full\\iter_03\\member_017\\output_sim_lgr_WR.csv"
+}

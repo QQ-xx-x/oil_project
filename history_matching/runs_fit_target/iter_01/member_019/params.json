@@ -1,0 +1,78 @@
+{
+  "coord_file": "../src/basic/ratio_style_800x400x120_40x20x6_COORD.csv",
+  "zcorn_file": "../src/basic/ratio_style_800x400x120_40x20x6_ZCORN.csv",
+  "simulation_days": 730.0,
+  "fractures": {
+    "num_fracs": 72,
+    "min_len": 14.0,
+    "max_len": 36.0,
+    "max_dip": 0.82,
+    "min_strike": 0.18,
+    "max_strike": 2.72,
+    "aperture": 0.075,
+    "frac_perm": 73.73825818765398
+  },
+  "hydraulic_fractures": {
+    "hf_count": 14,
+    "hf_spacing": 58.0,
+    "hf_length": 96.0,
+    "hf_height": 24.0,
+    "hf_aperture": 0.065,
+    "hf_perm": 909.4106412353393,
+    "hf_center_x": 420.0,
+    "hf_center_y": 205.0,
+    "hf_center_z": 62.0
+  },
+  "well": {
+    "radius": 0.06,
+    "bhp": 53.8827576126788
+  },
+  "fluid": {
+    "mu_w": 0.78,
+    "mu_o_placeholder": 3.6,
+    "cw": 2.5e-06,
+    "co_placeholder": 8e-06,
+    "p_ref": 120.0,
+    "swi": 0.08,
+    "sor_placeholder": 0.02,
+    "sgc": 0.04,
+    "mu_g_fallback": 0.17,
+    "cg_fallback": 0.0008
+  },
+  "gas_pvt": {
+    "gas_t_C": 126.0,
+    "gas_Mg": 18.2,
+    "gas_Tc": 202.0,
+    "gas_Pc_bar": 46.0,
+    "gas_table_Pmin_bar": 2.0,
+    "gas_table_Pmax_bar": 900.0,
+    "gas_table_n": 1400,
+    "gas_Psc_bar": 1.01325
+  },
+  "initial_state": {
+    "pressure": 800.0,
+    "sw": 0.3053912953783944,
+    "sg": 0.6946087046216056
+  },
+  "lgr": {
+    "enabled": true,
+    "d_threshold": 4.2,
+    "nrx": 2,
+    "nry": 2,
+    "nrz": 1
+  },
+  "dual_porosity": {
+    "enabled": true,
+    "phi_matrix": 0.055,
+    "phi_fracture": 0.36,
+    "k_matrix_x": 0.008,
+    "k_matrix_y": 0.006,
+    "k_matrix_z": 0.0015,
+    "k_fracture_x": 1.6,
+    "k_fracture_y": 1.2,
+    "k_fracture_z": 0.15,
+    "matrix_volume_fraction": 0.965,
+    "fracture_volume_fraction": 0.035,
+    "wr_shape_factor": 0.14832519697953714
+  }
+}

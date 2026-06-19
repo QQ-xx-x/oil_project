@@ -178,13 +178,18 @@ struct Fracture {
     bool is_hydraulic{false};
 };
 
+struct RockProps {
+    double phi{0.0};
+    double K[3]{0.0, 0.0, 0.0};
+};
+
 struct ParentCell {
     int parent_id{-1};
     int ix{}, iy{}, iz{};
     Point3 center{0,0,0};
     double dx{}, dy{}, dz{}, vol{0.0};
-    double phi{0.0};
-    double K[3]{};
+    RockProps matrix_rock;
+    RockProps fracture_continuum_rock;
     double depth{0.0};
     std::array<Point3, 8> corners{};
     std::array<int, 6> face_ids{{-1,-1,-1,-1,-1,-1}};
@@ -201,8 +206,8 @@ struct LeafCell {
     uint16_t lix{0}, liy{0}, liz{0};
     Point3 center{0,0,0};
     double dx{}, dy{}, dz{}, vol{0.0};
-    double phi{0.0};
-    double K[3]{};
+    RockProps matrix_rock;
+    RockProps fracture_continuum_rock;
     double depth{0.0};
     std::array<Point3, 8> corners{};
     std::array<int, 6> face_ids{{-1,-1,-1,-1,-1,-1}};
@@ -611,12 +616,11 @@ static double dbarHexQuad(const HexCell& cell, const Fracture& f, int nsu, int n
     return (cnt > 0) ? (sum / cnt) : 1e30;
 }
 
-template<typename HexCell>
-static double normalProjectedPerm(const HexCell& c, const Point3& n_unit) {
+static double normalProjectedPerm(const RockProps& rock, const Point3& n_unit) {
     return
-        n_unit.x * n_unit.x * c.K[0] +
-        n_unit.y * n_unit.y * c.K[1] +
-        n_unit.z * n_unit.z * c.K[2];
+        n_unit.x * n_unit.x * rock.K[0] +
+        n_unit.y * n_unit.y * rock.K[1] +
+        n_unit.z * n_unit.z * rock.K[2];
 }
 
 template<typename HexCell>
@@ -626,11 +630,13 @@ static double centerToFaceNormalDistance(const HexCell& c, const FaceGeom& f) {
 }
 
 template<typename HexCell>
-static double computeMMTransmissibilityTPFA(const HexCell& cu, const HexCell& cv, const FaceGeom& f) {
+static double computeMMTransmissibilityTPFA(const HexCell& cu, const RockProps& rock_u,
+                                           const HexCell& cv, const RockProps& rock_v,
+                                           const FaceGeom& f) {
     double Af = f.area;
     if (Af <= EPS) return 0.0;
-    double kn_u = normalProjectedPerm(cu, f.normal);
-    double kn_v = normalProjectedPerm(cv, f.normal);
+    double kn_u = normalProjectedPerm(rock_u, f.normal);
+    double kn_v = normalProjectedPerm(rock_v, f.normal);
     if (kn_u <= EPS || kn_v <= EPS) return 0.0;
     double du = centerToFaceNormalDistance(cu, f);
     double dv = centerToFaceNormalDistance(cv, f);
@@ -662,13 +668,14 @@ static double averageDistanceCellToPlane(const HexCell& cell, const Point3& plan
 }
 
 template<typename HexCell>
-static double computeMatrixFractureTransmissibility(const HexCell& cell, const Segment& seg, int nxs = 2, int nys = 2, int nzs = 2) {
+static double computeMatrixFractureTransmissibility(const HexCell& cell, const RockProps& rock,
+                                                   const Segment& seg, int nxs = 2, int nys = 2, int nzs = 2) {
     if (seg.area <= EPS) return 0.0;
     Point3 n = seg.normal;
     double nn = n.norm();
     if (nn < EPS) return 0.0;
     n = n * (1.0 / nn);
-    double Kn = normalProjectedPerm(cell, n);
+    double Kn = normalProjectedPerm(rock, n);
     if (Kn <= EPS) return 0.0;
     double d_avg = averageDistanceCellToPlane(cell, seg.center, n, nxs, nys, nzs);
     double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
@@ -680,6 +687,7 @@ static double computeMatrixFractureTransmissibility(const HexCell& cell, const S
 
 template<typename HexCell>
 static double computeContinuumToExplicitFractureTransmissibility(const HexCell& cell,
+                                                                 const RockProps& rock,
                                                                  const Segment& seg,
                                                                  int nxs = 2,
                                                                  int nys = 2,
@@ -689,7 +697,7 @@ static double computeContinuumToExplicitFractureTransmissibility(const HexCell& 
     double nn = n.norm();
     if (nn < EPS) return 0.0;
     n = n * (1.0 / nn);
-    double Kn = normalProjectedPerm(cell, n);
+    double Kn = normalProjectedPerm(rock, n);
     if (Kn <= EPS) return 0.0;
     double d_avg = averageDistanceCellToPlane(cell, seg.center, n, nxs, nys, nzs);
     double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
@@ -1288,7 +1296,7 @@ public:
     double natural_max_strike{PI};
     double natural_aperture{0.1};
     double natural_perm{100.0};
-    int region_total_fracs_{0};
+    bool use_region_fractures{false};
     double region_x_min{0.0};
     double region_x_max{-1.0};
     double region_y_min{0.0};
@@ -1306,6 +1314,11 @@ public:
     double hydraulic_center_z{-1.0};
     double well_radius{0.05};
     double well_pressure{50.0};
+    std::string well_control_mode{"bhp"};
+    std::vector<double> well_control_days;
+    std::vector<double> well_control_rates;
+    double rate_control_bhp_min{14.7};
+    double rate_control_bhp_max{1000.0};
     double initial_pressure{800.0};
     double initial_sw{0.05};
     double simulation_total_days{7300.0};
@@ -1351,6 +1364,7 @@ public:
         natural_max_strike = max_strike;
         natural_aperture = aperture_val;
         natural_perm = perm_val;
+        use_region_fractures = false;
     }
 
     void setRegionFractureParameters(int total_fracs,
@@ -1360,7 +1374,8 @@ public:
                                      double y_max,
                                      double z_min,
                                      double z_max) {
-        region_total_fracs_ = total_fracs;
+        natural_frac_count = total_fracs;
+        use_region_fractures = true;
         region_x_min = x_min;
         region_x_max = x_max;
         region_y_min = y_min;
@@ -1392,6 +1407,38 @@ public:
     void setWellParameters(double rw, double pressure) {
         well_radius = rw;
         well_pressure = pressure;
+    }
+
+    void setGasRateControlSchedule(const std::vector<double>& days,
+                                   const std::vector<double>& rates) {
+        setRateControlSchedule("gas_rate", days, rates);
+    }
+
+    void setWaterRateControlSchedule(const std::vector<double>& days,
+                                     const std::vector<double>& rates) {
+        setRateControlSchedule("water_rate", days, rates);
+    }
+
+    void setRateControlSchedule(const std::string& mode,
+                                const std::vector<double>& days,
+                                const std::vector<double>& rates) {
+        if (mode != "gas_rate" && mode != "water_rate") {
+            throw std::invalid_argument("Unsupported rate control mode: " + mode);
+        }
+        if (days.empty() || days.size() != rates.size()) {
+            throw std::invalid_argument("Rate control schedule requires equal non-empty days and rates.");
+        }
+        for (size_t i = 0; i < days.size(); ++i) {
+            if (!std::isfinite(days[i]) || !std::isfinite(rates[i]) || rates[i] < 0.0) {
+                throw std::invalid_argument("Rate control schedule contains invalid values.");
+            }
+            if (i > 0 && days[i] <= days[i - 1]) {
+                throw std::invalid_argument("Rate control days must be strictly increasing.");
+            }
+        }
+        well_control_mode = mode;
+        well_control_days = days;
+        well_control_rates = rates;
     }
 
     void setOilWaterProperties(double mu_w,
@@ -1605,19 +1652,32 @@ public:
         }
     }
 
+    static RockProps makeRockProps(double phi, double kx, double ky, double kz) {
+        RockProps rock;
+        rock.phi = phi;
+        rock.K[0] = kx;
+        rock.K[1] = ky;
+        rock.K[2] = kz;
+        return rock;
+    }
+
     void applyRockProperties(ParentCell& pc) const {
-        if (enable_dual_porosity) {
-            double vf = std::max(fracture_volume_fraction, 1e-12);
-            pc.phi = phi_fracture;
-            pc.K[0] = k_fracture_x * vf;
-            pc.K[1] = k_fracture_y * vf;
-            pc.K[2] = k_fracture_z * vf;
-        } else {
-            pc.phi = phi_matrix;
-            pc.K[0] = k_matrix_x;
-            pc.K[1] = k_matrix_y;
-            pc.K[2] = k_matrix_z;
-        }
+        pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+
+        double vf = std::max(fracture_volume_fraction, 1e-12);
+        pc.fracture_continuum_rock = makeRockProps(
+            phi_fracture,
+            k_fracture_x * vf,
+            k_fracture_y * vf,
+            k_fracture_z * vf);
+    }
+
+    const RockProps& activeContinuumRock(const ParentCell& pc) const {
+        return enable_dual_porosity ? pc.fracture_continuum_rock : pc.matrix_rock;
+    }
+
+    const RockProps& activeContinuumRock(const LeafCell& lc) const {
+        return enable_dual_porosity ? lc.fracture_continuum_rock : lc.matrix_rock;
     }
 
     int wrMatrixBase() const {
@@ -2585,10 +2645,8 @@ public:
         lc.lix = li;
         lc.liy = lj;
         lc.liz = lk;
-        lc.phi = p.phi;
-        lc.K[0] = p.K[0];
-        lc.K[1] = p.K[1];
-        lc.K[2] = p.K[2];
+        lc.matrix_rock = p.matrix_rock;
+        lc.fracture_continuum_rock = p.fracture_continuum_rock;
 
         double u0 = (double)li / (double)p.Nrx;
         double u1 = (double)(li + 1) / (double)p.Nrx;
@@ -2653,12 +2711,9 @@ public:
                            double aperture_val = 0.1, double perm_val = 100.0,
                            double range_x_min = 0.0, double range_x_max = -1.0,
                            double range_y_min = 0.0, double range_y_max = -1.0,
-                           double range_z_min = 0.0, double range_z_max = -1.0,
-                           bool append_existing = false,
-                           int start_id = -1,
-                           unsigned int rng_seed = 42) {
+                           double range_z_min = 0.0, double range_z_max = -1.0) {
 
-        if (!append_existing) fractures.clear();
+        fractures.clear();
 
         if (total_fracs <= 0) return;
         if (parents.empty()) {
@@ -2793,8 +2848,7 @@ public:
             return covered_area >= full_area - area_tol;
         };
 
-        int base_id = (start_id >= 0) ? start_id : 0;
-        std::mt19937 rng(rng_seed);
+        std::mt19937 rng(42);
         std::uniform_real_distribution<double> distAngle(min_strike, max_strike);
         std::uniform_real_distribution<double> distDip(0, max_dip);
         std::uniform_real_distribution<double> distL(min_L, max_L);
@@ -2808,7 +2862,7 @@ public:
 
         for (int i = 0; i < total_fracs; ++i) {
             Fracture f;
-            f.id = base_id + i; // 天然裂缝从 0 开始连续编号，区域追加裂缝从当前最大 ID 之后开始
+            f.id = i; // 天然裂缝从 0 开始连续编号
             f.aperture = aperture_val;
             f.perm = perm_val;
             f.is_hydraulic = false; // 明确标记为天然裂缝
@@ -2861,44 +2915,6 @@ public:
                 }
             }
         }
-    }
-
-    void generateFracturesInRegion(int total_fracs,
-                                   double x_min, double x_max,
-                                   double y_min, double y_max,
-                                   double z_min, double z_max) {
-        if (total_fracs <= 0) return;
-
-        int before_count = static_cast<int>(fractures.size());
-        int start_id = getNextFractureId();
-        generateFractures(
-            total_fracs,
-            natural_min_length,
-            natural_max_length,
-            10.0, 20.0,
-            natural_max_dip,
-            natural_min_strike,
-            natural_max_strike,
-            natural_aperture,
-            natural_perm,
-            x_min, x_max,
-            y_min, y_max,
-            z_min, z_max,
-            true,
-            start_id,
-            12345U
-        );
-
-        int placed = static_cast<int>(fractures.size()) - before_count;
-        if (placed < total_fracs) {
-            std::cerr << "Warning: Only placed " << placed << " of " << total_fracs
-                      << " fractures in region. Consider reducing fracture size or enlarging region.\n";
-        }
-
-        std::cout << "Generated " << placed << " fractures in region ["
-                  << x_min << "," << x_max << "] x ["
-                  << y_min << "," << y_max << "] x ["
-                  << z_min << "," << z_max << "]" << std::endl;
     }
 
     void generateHydraulicFractures(int total_fracs = 20,
@@ -3176,8 +3192,8 @@ public:
                 lc.leaf_id = lid;
                 lc.parent_id = p.parent_id;
                 lc.lix = 0; lc.liy = 0; lc.liz = 0;
-                lc.phi = p.phi;
-                lc.K[0] = p.K[0]; lc.K[1] = p.K[1]; lc.K[2] = p.K[2];
+                lc.matrix_rock = p.matrix_rock;
+                lc.fracture_continuum_rock = p.fracture_continuum_rock;
                 lc.corners = p.corners;
                 lc.face_ids = {{-1,-1,-1,-1,-1,-1}};
                 computeCellDerivedGeometry(lc);
@@ -3206,7 +3222,10 @@ public:
         for (const auto& f : mm_faces) {
             if (f.owner < 0 || f.neighbor < 0) continue;
             int u = f.owner, v = f.neighbor;
-            double T = computeMMTransmissibilityTPFA(leaves[u], leaves[v], f);
+            double T = computeMMTransmissibilityTPFA(
+                leaves[u], activeContinuumRock(leaves[u]),
+                leaves[v], activeContinuumRock(leaves[v]),
+                f);
             if (T <= EPS) continue;
             int a = std::min(u, v);
             int b = std::max(u, v);
@@ -3277,9 +3296,10 @@ public:
                             seg.poly = poly;
                             if (enable_dual_porosity) {
                                 seg.T_mf = computeContinuumToExplicitFractureTransmissibility(
-                                    lc, seg, 2, 2, 2);
+                                    lc, activeContinuumRock(lc), seg, 2, 2, 2);
                             } else {
-                                seg.T_mf = computeMatrixFractureTransmissibility(lc, seg, 2, 2, 2);
+                                seg.T_mf = computeMatrixFractureTransmissibility(
+                                    lc, lc.matrix_rock, seg, 2, 2, 2);
                             }
                             fillSegmentFaceGeom(seg, lc, mm_faces);
 
@@ -3416,8 +3436,9 @@ public:
         std::cout << "FF edges built (real-geometry): " << ff_out.size() << std::endl;
     }
 
-    double matrixPermForWarrenRootTransfer() const {
-        return (k_matrix_x + k_matrix_y + k_matrix_z) / 3.0;
+    double matrixPermForWarrenRootTransfer(const LeafCell& leaf) const {
+        const RockProps& rock = leaf.matrix_rock;
+        return (rock.K[0] + rock.K[1] + rock.K[2]) / 3.0;
     }
 
     void buildDualPorosityTransferConnections(std::vector<Connection>& wr_mf_out) {
@@ -3428,9 +3449,9 @@ public:
 
         validateDualPorosityParameters();
 
-        double k_eff = matrixPermForWarrenRootTransfer();
         int n_local_wr = 0;
         for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            double k_eff = matrixPermForWarrenRootTransfer(leaves[leaf]);
             double T_wr = FLOW_BETA
                         * wr_shape_factor
                         * k_eff
@@ -3665,7 +3686,7 @@ public:
 
     double nodePhi(int i) const {
         if (isLeafNode(i)) {
-            return enable_dual_porosity ? phi_fracture : leaves[i].phi;
+            return activeContinuumRock(leaves[i]).phi;
         }
 
         if (isSegmentNode(i)) {
@@ -3673,7 +3694,8 @@ public:
         }
 
         if (isWRMatrixNode(i)) {
-            return phi_matrix;
+            int leaf = i - wrMatrixBase();
+            return leaves[leaf].matrix_rock.phi;
         }
 
         return 1e-12;
@@ -3760,7 +3782,8 @@ public:
         auto props_matrix = getProps(matrix_ad);
         double matrix_vol = std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
         auto R_acc = computeAccumulation_AD(
-            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol, phi_matrix);
+            dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol,
+            leaves[leaf].matrix_rock.phi);
         auto F_lm = computeFlux_FastAD(
             wr_transfer_T[leaf], leaf_ad, matrix_ad, props_leaf, props_matrix);
 
@@ -4029,6 +4052,157 @@ public:
         return false;
     }
 
+    void setAllWellBHP(double bhp) {
+        well_pressure = bhp;
+        for (auto& w : wells) w.P_bhp = bhp;
+    }
+
+    double rateControlTarget(double t) const {
+        if (well_control_days.empty()) return 0.0;
+        if (t <= well_control_days.front()) return well_control_rates.front();
+        for (size_t i = 1; i < well_control_days.size(); ++i) {
+            if (t <= well_control_days[i]) {
+                double span = std::max(well_control_days[i] - well_control_days[i - 1], 1e-12);
+                double frac = (t - well_control_days[i - 1]) / span;
+                return well_control_rates[i - 1] + frac * (well_control_rates[i] - well_control_rates[i - 1]);
+            }
+        }
+        return well_control_rates.back();
+    }
+
+    double rateControlMobilitySum(bool control_gas, const std::vector<State>& state_values) const {
+        double sum = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            sum += w.WI * mobility;
+        }
+        return sum;
+    }
+
+    double estimateRateControlBHP(bool control_gas,
+                                  double target_rate,
+                                  const std::vector<State>& state_values,
+                                  double high_bhp) const {
+        double numerator = 0.0;
+        double denominator = 0.0;
+        for (const auto& w : wells) {
+            int u = w.target_node_idx;
+            if (u < 0 || u >= (int)state_values.size()) continue;
+            PropertiesT<double> pu = getProps(state_values[u]);
+            double mobility = control_gas ? pu.lg : pu.lw;
+            double coefficient = w.WI * mobility;
+            numerator += coefficient * state_values[u].P;
+            denominator += coefficient;
+        }
+        if (denominator <= EPS) return high_bhp;
+        return clampd((numerator - target_rate) / denominator, rate_control_bhp_min, high_bhp);
+    }
+
+    struct StepTrial {
+        bool ok{false};
+        double bhp{0.0};
+        double controlled_rate{0.0};
+        double step_water{0.0};
+        double step_gas{0.0};
+        int actual_iter{0};
+        std::vector<State> states_after;
+        std::vector<State> wr_states_after;
+    };
+
+    bool runBHPTrial(double dt,
+                     double bhp,
+                     bool control_gas,
+                     const std::vector<State>& start_states,
+                     const std::vector<State>& start_wr_states,
+                     StepTrial& trial) {
+        states = start_states;
+        wr_matrix_states = start_wr_states;
+        setAllWellBHP(bhp);
+
+        double trial_water = 0.0;
+        double trial_gas = 0.0;
+        int trial_iter = 0;
+        bool ok = solveStep(dt, trial_water, trial_gas, trial_iter);
+        if (!ok) {
+            trial.ok = false;
+            return false;
+        }
+
+        trial.ok = true;
+        trial.bhp = bhp;
+        trial.step_water = trial_water;
+        trial.step_gas = trial_gas;
+        trial.actual_iter = trial_iter;
+        trial.controlled_rate = (control_gas ? trial_gas : trial_water) / std::max(dt, 1e-30);
+        trial.states_after = states;
+        trial.wr_states_after = wr_matrix_states;
+        return true;
+    }
+
+    bool solveRateControlledStep(double t,
+                                 double dt,
+                                 double& step_water,
+                                 double& step_gas,
+                                 int& actual_iter,
+                                 double& used_bhp) {
+        bool control_gas = (well_control_mode == "gas_rate");
+        bool control_water = (well_control_mode == "water_rate");
+        if (!control_gas && !control_water) {
+            used_bhp = well_pressure;
+            return solveStep(dt, step_water, step_gas, actual_iter);
+        }
+
+        double target_rate = std::max(0.0, rateControlTarget(t + 0.5 * dt));
+        double high_bhp = std::max({rate_control_bhp_max, initial_pressure * 1.2, well_pressure + 100.0});
+        std::vector<State> start_states = states;
+        std::vector<State> start_wr_states = wr_matrix_states;
+
+        double bhp = target_rate <= 1e-12
+            ? high_bhp
+            : estimateRateControlBHP(control_gas, target_rate, start_states, high_bhp);
+        StepTrial best;
+        if (!runBHPTrial(dt, bhp, control_gas, start_states, start_wr_states, best)) {
+            states = start_states;
+            wr_matrix_states = start_wr_states;
+            return false;
+        }
+
+        double rate_tol = std::max(1e-6, 0.05 * std::max(target_rate, 1.0));
+        double slope = std::max(rateControlMobilitySum(control_gas, start_states), 1e-12);
+        for (int correction_iter = 0;
+             target_rate > 1e-12 && std::abs(best.controlled_rate - target_rate) > rate_tol && correction_iter < 8;
+             ++correction_iter) {
+            double corrected_bhp = clampd(best.bhp + (best.controlled_rate - target_rate) / slope,
+                                          rate_control_bhp_min,
+                                          high_bhp);
+            if (std::abs(corrected_bhp - best.bhp) <= 1e-8) break;
+            StepTrial corrected;
+            if (!runBHPTrial(dt, corrected_bhp, control_gas, start_states, start_wr_states, corrected)) {
+                states = start_states;
+                wr_matrix_states = start_wr_states;
+                return false;
+            }
+            if (std::abs(corrected.controlled_rate - target_rate) <
+                std::abs(best.controlled_rate - target_rate)) {
+                best = corrected;
+            } else {
+                break;
+            }
+        }
+
+        states = best.states_after;
+        wr_matrix_states = best.wr_states_after;
+        step_water = best.step_water;
+        step_gas = best.step_gas;
+        actual_iter = best.actual_iter;
+        used_bhp = best.bhp;
+        setAllWellBHP(best.bhp);
+        return best.ok;
+    }
+
     void checkGeometryConsistency() {
         double max_rel_err = 0.0;
         int worst_pid = -1;
@@ -4275,10 +4449,11 @@ public:
     }
 
     py::array_t<double> getCellGeometryWithPressure() const {
-        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 29});
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(n_leaf), 34});
         auto r = result.mutable_unchecked<2>();
         for (int i = 0; i < n_leaf; ++i) {
             const auto& c = leaves[i];
+            const RockProps& rock = activeContinuumRock(c);
             r(i, 0) = static_cast<double>(c.leaf_id);
             r(i, 1) = static_cast<double>(c.parent_id);
             r(i, 2) = static_cast<double>(c.lix);
@@ -4289,6 +4464,11 @@ public:
                 r(i, 4 + j*3 + 2) = c.corners[j].z;
             }
             r(i, 28) = states[i].P;
+            r(i, 29) = rock.K[0];
+            r(i, 30) = rock.K[1];
+            r(i, 31) = rock.K[2];
+            r(i, 32) = rock.phi;
+            r(i, 33) = states[i].Sw;
         }
         return result;
     }
@@ -4382,7 +4562,7 @@ public:
         std::string run_tag = enable_dual_porosity ? "_WR" : "_noWR";
         std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
         std::ofstream file("output_sim_lgr" + run_tag + ".csv");
-        file << "Time,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
+        file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -4405,10 +4585,13 @@ public:
                     return;
                 }
                 std::cout << "Step " << step << " t=" << t << " dt=" << dt_try << " ... " << std::flush;
-                ok = solveStep(dt_try, sw, sg, actual_iter);
+                double used_bhp = well_pressure;
+                ok = solveRateControlledStep(t, dt_try, sw, sg, actual_iter, used_bhp);
                 if (!ok) {
                     std::cout << "fail -> dt_try*=0.25" << std::endl;
                     dt_try *= 0.25;
+                } else {
+                    well_pressure = used_bhp;
                 }
             }
             std::cout << "ok" << std::endl;
@@ -4425,7 +4608,7 @@ public:
             double qw = sw / std::max(dt_try, 1e-30);
             double qg = sg / std::max(dt_try, 1e-30);
 
-            file << t << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
+            file << t << "," << well_pressure << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
                  << "," << n_leaf << "," << n_seg << "," << qw << "," << qg << "\n";
             file.flush();
 
@@ -4465,12 +4648,13 @@ public:
             10.0, 20.0,  // min_height, max_height
             natural_max_dip,
             natural_min_strike, natural_max_strike,
-            natural_aperture, natural_perm);
-        generateFracturesInRegion(
-            region_total_fracs_,
-            region_x_min, region_x_max,
-            region_y_min, region_y_max,
-            region_z_min, region_z_max);
+            natural_aperture, natural_perm,
+            use_region_fractures ? region_x_min : 0.0,
+            use_region_fractures ? region_x_max : -1.0,
+            use_region_fractures ? region_y_min : 0.0,
+            use_region_fractures ? region_y_max : -1.0,
+            use_region_fractures ? region_z_min : 0.0,
+            use_region_fractures ? region_z_max : -1.0);
         generateHydraulicFractures(
             hydraulic_frac_count,
             hydraulic_frac_spacing,
@@ -4538,14 +4722,7 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def(py::init<>())
         .def("setCornerPointFiles", &SimulatorLGR::setCornerPointFiles)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
-        .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters,
-             py::arg("total_fracs"),
-             py::arg("x_min"),
-             py::arg("x_max"),
-             py::arg("y_min"),
-             py::arg("y_max"),
-             py::arg("z_min"),
-             py::arg("z_max"))
+        .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
              py::arg("total_fracs"),
              py::arg("frac_spacing"),
@@ -4557,6 +4734,8 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
              py::arg("y_center") = -1.0,
              py::arg("z_center") = -1.0)
         .def("setWellParameters", &SimulatorLGR::setWellParameters)
+        .def("setGasRateControlSchedule", &SimulatorLGR::setGasRateControlSchedule)
+        .def("setWaterRateControlSchedule", &SimulatorLGR::setWaterRateControlSchedule)
         .def("setInitialStateParameters", &SimulatorLGR::setInitialStateParameters)
         .def("setSimulationParameters", &SimulatorLGR::setSimulationParameters)
         .def("setLGRParameters", &SimulatorLGR::setLGRParameters)

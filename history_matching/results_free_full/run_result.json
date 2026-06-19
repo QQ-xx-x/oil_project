@@ -1,0 +1,26 @@
+{
+    "mode":  "free",
+    "objective":  3.1533768710773233,
+    "selected_source":  "best_seen_member",
+    "best_fit_parameters":  {
+                                "initial_sw":  0.39433393526324784,
+                                "well_bhp":  46.187554710687117,
+                                "hf_perm":  1343.2651380108562,
+                                "frac_perm":  107.62799763828846,
+                                "wr_shape_factor":  0.16128180919729765
+                            },
+    "physical_fit_parameters":  {
+                                    "initial_sw":  0.39433393526324784,
+                                    "well_bhp":  46.18755471068712,
+                                    "hf_perm":  1343.2651380108562,
+                                    "frac_perm":  107.62799763828846,
+                                    "wr_shape_factor":  0.16128180919729765
+                                },
+    "files":  {
+                  "plot":  "history_matching\\results_free_full\\history_fit_gas_water.png",
+                  "best_fit_params":  "history_matching\\results_free_full\\best_fit_params.json",
+                  "best_fit_output":  "history_matching\\results_free_full\\best_fit_output.csv",
+                  "summary":  "history_matching\\results_free_full\\best_fit_summary.json",
+                  "assimilation_summary":  "history_matching\\results_free_full\\assimilation_summary.csv"
+              }
+}
