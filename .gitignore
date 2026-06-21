@@ -72,7 +72,10 @@ MinSizeRel/
 *.tmp
 *.temp
 *.log
+<<<<<<< HEAD
 *.docs
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
 # Windows
 Thumbs.db

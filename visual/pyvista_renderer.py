@@ -7,8 +7,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+<<<<<<< HEAD
 
 """def get_bright_jet_cmap():
+=======
+def get_bright_jet_cmap():
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
     from matplotlib.colors import LinearSegmentedColormap
     bright_jet_colors = [
         (0.0, 0.0, 0.4),   
@@ -23,6 +27,7 @@ from pathlib import Path
         (1.0, 0.1, 0.0),   # 橙红
         
     ]
+<<<<<<< HEAD
     return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=512)"""
 
 def get_bright_jet_cmap():
@@ -62,6 +67,9 @@ def get_bright_jet_cmap():
         (1.00, (1.00, 0.00, 0.00)),
     ]
     return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=4096)
+=======
+    return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=512)
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
 def get_soft_jet_cmap():
     """低饱和 jet colormap，适合浅色背景下的 pressure 结果层。"""
@@ -105,8 +113,11 @@ class PyVistaRenderer:
         self.plotter.enable_anti_aliasing()
         self.plotter.enable_depth_peeling()
 
+<<<<<<< HEAD
         self._add_petrel_arrow()
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         ren = self.renderer
         light = ren.GetLights().GetItemAsObject(0)
         if light:
@@ -119,6 +130,7 @@ class PyVistaRenderer:
             "fill_mesh": None,
         }
 
+<<<<<<< HEAD
         self.camera_direction_locked = False
 
 
@@ -176,6 +188,8 @@ class PyVistaRenderer:
             color="#39d353"
         )
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
     def _new_cache(self):
         return {
             "pressure_actor": None,
@@ -201,6 +215,7 @@ class PyVistaRenderer:
             "layer_coarse_grid_actor": None,
             "layer_frac_actors": [],
             "layer_well_actors": [],
+<<<<<<< HEAD
             
             "sw_field_actor": None,
             "sw_scalar_bar": None,
@@ -246,6 +261,8 @@ class PyVistaRenderer:
             "measure_observer_ids": [],
             "measure_is_previewing": False,
             "measure_last_info": None,
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         }
 
     def _render(self):
@@ -543,6 +560,7 @@ class PyVistaRenderer:
         self._remove_actor_list(self.cache.get("well_actors", []))
         self._remove_actor_list(self.cache.get("selection_handle_actors", []))
 
+<<<<<<< HEAD
         self._remove_actor(self.cache.get("sw_field_actor"))
         self._remove_actor(self.cache.get("threshold_actor"))
 
@@ -563,6 +581,8 @@ class PyVistaRenderer:
 
         self._remove_actor(self.cache.get("measure_line_actor"))
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         try:
             self.plotter.remove_scalar_bar(render=False)
         except Exception:
@@ -692,7 +712,11 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
+<<<<<<< HEAD
             cmap=get_bright_jet_cmap(),
+=======
+            cmap=get_soft_jet_cmap(),
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             clim=[min_p, max_p],
             show_scalar_bar=False,
             opacity=0.96,
@@ -702,11 +726,19 @@ class PyVistaRenderer:
         scalar_bar = self._replace_scalar_bar(
             "scalar_bar",
             "Pressure (MPa)",
+<<<<<<< HEAD
             label_font_size=14,
             title_font_size=16,
             color="#2f3640",
             position_x=0.02,
             position_y=0.55,
+=======
+            label_font_size=18,
+            title_font_size=20,
+            color="#2f3640",
+            position_x=0.85,
+            position_y=0.15,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             width=0.08,
             height=0.4,
             vertical=True,
@@ -900,11 +932,16 @@ class PyVistaRenderer:
 
         actor = self.plotter.add_mesh(
             edges,
+<<<<<<< HEAD
             color=(0.5, 0.5, 0.5),
+=======
+            color=(0.67, 0.72, 0.78),
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             line_width=1.0,
             render=False
         )
 
+<<<<<<< HEAD
         
         surface = grid.extract_surface()
         surface_actor = self.plotter.add_mesh(
@@ -915,6 +952,16 @@ class PyVistaRenderer:
             render=False
         )
         
+=======
+        surface = grid.extract_surface()
+        surface_actor = self.plotter.add_mesh(
+            surface,
+            color=(0.82, 0.85, 0.89),
+            opacity=0.15,
+            show_edges=False,
+            render=False
+        )
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
         self.cache['corner_grid_hash'] = data_hash
         self.cache['corner_actor'] = actor
@@ -1154,7 +1201,11 @@ class PyVistaRenderer:
                 color=frac_color,
                 edge_color=edge_color,
                 opacity=0.92,
+<<<<<<< HEAD
                 show_edges=False,
+=======
+                show_edges=True,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
                 line_width=1.5,
                 lighting=True,
                 smooth_shading=True,
@@ -1273,13 +1324,25 @@ class PyVistaRenderer:
         self.cache["pressure_field_actor"] = None
 
         if self.cache.get("pressure_scalar_bar") is not None:
+<<<<<<< HEAD
+=======
+
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             try:
                 self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
+<<<<<<< HEAD
             self.cache["pressure_scalar_bar"] = None
 
         try:
+=======
+
+            self.cache["pressure_scalar_bar"] = None
+
+        try:
+
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             cell_data = sim_data.cell_geometry_with_pressure
             n_cells = cell_data.shape[0]
 
@@ -1287,6 +1350,7 @@ class PyVistaRenderer:
                 return
 
             pressures = cell_data[:, 28].astype(np.float32)
+<<<<<<< HEAD
             pmin, pmax = float(np.min(pressures)), float(np.max(pressures))
 
             all_points = []
@@ -1307,6 +1371,28 @@ class PyVistaRenderer:
 
             points = np.vstack(all_points)
             cells = np.hstack(cells)
+=======
+            pressure_min = float(np.min(pressures))
+            pressure_max = float(np.max(pressures))
+
+            raw_points = cell_data[:, 4:28].reshape(-1, 3).astype(np.float32)
+
+            points, inverse = np.unique(
+                raw_points,
+                axis=0,
+                return_inverse=True
+            )
+
+            inverse = inverse.reshape(n_cells, 8)
+            cell_array = np.empty(n_cells * 9, dtype=np.int64)
+            cell_array[0::9] = 8
+
+            for i in range(n_cells):
+
+                start = i * 9 + 1
+
+                cell_array[start:start + 8] = inverse[i]
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
             cell_types = np.full(
                 n_cells,
@@ -1314,6 +1400,7 @@ class PyVistaRenderer:
                 dtype=np.uint8
             )
 
+<<<<<<< HEAD
             grid = pv.UnstructuredGrid(cells, cell_types, points)
 
             grid.cell_data["Pressure"] = pressures
@@ -1339,17 +1426,78 @@ class PyVistaRenderer:
                 specular=0.0,
                 interpolate_before_map=False,
                 render=False,
+=======
+            grid = pv.UnstructuredGrid(
+                cell_array,
+                cell_types,
+                points
+            )
+
+            grid.cell_data["Pressure"] = pressures
+
+            grid = grid.cell_data_to_point_data()
+
+            #体渲染
+            """
+            actor = self.plotter.add_volume(
+                grid,
+                scalars="Pressure",
+                cmap=get_bright_jet_cmap(),
+                clim=[pressure_min, pressure_max],
+                opacity=np.full(256, 1.0),
+                opacity_unit_distance=25.0,
+                blending="composite",
+                shade=False,
+                mapper="gpu",
+                diffuse=1.0,
+                ambient=0.55,
+                specular=0.15,
+                specular_power=30,
+                show_scalar_bar=False,
+                render=False,
+            )
+            """
+            #面渲染
+
+            surface = grid.extract_surface()
+            
+            actor = self.plotter.add_mesh(
+                surface,
+                scalars="Pressure",
+                cmap=get_soft_jet_cmap(),
+                clim=[pressure_min, pressure_max],
+                show_edges=False,
+                opacity=0.72,
+                show_scalar_bar=False,
+                render=False,
+                lighting=False,
+                smooth_shading=True,
+                ambient=1.0,
+                diffuse=0.0,
+                specular=0.0,
+                specular_power=50,
+                interpolate_before_map=True,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             )
 
             scalar_bar = self._replace_scalar_bar(
                 "pressure_scalar_bar",
                 "Pressure (bar)",
+<<<<<<< HEAD
                 position_x=0.02,
                 position_y=0.55,
                 width=0.08,
                 height=0.40,
                 label_font_size=14,
                 title_font_size=16,
+=======
+                position_x=0.82,
+                position_y=0.15,
+                width=0.08,
+                height=0.40,
+                label_font_size=18,
+                title_font_size=20,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
                 color="#2f3640",
                 vertical=True,
                 render=False,
@@ -1374,8 +1522,11 @@ class PyVistaRenderer:
             print("=" * 60)
             print("\n")
 
+<<<<<<< HEAD
 
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
     def _render_pressure_field_points(self, field_data):
         points = np.array([[x, y, z] for x, y, z, _ in field_data], dtype=float)
         pressures = np.array([p for _, _, _, p in field_data], dtype=float)
@@ -1385,9 +1536,15 @@ class PyVistaRenderer:
         cloud = pv.PolyData(points)
         cloud.point_data["Pressure"] = pressures
         actor = self.plotter.add_volume(
+<<<<<<< HEAD
             cloud,
             scalars="Pressure",
             cmap=get_bright_jet_cmap(),
+=======
+            grid,
+            scalars="Pressure",
+            cmap=get_soft_jet_cmap(),
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             clim=[pressure_min, pressure_max],
             opacity=0.7,
             opacity_unit_distance=50,
@@ -1398,12 +1555,21 @@ class PyVistaRenderer:
         scalar_bar = self._replace_scalar_bar(
             "pressure_scalar_bar",
             "Pressure (bar)",
+<<<<<<< HEAD
             position_x=0.02,
             position_y=0.55,
             width=0.08,
             height=0.4,
             label_font_size=14,
             title_font_size=16,
+=======
+            position_x=0.82,
+            position_y=0.15,
+            width=0.08,
+            height=0.4,
+            label_font_size=18,
+            title_font_size=20,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             color="#2f3640",
             vertical=True,
             render=False,
@@ -1715,15 +1881,25 @@ class PyVistaRenderer:
         self.cache["corner_lgr_parent_grid_actor"] = None
         self.cache["corner_lgr_refined_grid_actor"] = None
 
+<<<<<<< HEAD
         #父网格（灰色）
+=======
+        #父网格（浅灰蓝）
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
 
             self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
                 sim_data.corner_lgr_parent_grid_geometry,
+<<<<<<< HEAD
                 #(0.78, 0.82, 0.87),
                 (0.5, 0.5, 0.5),
                 0.4,
                 1.0,
+=======
+                (0.78, 0.82, 0.87),
+                0.4,
+                0.15,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             )
 
         # 加密网格（稍深灰蓝，层次清晰）
@@ -1735,7 +1911,11 @@ class PyVistaRenderer:
                 refined_geom,
                 (0.64, 0.69, 0.76),
                 0.45,
+<<<<<<< HEAD
                 0.0,
+=======
+                0.20,
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
             )
 
         self._render()
@@ -1809,6 +1989,7 @@ class PyVistaRenderer:
         self.cache["layer_well_actors"] = []
         self._render()
 
+<<<<<<< HEAD
 
     def _add_layer_pressure_mesh(
         self,
@@ -1856,6 +2037,8 @@ class PyVistaRenderer:
         return actor, scalar_bar
 
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
     # 新增：根据 Z 坐标渲染地质切片  
     def render_corner_grid_by_layer_k(self, sim_data, k_layer: int):
 
@@ -1870,6 +2053,7 @@ class PyVistaRenderer:
         self.cache["layer_well_actors"] = []
         self.cache["layer_coarse_grid_actor"] = None
 
+<<<<<<< HEAD
         # 移除之前的颜色条，确保分层渲染时显示正确的颜色条
         try:
             self.plotter.remove_scalar_bar(render=False)
@@ -1877,6 +2061,8 @@ class PyVistaRenderer:
             pass
         self.cache["layer_pressure_scalar_bar"] = None
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         if not sim_data.corner_point_grid:
             return
 
@@ -1997,6 +2183,7 @@ class PyVistaRenderer:
         pressures = selected_rows[:, 28].astype(np.float32)
         pressures_all = sim_data.cell_geometry_with_pressure[:, 28].astype(np.float32)
         grid.cell_data["Pressure"] = pressures
+<<<<<<< HEAD
         #grid = grid.cell_data_to_point_data()
 
         surface = grid.extract_surface()
@@ -2005,13 +2192,56 @@ class PyVistaRenderer:
             pressures_all
         )
 
+=======
+        grid = grid.cell_data_to_point_data()
+
+        surface = grid.extract_surface()
+        actor = self.plotter.add_mesh(
+            surface,
+            scalars="Pressure",
+            cmap=get_soft_jet_cmap(),
+            clim=[float(np.min(pressures_all)), float(np.max(pressures_all))],
+            opacity=0.72,
+            show_scalar_bar=False,
+            show_edges=False,
+            lighting=False,
+            smooth_shading=False,
+            ambient=1.0,
+            diffuse=0.0,
+            specular=0.0,
+            interpolate_before_map=True,
+            render=False,
+        )
+
+        scalar_bar = self._replace_scalar_bar(
+            "layer_pressure_scalar_bar",
+            "Pressure (bar)",
+            position_x=0.82,
+            position_y=0.15,
+            width=0.08,
+            height=0.4,
+            label_font_size=18,
+            title_font_size=20,
+            color="#2f3640",
+            vertical=True,
+            render=False,
+        )
+
+        self.cache["layer_pressure_actor"] = actor
+        self.cache["layer_pressure_scalar_bar"] = scalar_bar
+
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
         # -------------------------
         # 天然裂缝保持原逻辑
         # -------------------------
         if hasattr(sim_data, "fractures"):
             for frac in sim_data.fractures:
                 if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
+<<<<<<< HEAD
                     continue
+=======
+                    continue  # 人工裂缝单独处理
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
                 pts = np.array(frac["points"], dtype=np.float64)
                 if len(pts) < 3:
@@ -2134,6 +2364,7 @@ class PyVistaRenderer:
                 self.cache["layer_well_actors"].append(actor)
 
         self._render()
+<<<<<<< HEAD
 
     #i方向
     def render_corner_grid_by_layer_i(self, sim_data, i_layer: int):
@@ -6738,3 +6969,5 @@ class PyVistaRenderer:
         self.lock_camera_direction(not current)
 
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e

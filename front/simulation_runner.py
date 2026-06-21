@@ -43,8 +43,11 @@ if hasattr(sys.stderr, "reconfigure"):
 
 def run_simulation(params):
     """执行模拟并返回 SimulationData。"""
+<<<<<<< HEAD
     if params.get('interface_source') == 'case_data':
         return run_case_data_simulation(params)
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
     algorithm = params.get('algorithm', 'black_oil')
     if algorithm == 'corner_edfm':
         return run_corner_edfm_simulation(params)
@@ -322,6 +325,7 @@ def apply_corner_initial_state(sim, params):
     sim.setInitialStateParameters(pressure, sw, sg)
 
 
+<<<<<<< HEAD
 def run_case_data_simulation(params):
     """执行 CaseData 接入流程的模拟。
 
@@ -470,6 +474,8 @@ def _collect_case_data_simulation_result(sim, result, params):
     return sim_data
 
 
+=======
+>>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 def run_corner_edfm_simulation(params):
     """执行 Corner EDFM 模拟并返回 SimulationData。"""
     refinement_mode = params.get('corner_grid_refinement', '不加密')
