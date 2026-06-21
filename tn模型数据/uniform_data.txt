@@ -1,0 +1,1401 @@
+// 例如属性文件中出现：
+//     133*99999  79*0  53*99999  20*0  14.452598659480034
+表示     133*99999 表示连续 133 个网格的属性值都是 99999；
+//     79*0      表示接下来连续 79 个网格的属性值都是 0；
+//     53*99999 表示接下来连续 53 个网格的属性值都是 99999；
+//     20*0      表示接下来连续 20 个网格的属性值都是 0；
+//     14.452598659480034 表示接下来 1 个网格的属性值为 14.452598659480034。
+
+
+// 在程序读取时应结合 ACTNUM 判断：
+//     ACTNUM = 0 的网格不参与求解；
+//     对应网格上的 MATRIX_*、DFN_*、SIGMA 等属性通常也应被忽略。
+
+
+
+[GRID]
+
+grid_file = grid.inc
+
+// grid.inc 为油藏网格文件。
+// 该文件定义模型的几何网格，包括网格尺寸、网格节点坐标、角点坐标、网格编号顺序以及 ACTNUM 活跃网格等信息。
+// 后续 MATRIX_PERMX、MATRIX_PERMY、MATRIX_PERMZ、MATRIX_PORO、
+// DFN_PERMX、DFN_PERMY、DFN_PERMZ、DFN_PORO、SIGMA 等属性文件，
+// 都必须与 grid.inc 的网格顺序一一对应。
+//
+// 如果某个网格 ACTNUM = 0，表示该网格为不活跃网格。
+// 在求解器中通常不为该网格分配压力、饱和度等未知量，
+// 也不组装该网格的累积项、流动项、井项或基质-裂缝交换项。
+// 如果该不活跃网格内存在 DFN 等效属性或裂缝段，也应忽略该网格内的裂缝贡献。
+//
+
+
+
+
+[ROCK]
+
+matrix_phi_file = MATRIX_PORO.txt
+
+// MATRIX_PORO.txt 为基质孔隙度文件。
+// 文件中每一个数值对应一个网格单元的基质孔隙度。
+
+// 文件采用一维属性数组格式。
+// 例如： Null Value=99999
+//     21485*99999  0.237215  0.237242 ...
+// 表示前 21485 个网格属性为 Null Value，后面开始依次给出有效网格的基质孔隙度。
+
+
+matrix_kx_file = MATRIX_PERMX.txt
+
+// MATRIX_PERMX.txt 为基质 X 方向渗透率文件。
+// 文件中每一个数值对应一个网格单元的基质 X 方向渗透率。
+
+//
+// 文件采用压缩数组写法。
+// 例如：
+//     21485*99999  73.635813  73.722543 ...
+// 表示前 21485 个网格的 MATRIX_PERMX 为 Null Value，
+// 后续网格的 X 方向基质渗透率依次为 73.635813、73.722543 等。
+// 具体单位应与导出模型保持一致，通常为 mD。
+
+matrix_ky_file = MATRIX_PERMY.txt
+
+// MATRIX_PERMY.txt 为基质 Y 方向渗透率文件。
+
+
+
+matrix_kz_file = MATRIX_PERMZ.txt
+
+// MATRIX_PERMZ.txt 为基质 Z 方向渗透率文件。
+
+
+fracture_kx_file = DFN_PERMX.txt
+
+// DFN_PERMX.txt 为 DFN 等效裂缝系统 X 方向渗透率文件。
+// 这里的 DFN_PERMX 不是某一条具体天然裂缝的渗透率，
+// 而是把原始 DFN 裂缝网络上尺度到油藏网格后，
+// 每个网格块内等效裂缝系统在 X 方向表现出来的导流能力。
+//
+// 文件中每一个数值对应一个网格单元的裂缝连续介质 X 向等效渗透率。
+// 例如：
+//     133*99999  79*0  53*99999  20*0  14.452598659480034
+// 表示：
+//     前 133 个网格为 Null Value；
+//     接下来 79 个网格 DFN_PERMX = 0；
+//     接下来 53 个网格为 Null Value；
+//     接下来 20 个网格 DFN_PERMX = 0；
+//     再下一个网格 DFN_PERMX = 14.452598659480034。
+//
+// 其中：
+//     99999 表示 Null Value；
+//     0 表示该有效网格中 DFN 裂缝系统对 X 方向无等效导流贡献；
+//     非零值表示该网格内 DFN 裂缝系统在 X 方向具有等效导流能力。
+
+
+fracture_ky_file = DFN_PERMY.txt
+// DFN_PERMY.txt 为 DFN 等效裂缝系统 Y 方向渗透率文件。
+
+
+fracture_kz_file = DFN_PERMZ.txt
+// DFN_PERMZ.txt 为 DFN 等效裂缝系统 Z 方向渗透率文件。
+
+
+fracture_phi_file = DFN_PORO.txt
+// DFN_PORO.txt 为 DFN 等效裂缝孔隙度文件。
+// 文件中每一个数值对应一个网格单元的裂缝连续介质孔隙度。
+
+// 文件中的：
+//     n*0 表示连续 n 个网格的裂缝孔隙度为 0，即这些网格内没有有效 DFN 裂缝孔隙体积；
+//     n*99999 表示连续 n 个网格为 Null Value；
+//     单独的非零小数表示对应网格的 DFN 等效裂缝孔隙度。
+//
+
+
+
+
+[FRACTURE]
+fracture_file = dfn.txt
+// dfn.txt 为原始 DFN 裂缝网络文件。
+// 该文件记录每一条天然裂缝的显式几何和物性。
+// 与 DFN_PERMX、DFN_PERMY、DFN_PERMZ、DFN_PORO 不同，
+// dfn.txt 描述的是原始裂缝面本身；
+// DFN_* 文件则是这些裂缝经过网格化/上尺度后得到的等效属性场。
+//
+// dfn.txt 文件开头通常包括 FORMAT、PROPERTIES、SETS 等信息。
+//
+// BEGIN FORMAT 部分示例说明：
+//     Format = Ascii
+//         表示文件为 ASCII 文本格式。
+//     Length_Unit = M
+//         表示长度单位为 m。
+//     XAxis = East
+//         表示 X 轴方向为 East。
+//     Scale = 1
+//         表示坐标缩放系数为 1。
+//     No_Fractures = 200
+//         表示该 DFN 文件中共有 200 条天然裂缝。
+//     No_Nodes = 831
+//         表示所有裂缝顶点总数为 831。
+//     No_Properties = 3
+//         表示每条裂缝有 3 个属性。
+//
+// BEGIN PROPERTIES 部分说明每条裂缝属性列的含义：
+//     Prop1 = Permeability
+//         第 1 个属性为裂缝渗透率。
+//     Prop2 = Compressibility
+//         第 2 个属性为裂缝压缩系数。
+//     Prop3 = Aperture
+//         第 3 个属性为裂缝开度。
+//
+// BEGIN SETS 部分说明裂缝集合：
+//     Set1 = "DFN1"
+//         表示裂缝属于 DFN1 这个集合。
+//
+// BEGIN FRACTURE 部分为每条裂缝的具体数据。
+// 每条裂缝的数据由三部分组成：
+//
+// 第一行：裂缝基本信息和属性
+// 格式为：
+//     fracture_id   vertex_number   set_id   permeability   compressibility   aperture
+//
+// 例如：
+//     1    5    1    85.410107    3.40282e+38    0.000001
+//
+// 表示：
+//     fracture_id = 1
+//         第 1 条裂缝；
+//     vertex_number = 5
+//         该裂缝由 5 个顶点构成；
+//     set_id = 1
+//         该裂缝属于第 1 个裂缝集合，即 DFN1；
+//     permeability = 85.410107
+//         该裂缝的渗透率；
+//     compressibility = 3.40282e+38
+//         该裂缝的压缩系数属性。
+
+//     aperture = 0.000001
+//         该裂缝开度为 0.000001 m。
+//
+// 接下来的 vertex_number 行：裂缝顶点坐标
+// 格式为：
+//     vertex_id   x   y   z
+//
+// 例如：
+//     1    435231.384647    6479495.376064    3050.473915
+//     2    435305.338815    6479556.310052    3084.119533
+//     3    435165.988460    6479437.019367    3031.791548
+//     4    435329.971257    6479553.809348    3151.730146
+//     5    435185.592704    6479424.935322    3110.575461
+//
+// 表示第 1 条裂缝有 5 个顶点，每个顶点给出 x、y、z 坐标。
+// 这些顶点共同构成一个多边形裂缝面。
+//
+// 最后一行：裂缝面法向量
+// 格式为：
+//     0   normal_x   normal_y   normal_z
+//
+// 例如：
+//     0    -0.682730    0.677434    0.273794
+//
+// 表示该裂缝面的单位法向量。
+// 其中 normal_x、normal_y、normal_z 分别为法向量在 X、Y、Z 方向上的分量。
+//
+// 因此，dfn.txt 中每一条裂缝的完整结构为：
+//     1 行裂缝编号、顶点数、集合编号和属性；
+//     vertex_number 行顶点坐标；
+//     1 行裂缝面法向量。
+//
+// 如果 vertex_number = 4，则该裂缝通常为四边形裂缝面；
+// 如果 vertex_number = 5 或 6，则为五边形或六边形裂缝面。
+//
+
+
+[LGR]
+enable_lgr = true
+//是否加密
+d_threshold = 5.05
+//裂缝附近加密距离阈值
+nrx = 2
+nry = 2
+nrz = 2
+//x/y/z 方向加密倍数
+
+
+
+
+
+
+[FLUID]
+mu_w = 1.0
+// 水相黏度，通常单位为 cP。
+
+mu_o = 5.0
+// 油相黏度，通常单位为 cP。
+
+cw = 1e-8
+// 水相压缩系数。
+
+co = 1e-5
+// 油相压缩系数。
+
+p_ref = 100
+// PVT 参考压力。
+
+Swi = 0.05
+// 束缚水饱和度。
+
+Sor = 0.01
+// 残余油饱和度。
+
+Sgc = 0.05
+// 临界气饱和度。
+
+n=2
+//相渗指数
+
+
+
+
+[GAS]
+temperature_C = 140
+// 气藏温度，单位为摄氏度。
+
+mole_CH4 = 0.4
+mole_C2H6 = 0.2
+mole_C3H8 = 0.1
+mole_N2 = 0.1
+mole_CO2 = 0.1
+mole_H2O = 0.1
+mole_unknown = 0.0
+// 气体组分摩尔分数。
+// 所有组分摩尔分数之和应等于 1。
+// 这些组分可用于计算气体偏差因子 Z、气体体积系数 Bg 和气体黏度等 PVT 参数。
+//
+
+gas_table_Pmin_bar = 1
+gas_table_Pmax_bar = 1000
+gas_table_n = 2000
+//PVT表的最小压力、最大压力、打点数
+
+
+// ==================================================
+// [INITIAL] 初始条件
+// ==================================================
+
+[INITIAL]
+pressure = 800
+// 初始油藏压力。
+
+Sw = 0.2
+// 初始水饱和度。
+
+Sg = 0.7
+// 初始气饱和度。
+// 初始油相饱和度通常由下式计算：
+//     So = 1 - Sw - Sg
+// 对当前设置：
+//     So = 1 - 0.2 - 0.7 = 0.1
+//
+
+
+// ==================================================
+// [WELL] 井控参数
+// ==================================================
+
+[WELL]
+producer_bhp = 100
+// 生产井井底流压 BHP。
+
+
+well_radius = 0.05
+// 井半径。
+
+
+
+
+
+[SOLVER]
+
+total_time = 1200
+// 总模拟时间。
+
+dt_init = 0.001
+// 初始时间步长。
+
+
+dt_min = 1e-6
+// 最小时间步长。
+
+
+dt_max = 30
+// 最大时间步长。
+
+
+newton_max_iter = 15
+//表示每个时间步内，Newton 非线性迭代最多允许迭代多少次
+
+newton_tol = 1e-3
+//Newton 非线性残差收敛阈值
+
+linear_tol = 1e-8
+//线性求解器的收敛容差
+
+linear_max_iter = 1000
+//线性求解器最多迭代次数
+
+dt_cut_factor = 0.25
+//时间步失败时的缩小系数
+
+dt_grow_factor = 1.5
+//时间步成功后最大增长倍数
+
+max_timestep_retry = 20
+//一个时间步失败后，最多允许切小重试次数
+
+
+[OUTPUT]
+field_output_times = 100, 400, 800, 1200     //代码里还没有设置
+// 指定需要输出空间场数据的时间点。
+// 例如压力场、饱和度场
+// 这些场数据通常数据量较大，因此不一定每个时间步都输出。
+// 产量曲线 CSV 数据量较小，可以每个时间步都输出。
+//
+
+gas_pvt_table.csv
+// 气体 PVT 表文件。
+// 记录不同压力下的真实气体性质，包括压力 P_bar、气体偏差因子 Z、气体压缩系数 Cg、气体体积系数 Bg 和气体黏度 mu_g。
+// 主要用于检查气体 PVT 计算是否合理，也方便后处理或与其他软件对比。
+
+grid_info_lgr.csv
+// LGR 网格总体信息文件。
+// 记录模型原始网格数量、模型尺寸和平均网格尺寸等基本信息。
+// 通常包括 Nx、Ny、Nz、Lx、Ly、Lz、dx、dy、dz。
+// 主要用于后处理程序快速读取模型整体尺度。
+
+parent_cells_lgr.csv
+// LGR 加密前的父网格信息文件。
+// 每一行对应一个 parent cell，即原始角点网格单元。
+// 记录 parent_id、ix、iy、iz、是否被加密 refined、对应 leaf cell 起始编号、加密倍数、中心坐标、体积、包围盒、8 个角点坐标和 6 个面编号。
+// 主要用于检查哪些原始网格被 LGR 加密，以及原始角点网格几何是否正确。
+
+leaf_cells_lgr.csv
+// LGR 加密后的实际求解网格信息文件。
+// 每一行对应一个 leaf cell，即真正参与数值求解的网格单元。
+// 对于未加密区域，一个 parent cell 对应一个 leaf cell；对于加密区域，一个 parent cell 会被细分为多个 leaf cell。
+// 记录 leaf_id、parent_id、局部加密索引 lix/liy/liz、中心坐标、体积、包围盒、8 个角点坐标和 6 个面编号。
+// 后续压力场、饱和度场、M-M 连接和 M-F 连接都是基于 leaf cell 进行计算。
+
+mm_faces_lgr.csv
+// 基质-基质连接面几何文件。
+// 每一行对应一个 leaf cell 与相邻 leaf cell 之间的共享面。
+// 记录 face_id、owner cell、neighbor cell、局部面编号、面中心、面法向量、面积、包围盒和四个面顶点坐标。
+// 主要用于检查 matrix-matrix transmissibility 的几何基础是否正确。
+
+fracture_geometry_lgr.csv
+// 原始裂缝几何文件。
+// 记录代码中用于 EDFM 切割的裂缝面几何信息，包括天然裂缝和人工裂缝。
+// 每一行对应一条裂缝，通常包括裂缝编号、裂缝类型、是否为人工裂缝，以及裂缝四个顶点坐标。
+// 这个文件描述的是切割前的原始裂缝面，不是切割后的 EDFM segment。
+
+well_info_lgr.csv
+// 井连接信息文件。
+// 每一行对应一个井连接。
+// 记录 well_id、井连接到的节点编号 node_idx、连接类型 type、井连接点坐标 x/y/z、井指数 WI 和井底流压 P_bhp。
+// 如果 type 为 FractureSegment，表示该井连接在某个 EDFM 裂缝段上。
+// 该文件主要用于检查井到底连接到了哪个网格或哪个裂缝段。
+
+segments_lgr.csv
+// EDFM 裂缝段汇总文件。
+// 每一行对应一个由裂缝面与 leaf cell 切割得到的 EDFM segment。
+// 记录 seg_id、所属裂缝 frac_id、所在 leaf_id、parent_id、segment 面积、中心坐标、法向量、裂缝开度、裂缝渗透率、M-F 传导率 Tmf 和多边形顶点数 poly_n。
+// 主要用于检查裂缝被网格切割后的 segment 分布、面积大小、中心位置和基质-裂缝连接强度。
+
+segment_poly_lgr.csv
+// EDFM segment 多边形顶点文件。
+// 每一行对应某个 segment 的一个多边形顶点。
+// 记录 seg_id、顶点编号 vid 和顶点坐标 x/y/z。
+// 该文件可以用于在 MATLAB 或 Python 中画出真实的 EDFM segment 轮廓，而不仅仅是画 segment 中心点。
+
+segment_subface_trace_lgr.csv
+// EDFM segment 与 cell 子面交线信息文件。
+// 每一行对应一个 segment 在某个子面上的 trace 信息。
+// 记录 seg_id、leaf_id、subface_id、交线长度 trace_len 和 segment 中心到交线的距离 center_dist。
+// 主要用于检查裂缝跨网格连接、相邻 segment 之间的几何关系，以及 F-F 连接是否合理。
+
+output_sim_lgr_WR.csv
+// Warren-Root 双重介质模式下的生产动态输出文件。
+// 当 enable_dual_porosity = true 时输出该文件。
+// 每一行对应一个成功时间步。
+// 通常记录 Time、BHP、CumWater、CumGas、AvgPressure、DT、nLeaf、nSeg、Qw、Qg。
+// 可用于绘制累计产气、累计产水、日产气、日产水、平均压力和时间步变化曲线。
+
+output_sim_lgr_noWR.csv
+// 非 Warren-Root 双重介质模式下的生产动态输出文件。
+// 当 enable_dual_porosity = false 时输出该文件。
+// 每一行对应一个成功时间步。
+// 通常记录 Time、BHP、CumWater、CumGas、AvgPressure、DT、nLeaf、nSeg、Qw、Qg。
+// 可用于与 WR 模式结果对比，分析双重介质交换对产量和压力衰减的影响。
+
+final_field_lgr_WR.csv
+// Warren-Root 双重介质模式下的最终空间场输出文件。
+// 当 enable_dual_porosity = true 时输出该文件。
+// 每一行对应一个 leaf cell。
+// 通常记录 leaf_id、parent_id、x、y、z、P、Sw、Sg、P_matrix、Sw_matrix、Sg_matrix。
+// 其中 P/Sw/Sg 表示裂缝连续介质或主求解节点状态，P_matrix/Sw_matrix/Sg_matrix 表示 Warren-Root 基质系统状态。
+// 可用于绘制最终时刻压力场、饱和度场，以及分析基质系统与裂缝系统之间的压力差。
+
+final_field_lgr_noWR.csv
+// 非 Warren-Root 双重介质模式下的最终空间场输出文件。
+// 当 enable_dual_porosity = false 时输出该文件。
+// 每一行对应一个 leaf cell。
+// 通常记录 leaf_id、parent_id、x、y、z、P、Sw、Sg。
+// 可用于绘制最终时刻压力场、气水饱和度场和压力降分布图。
+
+
+
+
+
+
+
+
+[WR]
+sigma_file = SIGMA.txt
+// SIGMA.txt 为 Warren-Root 双重介质模型中的形状因子文件。
+
+
+
+
+// ==================================================
+// [RETURN_SCHEMA] 前端/算法端统一返回字段约定
+// ==================================================
+
+[RETURN_SCHEMA]
+schema_format = json
+schema_version = 1.0
+
+// 说明：
+// 1. 这个 txt 不应该保存 MATRIX_*、DFN_*、SIGMA、COORD、ZCORN 等大数组本体。
+// 2. 解析脚本读取本 txt，按 source/file 字段找到具体文件，解析后按下面的变量名返回。
+// 3. 前端 UI 只依赖下面的变量名做展示；算法端也按同一套变量名取值，避免前后端各自猜字段。
+// 4. 大数组建议后端懒加载/分页/按字段读取，不建议前端首次请求一次性拿全量。
+
+BEGIN_RETURN_SCHEMA_JSON
+{
+  "schema_version": "1.0",
+  "naming_convention": "snake_case",
+  "parser_contract": {
+    "manifest_role": "This txt is the single source of truth for file paths, parser behavior, return variable names, and front-end display labels.",
+    "large_array_policy": "Do not duplicate large arrays in this txt. Parser reads referenced files, expands run-length encoded values, and returns arrays under the variable names below.",
+    "null_value": 99999,
+    "run_length_encoding": "n*value means repeat value n times; a single value means repeat once.",
+    "grid_order": "All one-dimensional property arrays follow the grid.inc cell order and must remain index-aligned with ACTNUM.",
+    "actnum_rule": "When actnum[i] == 0, cell i is inactive; matrix_*, fracture_*, and sigma values at this index should be ignored for solver and normally hidden or masked in UI.",
+    "index_base_for_api": "0-based arrays in API; original file ids/leaf ids/segment ids may remain 1-based if produced by simulator."
+  },
+  "model_info": {
+    "model_id": {
+      "source": "manifest filename",
+      "dtype": "string",
+      "description": "Model/case id, usually derived from the txt filename."
+    },
+    "grid_file": {
+      "source": "[GRID].grid_file",
+      "dtype": "string"
+    },
+    "dfn_file": {
+      "source": "[FRACTURE].fracture_file",
+      "dtype": "string"
+    },
+    "null_value": {
+      "source": "property file header",
+      "dtype": "number",
+      "description": "Null value marker, currently 99999."
+    },
+    "length_unit": {
+      "source": "dfn.txt BEGIN FORMAT.Length_Unit / grid.inc",
+      "dtype": "string",
+      "unit": "m"
+    },
+    "coordinate_axis": {
+      "source": "dfn.txt BEGIN FORMAT.XAxis",
+      "dtype": "string"
+    }
+  },
+  "grid": {
+    "nx": {
+      "source": "grid.inc SPECGRID",
+      "dtype": "int"
+    },
+    "ny": {
+      "source": "grid.inc SPECGRID",
+      "dtype": "int"
+    },
+    "nz": {
+      "source": "grid.inc SPECGRID",
+      "dtype": "int"
+    },
+    "total_cell_count": {
+      "source": "nx*ny*nz",
+      "dtype": "int"
+    },
+    "active_cell_count": {
+      "source": "grid.inc ACTNUM",
+      "dtype": "int"
+    },
+    "inactive_cell_count": {
+      "source": "grid.inc ACTNUM",
+      "dtype": "int"
+    },
+    "coord": {
+      "source": "grid.inc COORD",
+      "dtype": "float[]",
+      "shape": "[6*(nx+1)*(ny+1)]",
+      "unit": "m",
+      "description": "Corner-point grid pillar coordinates."
+    },
+    "zcorn": {
+      "source": "grid.inc ZCORN",
+      "dtype": "float[]",
+      "shape": "[8*nx*ny*nz]",
+      "unit": "m",
+      "description": "Corner-point grid Z coordinates."
+    },
+    "actnum": {
+      "source": "grid.inc ACTNUM",
+      "dtype": "int[]",
+      "shape": "[nx*ny*nz]",
+      "description": "1=active cell, 0=inactive cell."
+    },
+    "active_cell_indices": {
+      "source": "derived from actnum",
+      "dtype": "int[]",
+      "shape": "[active_cell_count]"
+    },
+    "inactive_cell_indices": {
+      "source": "derived from actnum",
+      "dtype": "int[]",
+      "shape": "[inactive_cell_count]"
+    }
+  },
+  "rock": {
+    "matrix_phi": {
+      "source": "[ROCK].matrix_phi_file / MATRIX_PORO.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "fraction",
+      "description": "Matrix porosity."
+    },
+    "matrix_kx": {
+      "source": "[ROCK].matrix_kx_file / MATRIX_PERMX.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Matrix permeability in X direction."
+    },
+    "matrix_ky": {
+      "source": "[ROCK].matrix_ky_file / MATRIX_PERMY.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Matrix permeability in Y direction."
+    },
+    "matrix_kz": {
+      "source": "[ROCK].matrix_kz_file / MATRIX_PERMZ.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Matrix permeability in Z direction."
+    },
+    "active_matrix_phi": {
+      "source": "matrix_phi filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]",
+      "shape": "[active_cell_count or fewer]"
+    },
+    "active_matrix_kx": {
+      "source": "matrix_kx filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]",
+      "shape": "[active_cell_count or fewer]"
+    },
+    "active_matrix_ky": {
+      "source": "matrix_ky filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]",
+      "shape": "[active_cell_count or fewer]"
+    },
+    "active_matrix_kz": {
+      "source": "matrix_kz filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]",
+      "shape": "[active_cell_count or fewer]"
+    }
+  },
+  "dfn_effective": {
+    "fracture_phi": {
+      "source": "[ROCK].fracture_phi_file / DFN_PORO.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "fraction",
+      "description": "Upscaled/equivalent DFN fracture porosity per grid cell."
+    },
+    "fracture_kx": {
+      "source": "[ROCK].fracture_kx_file / DFN_PERMX.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Upscaled/equivalent DFN permeability in X direction."
+    },
+    "fracture_ky": {
+      "source": "[ROCK].fracture_ky_file / DFN_PERMY.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Upscaled/equivalent DFN permeability in Y direction."
+    },
+    "fracture_kz": {
+      "source": "[ROCK].fracture_kz_file / DFN_PERMZ.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "mD",
+      "description": "Upscaled/equivalent DFN permeability in Z direction."
+    },
+    "sigma": {
+      "source": "[WR].sigma_file / SIGMA.txt",
+      "dtype": "float[]",
+      "shape": "[total_cell_count]",
+      "unit": "1/m^2 or model-defined",
+      "description": "Warren-Root shape factor per grid cell."
+    },
+    "dfn_present_mask": {
+      "source": "derived from fracture_phi/fracture_k* and actnum",
+      "dtype": "bool[]",
+      "shape": "[total_cell_count]",
+      "description": "true when active cell has nonzero DFN effective property."
+    },
+    "active_fracture_phi": {
+      "source": "fracture_phi filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]"
+    },
+    "active_fracture_kx": {
+      "source": "fracture_kx filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]"
+    },
+    "active_fracture_ky": {
+      "source": "fracture_ky filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]"
+    },
+    "active_fracture_kz": {
+      "source": "fracture_kz filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]"
+    },
+    "active_sigma": {
+      "source": "sigma filtered by actnum==1 and value!=null_value",
+      "dtype": "float[]"
+    }
+  },
+  "dfn_geometry": {
+    "fracture_count": {
+      "source": "dfn.txt BEGIN FORMAT.No_Fractures",
+      "dtype": "int"
+    },
+    "node_count": {
+      "source": "dfn.txt BEGIN FORMAT.No_Nodes",
+      "dtype": "int"
+    },
+    "property_count": {
+      "source": "dfn.txt BEGIN FORMAT.No_Properties",
+      "dtype": "int"
+    },
+    "properties": {
+      "source": "dfn.txt BEGIN PROPERTIES",
+      "dtype": "object[]",
+      "description": "Each item: property_id, name."
+    },
+    "sets": {
+      "source": "dfn.txt BEGIN SETS",
+      "dtype": "object[]",
+      "description": "Each item: set_id, set_name."
+    },
+    "fractures": {
+      "source": "dfn.txt BEGIN FRACTURE",
+      "dtype": "object[]",
+      "shape": "[fracture_count]",
+      "description": "Each item contains fracture_id, vertex_count, set_id, permeability, compressibility, aperture, vertices, normal."
+    },
+    "fractures[].fracture_id": {
+      "source": "dfn.txt fracture header",
+      "dtype": "int"
+    },
+    "fractures[].vertex_count": {
+      "source": "dfn.txt fracture header",
+      "dtype": "int"
+    },
+    "fractures[].set_id": {
+      "source": "dfn.txt fracture header",
+      "dtype": "int"
+    },
+    "fractures[].permeability": {
+      "source": "dfn.txt fracture header column 4",
+      "dtype": "float"
+    },
+    "fractures[].compressibility": {
+      "source": "dfn.txt fracture header column 5",
+      "dtype": "float"
+    },
+    "fractures[].aperture": {
+      "source": "dfn.txt fracture header column 6",
+      "dtype": "float",
+      "unit": "m"
+    },
+    "fractures[].vertices": {
+      "source": "dfn.txt following vertex_count rows",
+      "dtype": "float[][]",
+      "shape": "[vertex_count,3]",
+      "unit": "m",
+      "description": "Vertex coordinates [x,y,z]."
+    },
+    "fractures[].normal": {
+      "source": "dfn.txt final normal row",
+      "dtype": "float[]",
+      "shape": "[3]",
+      "description": "Unit normal vector [nx,ny,nz]."
+    },
+    "bbox_min": {
+      "source": "derived from all fracture vertices",
+      "dtype": "float[]",
+      "shape": "[3]",
+      "unit": "m"
+    },
+    "bbox_max": {
+      "source": "derived from all fracture vertices",
+      "dtype": "float[]",
+      "shape": "[3]",
+      "unit": "m"
+    }
+  },
+  "lgr": {
+    "enable_lgr": {
+      "source": "[LGR].enable_lgr",
+      "dtype": "bool"
+    },
+    "d_threshold": {
+      "source": "[LGR].d_threshold",
+      "dtype": "float",
+      "unit": "m",
+      "description": "Refinement distance threshold near fractures."
+    },
+    "nrx": {
+      "source": "[LGR].nrx",
+      "dtype": "int"
+    },
+    "nry": {
+      "source": "[LGR].nry",
+      "dtype": "int"
+    },
+    "nrz": {
+      "source": "[LGR].nrz",
+      "dtype": "int"
+    }
+  },
+  "fluid": {
+    "mu_w": {
+      "source": "[FLUID].mu_w",
+      "dtype": "float",
+      "unit": "cP"
+    },
+    "mu_o": {
+      "source": "[FLUID].mu_o",
+      "dtype": "float",
+      "unit": "cP"
+    },
+    "cw": {
+      "source": "[FLUID].cw",
+      "dtype": "float"
+    },
+    "co": {
+      "source": "[FLUID].co",
+      "dtype": "float"
+    },
+    "p_ref": {
+      "source": "[FLUID].p_ref",
+      "dtype": "float"
+    },
+    "swi": {
+      "source": "[FLUID].Swi",
+      "dtype": "float"
+    },
+    "sor": {
+      "source": "[FLUID].Sor",
+      "dtype": "float"
+    },
+    "sgc": {
+      "source": "[FLUID].Sgc",
+      "dtype": "float"
+    },
+    "relperm_exponent_n": {
+      "source": "[FLUID].n",
+      "dtype": "float"
+    }
+  },
+  "gas": {
+    "temperature_c": {
+      "source": "[GAS].temperature_C",
+      "dtype": "float",
+      "unit": "degC"
+    },
+    "mole_fraction": {
+      "source": "[GAS].mole_*",
+      "dtype": "object",
+      "description": "Keys: CH4, C2H6, C3H8, N2, CO2, H2O, unknown."
+    },
+    "gas_table_pmin_bar": {
+      "source": "[GAS].gas_table_Pmin_bar",
+      "dtype": "float",
+      "unit": "bar"
+    },
+    "gas_table_pmax_bar": {
+      "source": "[GAS].gas_table_Pmax_bar",
+      "dtype": "float",
+      "unit": "bar"
+    },
+    "gas_table_n": {
+      "source": "[GAS].gas_table_n",
+      "dtype": "int"
+    }
+  },
+  "initial": {
+    "pressure": {
+      "source": "[INITIAL].pressure",
+      "dtype": "float"
+    },
+    "sw": {
+      "source": "[INITIAL].Sw",
+      "dtype": "float"
+    },
+    "sg": {
+      "source": "[INITIAL].Sg",
+      "dtype": "float"
+    },
+    "so": {
+      "source": "derived as 1 - sw - sg",
+      "dtype": "float"
+    }
+  },
+  "well": {
+    "producer_bhp": {
+      "source": "[WELL].producer_bhp",
+      "dtype": "float"
+    },
+    "well_radius": {
+      "source": "[WELL].well_radius",
+      "dtype": "float",
+      "unit": "m"
+    }
+  },
+  "solver": {
+    "total_time": {
+      "source": "[SOLVER].total_time",
+      "dtype": "float"
+    },
+    "dt_init": {
+      "source": "[SOLVER].dt_init",
+      "dtype": "float"
+    },
+    "dt_min": {
+      "source": "[SOLVER].dt_min",
+      "dtype": "float"
+    },
+    "dt_max": {
+      "source": "[SOLVER].dt_max",
+      "dtype": "float"
+    },
+    "newton_max_iter": {
+      "source": "[SOLVER].newton_max_iter",
+      "dtype": "int"
+    },
+    "newton_tol": {
+      "source": "[SOLVER].newton_tol",
+      "dtype": "float"
+    },
+    "linear_tol": {
+      "source": "[SOLVER].linear_tol",
+      "dtype": "float"
+    },
+    "linear_max_iter": {
+      "source": "[SOLVER].linear_max_iter",
+      "dtype": "int"
+    },
+    "dt_cut_factor": {
+      "source": "[SOLVER].dt_cut_factor",
+      "dtype": "float"
+    },
+    "dt_grow_factor": {
+      "source": "[SOLVER].dt_grow_factor",
+      "dtype": "float"
+    },
+    "max_timestep_retry": {
+      "source": "[SOLVER].max_timestep_retry",
+      "dtype": "int"
+    }
+  },
+  "expected_output_files": {
+    "gas_pvt_table": {
+      "file": "gas_pvt_table.csv",
+      "variables": [
+        "pressure_bar",
+        "z_factor",
+        "cg",
+        "bg",
+        "mu_g"
+      ]
+    },
+    "grid_info_lgr": {
+      "file": "grid_info_lgr.csv",
+      "variables": [
+        "nx",
+        "ny",
+        "nz",
+        "lx",
+        "ly",
+        "lz",
+        "dx",
+        "dy",
+        "dz",
+        "n_parent",
+        "n_leaf",
+        "n_segment"
+      ]
+    },
+    "parent_cells_lgr": {
+      "file": "parent_cells_lgr.csv",
+      "variables": [
+        "parent_id",
+        "ix",
+        "iy",
+        "iz",
+        "refined",
+        "leaf_start",
+        "nrx",
+        "nry",
+        "nrz",
+        "center_x",
+        "center_y",
+        "center_z",
+        "volume",
+        "bbox_min_x",
+        "bbox_min_y",
+        "bbox_min_z",
+        "bbox_max_x",
+        "bbox_max_y",
+        "bbox_max_z",
+        "corner_x_0",
+        "corner_y_0",
+        "corner_z_0",
+        "corner_x_1",
+        "corner_y_1",
+        "corner_z_1",
+        "corner_x_2",
+        "corner_y_2",
+        "corner_z_2",
+        "corner_x_3",
+        "corner_y_3",
+        "corner_z_3",
+        "corner_x_4",
+        "corner_y_4",
+        "corner_z_4",
+        "corner_x_5",
+        "corner_y_5",
+        "corner_z_5",
+        "corner_x_6",
+        "corner_y_6",
+        "corner_z_6",
+        "corner_x_7",
+        "corner_y_7",
+        "corner_z_7",
+        "face_id_0",
+        "face_id_1",
+        "face_id_2",
+        "face_id_3",
+        "face_id_4",
+        "face_id_5"
+      ]
+    },
+    "leaf_cells_lgr": {
+      "file": "leaf_cells_lgr.csv",
+      "variables": [
+        "leaf_id",
+        "parent_id",
+        "lix",
+        "liy",
+        "liz",
+        "center_x",
+        "center_y",
+        "center_z",
+        "volume",
+        "bbox_min_x",
+        "bbox_min_y",
+        "bbox_min_z",
+        "bbox_max_x",
+        "bbox_max_y",
+        "bbox_max_z",
+        "corner_x_0",
+        "corner_y_0",
+        "corner_z_0",
+        "corner_x_1",
+        "corner_y_1",
+        "corner_z_1",
+        "corner_x_2",
+        "corner_y_2",
+        "corner_z_2",
+        "corner_x_3",
+        "corner_y_3",
+        "corner_z_3",
+        "corner_x_4",
+        "corner_y_4",
+        "corner_z_4",
+        "corner_x_5",
+        "corner_y_5",
+        "corner_z_5",
+        "corner_x_6",
+        "corner_y_6",
+        "corner_z_6",
+        "corner_x_7",
+        "corner_y_7",
+        "corner_z_7",
+        "face_id_0",
+        "face_id_1",
+        "face_id_2",
+        "face_id_3",
+        "face_id_4",
+        "face_id_5"
+      ]
+    },
+    "mm_faces_lgr": {
+      "file": "mm_faces_lgr.csv",
+      "variables": [
+        "face_id",
+        "owner_leaf_id",
+        "neighbor_leaf_id",
+        "local_face_id",
+        "center_x",
+        "center_y",
+        "center_z",
+        "normal_x",
+        "normal_y",
+        "normal_z",
+        "area",
+        "bbox_min_x",
+        "bbox_min_y",
+        "bbox_min_z",
+        "bbox_max_x",
+        "bbox_max_y",
+        "bbox_max_z",
+        "vertex_x_0",
+        "vertex_y_0",
+        "vertex_z_0",
+        "vertex_x_1",
+        "vertex_y_1",
+        "vertex_z_1",
+        "vertex_x_2",
+        "vertex_y_2",
+        "vertex_z_2",
+        "vertex_x_3",
+        "vertex_y_3",
+        "vertex_z_3"
+      ]
+    },
+    "fracture_geometry_lgr": {
+      "file": "fracture_geometry_lgr.csv",
+      "variables": [
+        "fracture_id",
+        "fracture_type",
+        "is_artificial",
+        "vertex_count",
+        "vertex_x_0",
+        "vertex_y_0",
+        "vertex_z_0",
+        "vertex_x_1",
+        "vertex_y_1",
+        "vertex_z_1",
+        "vertex_x_2",
+        "vertex_y_2",
+        "vertex_z_2",
+        "vertex_x_3",
+        "vertex_y_3",
+        "vertex_z_3",
+        "normal_x",
+        "normal_y",
+        "normal_z",
+        "aperture",
+        "permeability"
+      ]
+    },
+    "well_info_lgr": {
+      "file": "well_info_lgr.csv",
+      "variables": [
+        "well_id",
+        "node_idx",
+        "connection_type",
+        "x",
+        "y",
+        "z",
+        "wi",
+        "bhp"
+      ]
+    },
+    "segments_lgr": {
+      "file": "segments_lgr.csv",
+      "variables": [
+        "seg_id",
+        "frac_id",
+        "leaf_id",
+        "parent_id",
+        "area",
+        "center_x",
+        "center_y",
+        "center_z",
+        "normal_x",
+        "normal_y",
+        "normal_z",
+        "aperture",
+        "permeability",
+        "tmf",
+        "poly_n"
+      ]
+    },
+    "segment_poly_lgr": {
+      "file": "segment_poly_lgr.csv",
+      "variables": [
+        "seg_id",
+        "vid",
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    "segment_subface_trace_lgr": {
+      "file": "segment_subface_trace_lgr.csv",
+      "variables": [
+        "seg_id",
+        "leaf_id",
+        "subface_id",
+        "trace_len",
+        "center_dist"
+      ]
+    },
+    "output_sim_lgr_wr": {
+      "file": "output_sim_lgr_WR.csv",
+      "variables": [
+        "time",
+        "bhp",
+        "cum_water",
+        "cum_gas",
+        "avg_pressure",
+        "dt",
+        "n_leaf",
+        "n_seg",
+        "qw",
+        "qg"
+      ]
+    },
+    "output_sim_lgr_no_wr": {
+      "file": "output_sim_lgr_noWR.csv",
+      "variables": [
+        "time",
+        "bhp",
+        "cum_water",
+        "cum_gas",
+        "avg_pressure",
+        "dt",
+        "n_leaf",
+        "n_seg",
+        "qw",
+        "qg"
+      ]
+    },
+    "final_field_lgr_wr": {
+      "file": "final_field_lgr_WR.csv",
+      "variables": [
+        "leaf_id",
+        "parent_id",
+        "x",
+        "y",
+        "z",
+        "pressure",
+        "sw",
+        "sg",
+        "pressure_matrix",
+        "sw_matrix",
+        "sg_matrix"
+      ]
+    },
+    "final_field_lgr_no_wr": {
+      "file": "final_field_lgr_noWR.csv",
+      "variables": [
+        "leaf_id",
+        "parent_id",
+        "x",
+        "y",
+        "z",
+        "pressure",
+        "sw",
+        "sg"
+      ]
+    }
+  },
+  "frontend_display_groups": {
+    "model_overview": [
+      "model_info",
+      "grid.nx",
+      "grid.ny",
+      "grid.nz",
+      "grid.total_cell_count",
+      "grid.active_cell_count",
+      "dfn_geometry.fracture_count",
+      "lgr.enable_lgr"
+    ],
+    "grid_visualization": [
+      "grid.coord",
+      "grid.zcorn",
+      "grid.actnum",
+      "rock.matrix_phi",
+      "rock.matrix_kx",
+      "rock.matrix_ky",
+      "rock.matrix_kz",
+      "dfn_effective.fracture_phi",
+      "dfn_effective.fracture_kx",
+      "dfn_effective.fracture_ky",
+      "dfn_effective.fracture_kz",
+      "dfn_effective.sigma"
+    ],
+    "fracture_visualization": [
+      "dfn_geometry.fractures",
+      "dfn_geometry.fractures[].vertices",
+      "dfn_geometry.fractures[].normal",
+      "expected_output_files.segments_lgr",
+      "expected_output_files.segment_poly_lgr"
+    ],
+    "simulation_curves": [
+      "expected_output_files.output_sim_lgr_wr",
+      "expected_output_files.output_sim_lgr_no_wr"
+    ],
+    "final_fields": [
+      "expected_output_files.final_field_lgr_wr",
+      "expected_output_files.final_field_lgr_no_wr"
+    ]
+  },
+  "detected_current_file_stats": {
+    "grid": {
+      "nx": 132,
+      "ny": 160,
+      "nz": 10,
+      "total_cell_count": 211200,
+      "active_cell_count": 193320,
+      "inactive_cell_count": 17880,
+      "coord_value_count": 128478,
+      "zcorn_value_count": 1689600
+    },
+    "dfn_geometry": {
+      "fracture_count": 200,
+      "node_count": 831,
+      "property_count": 3,
+      "vertex_count_unique": [
+        3,
+        4,
+        5,
+        6
+      ],
+      "bbox_min": [
+        433473.237355,
+        6476888.305302,
+        2813.665997
+      ],
+      "bbox_max": [
+        436717.872647,
+        6480050.52612,
+        3516.476707
+      ]
+    },
+    "property_files": {
+      "SIGMA.txt": {
+        "keyword": "SIGMA",
+        "count": 211200,
+        "null_count": 17880,
+        "zero_count": 184757,
+        "nonzero_count": 8563,
+        "min_valid": 0.0,
+        "max_valid": 1.2929222393424555
+      },
+      "DFN_PERMX.txt": {
+        "keyword": "DFN_PERMX",
+        "count": 211200,
+        "null_count": 17880,
+        "zero_count": 186596,
+        "nonzero_count": 6724,
+        "min_valid": 0.0,
+        "max_valid": 4804.1528994873825
+      },
+      "DFN_PERMY.txt": {
+        "keyword": "DFN_PERMY",
+        "count": 211200,
+        "null_count": 17880,
+        "zero_count": 186682,
+        "nonzero_count": 6638,
+        "min_valid": 0.0,
+        "max_valid": 3454.44910098238
+      },
+      "DFN_PERMZ.txt": {
+        "keyword": "DFN_PERMZ",
+        "count": 211200,
+        "null_count": 17880,
+        "zero_count": 185748,
+        "nonzero_count": 7572,
+        "min_valid": 0.0,
+        "max_valid": 3867.426333057557
+      },
+      "DFN_PORO.txt": {
+        "keyword": "DFN_PORO",
+        "count": 211200,
+        "null_count": 17880,
+        "zero_count": 184131,
+        "nonzero_count": 9189,
+        "min_valid": 0.0,
+        "max_valid": 4.296295486432507e-05
+      },
+      "MATRIX_PERMX.txt": {
+        "keyword": "MATRIX_PERMX",
+        "count": 211200,
+        "null_count": 98235,
+        "zero_count": 0,
+        "nonzero_count": 112965,
+        "min_valid": 5.099325328269109,
+        "max_valid": 456.9072822712373
+      },
+      "MATRIX_PERMY.txt": {
+        "keyword": "MATRIX_PERMY",
+        "count": 211200,
+        "null_count": 98235,
+        "zero_count": 0,
+        "nonzero_count": 112965,
+        "min_valid": 5.099325328269109,
+        "max_valid": 456.9072822712373
+      },
+      "MATRIX_PERMZ.txt": {
+        "keyword": "MATRIX_PERMZ",
+        "count": 211200,
+        "null_count": 98235,
+        "zero_count": 0,
+        "nonzero_count": 112965,
+        "min_valid": 1.7399325328269108,
+        "max_valid": 46.920728227123725
+      },
+      "MATRIX_PORO.txt": {
+        "keyword": "MATRIX_PORO",
+        "count": 211200,
+        "null_count": 98235,
+        "zero_count": 0,
+        "nonzero_count": 112965,
+        "min_valid": 0.17618488000523488,
+        "max_valid": 0.27893831999869395
+      }
+    }
+  }
+}
+END_RETURN_SCHEMA_JSON
