@@ -94,7 +94,10 @@ def project_display_name(project_path):
 
 def _write_recent_projects(records):
     path = recent_projects_store_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    except OSError:
+        return
     payload = {
         "schema_version": RECENT_PROJECTS_SCHEMA_VERSION,
         "projects": [
@@ -107,6 +110,9 @@ def _write_recent_projects(records):
             if item.get("path")
         ],
     }
-    with open(path, "w", encoding="utf-8", newline="\n") as file:
-        json.dump(payload, file, ensure_ascii=False, indent=2)
-        file.write("\n")
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+    except OSError:
+        return

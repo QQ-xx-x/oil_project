@@ -1,4 +1,3 @@
-
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -16,6 +15,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <utility>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -35,6 +35,8 @@ static constexpr double EPS = 1e-12;
 static constexpr double PI  = 3.14159265358979323846;
 // k:mD, length:m, area:m2, pressure:bar, viscosity:cP, time:day
 static constexpr double FLOW_BETA = 0.00853;
+static constexpr double PHI_FLOOR = 1e-12;
+static constexpr double K_FLOOR = 1e-12;
 
 enum FaceID {
     XM = 0, XP = 1,
@@ -172,7 +174,7 @@ struct FaceGeom {
 
 struct Fracture {
     int id{-1};
-    Point3 vertices[4];
+    std::vector<Point3> vertices;
     double aperture{0.01};
     double perm{10000.0};
     bool is_hydraulic{false};
@@ -195,6 +197,7 @@ struct ParentCell {
     std::array<int, 6> face_ids{{-1,-1,-1,-1,-1,-1}};
     Point3 bbox_min{0,0,0};
     Point3 bbox_max{0,0,0};
+    bool active{true};
     bool refined{false};
     int leaf_base{-1};
     uint16_t Nrx{1}, Nry{1}, Nrz{1};
@@ -214,6 +217,7 @@ struct LeafCell {
     std::array<std::vector<int>, 6> subface_ids{};
     Point3 bbox_min{0,0,0};
     Point3 bbox_max{0,0,0};
+    bool active{true};
 };
 
 struct Segment {
@@ -399,14 +403,17 @@ static double distPointTriangle(const Point3& p, const Point3& a, const Point3& 
     return std::abs((p - a).dot(n));
 }
 
-static inline double distPointQuad(const Point3& p, const Fracture& f) {
-    const Point3& v0 = f.vertices[0];
-    const Point3& v1 = f.vertices[1];
-    const Point3& v2 = f.vertices[2];
-    const Point3& v3 = f.vertices[3];
-    double d1 = distPointTriangle(p, v0, v1, v2);
-    double d2 = distPointTriangle(p, v0, v2, v3);
-    return std::min(d1, d2);
+static inline double distPointPolygon(const Point3& p, const Fracture& f) {
+    const auto& v = f.vertices;
+    if (v.empty()) return 1e30;
+    if (v.size() == 1) return (p - v[0]).norm();
+    if (v.size() == 2) return distPointSegment(p, v[0], v[1]);
+
+    double best = 1e30;
+    for (size_t i = 1; i + 1 < v.size(); ++i) {
+        best = std::min(best, distPointTriangle(p, v[0], v[i], v[i + 1]));
+    }
+    return best;
 }
 
 static inline Point3 pointMin(const Point3& a, const Point3& b) {
@@ -449,6 +456,25 @@ static inline Point3 quadUnitNormal(const std::array<Point3, 4>& q) {
     double nn = n.norm();
     if (nn < EPS) return {0,0,0};
     return n / nn;
+}
+
+static inline Point3 polygonUnitNormal(const std::vector<Point3>& poly) {
+    Point3 n{0,0,0};
+    if (poly.size() < 3) return n;
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const Point3& p = poly[i];
+        const Point3& r = poly[(i + 1) % poly.size()];
+        n.x += (p.y - r.y) * (p.z + r.z);
+        n.y += (p.z - r.z) * (p.x + r.x);
+        n.z += (p.x - r.x) * (p.y + r.y);
+    }
+    double nn = n.norm();
+    if (nn < EPS) return {0,0,0};
+    return n / nn;
+}
+
+static inline double fracturePolygonArea(const Fracture& f) {
+    return polygonArea(f.vertices);
 }
 
 static inline void orientQuadOutward(std::array<Point3, 4>& q, const Point3& cell_center) {
@@ -585,8 +611,8 @@ static std::vector<Point3> clipPolygonByHexCell(const std::vector<Point3>& input
 template<typename HexCell>
 static std::vector<Point3> clipFractureCell(const Fracture& frac, const HexCell& cell) {
     std::vector<Point3> poly;
-    poly.reserve(4);
-    for (int i = 0; i < 4; ++i) poly.push_back(frac.vertices[i]);
+    poly.reserve(frac.vertices.size());
+    for (const auto& p : frac.vertices) poly.push_back(p);
     double scale = std::max(1.0, std::max(cell.dx, std::max(cell.dy, cell.dz)));
     double tol = 1e-10 * scale;
     poly = cleanupPolygon3D(poly, tol);
@@ -608,7 +634,7 @@ static double dbarHexQuad(const HexCell& cell, const Fracture& f, int nsu, int n
                 double v = (j + 0.5) / (double)nsv;
                 double w = (k + 0.5) / (double)nsw;
                 Point3 p = mapHexTrilinear(cell, u, v, w);
-                sum += distPointQuad(p, f);
+                sum += distPointPolygon(p, f);
                 cnt++;
             }
         }
@@ -617,10 +643,12 @@ static double dbarHexQuad(const HexCell& cell, const Fracture& f, int nsu, int n
 }
 
 static double normalProjectedPerm(const RockProps& rock, const Point3& n_unit) {
-    return
+    double k =
         n_unit.x * n_unit.x * rock.K[0] +
         n_unit.y * n_unit.y * rock.K[1] +
         n_unit.z * n_unit.z * rock.K[2];
+    if (!std::isfinite(k) || k <= 0.0) return 0.0;
+    return std::max(k, K_FLOOR);
 }
 
 template<typename HexCell>
@@ -900,9 +928,7 @@ static bool computeCrossGeom(const Segment& seg1, const Segment& seg2, double& e
 }
 
 static Point3 fractureCenter(const Fracture& f) {
-    Point3 c{0,0,0};
-    for (int i = 0; i < 4; ++i) c = c + f.vertices[i];
-    return c / 4.0;
+    return polygonCenter(f.vertices);
 }
 
 static void buildPlaneBasisFromNormal(const Point3& normal, Point3& e1, Point3& e2) {
@@ -1253,6 +1279,7 @@ public:
     std::vector<ParentCell> parents;
     std::vector<LeafCell> leaves;
     std::vector<Fracture> fractures;
+    std::vector<Fracture> external_dfn_fractures;
     std::vector<Segment> segments;
     std::vector<FaceGeom> mm_faces;
     std::vector<ParentFaceCoverage> parent_face_cov;
@@ -1285,9 +1312,38 @@ public:
 
     GasPVTTable gas_pvt_table;
 
+    bool use_external_dfn_fractures{false};
+    bool has_dfn_continuum_properties{false};
+    int dfn_prop_nx{0}, dfn_prop_ny{0}, dfn_prop_nz{0};
+    std::vector<double> dfn_phi;
+    std::vector<double> dfn_kx;
+    std::vector<double> dfn_ky;
+    std::vector<double> dfn_kz;
+    std::vector<uint8_t> dfn_valid_mask;
+
+    bool has_matrix_continuum_properties{false};
+    int matrix_prop_nx{0}, matrix_prop_ny{0}, matrix_prop_nz{0};
+    std::vector<double> matrix_phi;
+    std::vector<double> matrix_kx;
+    std::vector<double> matrix_ky;
+    std::vector<double> matrix_kz;
+
+    bool has_sigma_array{false};
+    int sigma_prop_nx{0}, sigma_prop_ny{0}, sigma_prop_nz{0};
+    std::vector<double> sigma_array;
+
+    // 时间步播放
+    std::vector<double> time_steps;
+    std::vector<std::vector<double>> pressure_steps;
+
     // --- 可配置参数 (通过 pybind 设置) ---
     std::string coord_file_path{"COORD.csv"};
     std::string zcorn_file_path{"ZCORN.csv"};
+    bool use_external_corner_point_grid{false};
+    int external_grid_nx{0}, external_grid_ny{0}, external_grid_nz{0};
+    std::vector<double> external_grid_coord;
+    std::vector<double> external_grid_zcorn;
+    std::vector<int> external_grid_actnum;
     int natural_frac_count{100};
     double natural_min_length{10.0};
     double natural_max_length{20.0};
@@ -1346,6 +1402,255 @@ public:
     void setCornerPointFiles(const std::string& coord_file, const std::string& zcorn_file) {
         coord_file_path = coord_file;
         zcorn_file_path = zcorn_file;
+        use_external_corner_point_grid = false;
+    }
+
+    void setCornerPointGrid(
+        int nx,
+        int ny,
+        int nz,
+        py::array_t<double, py::array::c_style | py::array::forcecast> coord_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> zcorn_array,
+        py::array_t<int, py::array::c_style | py::array::forcecast> actnum_array) {
+
+        if (nx <= 0 || ny <= 0 || nz <= 0) {
+            throw std::invalid_argument("Corner-point grid dimensions must be positive.");
+        }
+
+        const size_t npx = (size_t)nx + 1;
+        const size_t npy = (size_t)ny + 1;
+        const size_t n_parent = (size_t)nx * (size_t)ny * (size_t)nz;
+        const size_t expected_coord = npx * npy * 6;
+        const size_t expected_zcorn = n_parent * 8;
+
+        auto coord_buf = coord_array.request();
+        auto zcorn_buf = zcorn_array.request();
+        auto actnum_buf = actnum_array.request();
+        if (coord_buf.ndim != 1 || zcorn_buf.ndim != 1 || actnum_buf.ndim != 1) {
+            throw std::invalid_argument("Corner-point grid coord, zcorn, and actnum must be 1D arrays.");
+        }
+        if ((size_t)coord_buf.shape[0] != expected_coord) {
+            throw std::invalid_argument("grid_coord length must equal (nx + 1) * (ny + 1) * 6.");
+        }
+        if ((size_t)zcorn_buf.shape[0] != expected_zcorn) {
+            throw std::invalid_argument("grid_zcorn length must equal nx * ny * nz * 8.");
+        }
+        if ((size_t)actnum_buf.shape[0] != n_parent) {
+            throw std::invalid_argument("grid_actnum length must equal nx * ny * nz.");
+        }
+
+        auto coord = coord_array.unchecked<1>();
+        auto zcorn = zcorn_array.unchecked<1>();
+        auto actnum = actnum_array.unchecked<1>();
+
+        external_grid_coord.assign(expected_coord, 0.0);
+        external_grid_zcorn.assign(expected_zcorn, 0.0);
+        external_grid_actnum.assign(n_parent, 0);
+
+        for (size_t i = 0; i < expected_coord; ++i) {
+            double v = coord((py::ssize_t)i);
+            if (!std::isfinite(v)) {
+                throw std::invalid_argument("grid_coord contains non-finite values.");
+            }
+            external_grid_coord[i] = v;
+        }
+        for (size_t i = 0; i < expected_zcorn; ++i) {
+            double v = zcorn((py::ssize_t)i);
+            if (!std::isfinite(v)) {
+                throw std::invalid_argument("grid_zcorn contains non-finite values.");
+            }
+            external_grid_zcorn[i] = v;
+        }
+        int active_count = 0;
+        for (size_t i = 0; i < n_parent; ++i) {
+            int v = actnum((py::ssize_t)i);
+            if (v != 0 && v != 1) {
+                throw std::invalid_argument("ACTNUM values must be 0 or 1.");
+            }
+            external_grid_actnum[i] = v;
+            if (v == 1) active_count++;
+        }
+
+        external_grid_nx = nx;
+        external_grid_ny = ny;
+        external_grid_nz = nz;
+        use_external_corner_point_grid = true;
+        std::cout << "Loaded external corner-point grid arrays: "
+                  << nx << " x " << ny << " x " << nz
+                  << ", active cells = " << active_count << " / " << n_parent
+                  << std::endl;
+    }
+
+    void setDFNFractures(
+        py::array_t<int, py::array::c_style | py::array::forcecast> ids_array,
+        py::array_t<int, py::array::c_style | py::array::forcecast> offsets_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> vertices_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> apertures_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> permeabilities_array) {
+
+        auto ids_buf = ids_array.request();
+        auto offsets_buf = offsets_array.request();
+        auto vertices_buf = vertices_array.request();
+        auto apertures_buf = apertures_array.request();
+        auto perms_buf = permeabilities_array.request();
+
+        if (ids_buf.ndim != 1 || offsets_buf.ndim != 1 ||
+            apertures_buf.ndim != 1 || perms_buf.ndim != 1) {
+            throw std::invalid_argument("DFN ids, offsets, apertures, and permeabilities must be 1D arrays.");
+        }
+        if (vertices_buf.ndim != 2 || vertices_buf.shape[1] != 3) {
+            throw std::invalid_argument("DFN vertices must be an Nx3 array.");
+        }
+
+        const py::ssize_t n_frac = ids_buf.shape[0];
+        const py::ssize_t n_vertices = vertices_buf.shape[0];
+        if (offsets_buf.shape[0] != n_frac + 1 ||
+            apertures_buf.shape[0] != n_frac ||
+            perms_buf.shape[0] != n_frac) {
+            throw std::invalid_argument("DFN array lengths are inconsistent.");
+        }
+
+        auto ids = ids_array.unchecked<1>();
+        auto offsets = offsets_array.unchecked<1>();
+        auto verts = vertices_array.unchecked<2>();
+        auto apertures = apertures_array.unchecked<1>();
+        auto perms = permeabilities_array.unchecked<1>();
+
+        external_dfn_fractures.clear();
+        external_dfn_fractures.reserve((size_t)n_frac);
+
+        for (py::ssize_t fidx = 0; fidx < n_frac; ++fidx) {
+            int start = offsets(fidx);
+            int end = offsets(fidx + 1);
+            if (start < 0 || end < start || end > n_vertices || end - start < 3) {
+                throw std::invalid_argument("DFN offsets must define polygons with at least 3 vertices.");
+            }
+
+            double aperture = apertures(fidx);
+            double perm = perms(fidx);
+            if (!std::isfinite(aperture) || aperture <= 0.0) {
+                throw std::invalid_argument("DFN aperture values must be finite and positive.");
+            }
+            if (!std::isfinite(perm) || perm < 0.0) {
+                throw std::invalid_argument("DFN permeability values must be finite and non-negative.");
+            }
+
+            Fracture frac;
+            frac.id = ids(fidx);
+            frac.aperture = std::max(aperture, 1e-12);
+            frac.perm = perm;
+            frac.is_hydraulic = false;
+            frac.vertices.reserve((size_t)(end - start));
+
+            for (int row = start; row < end; ++row) {
+                Point3 p{verts(row, 0), verts(row, 1), verts(row, 2)};
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+                    throw std::invalid_argument("DFN vertices contain non-finite coordinates.");
+                }
+                frac.vertices.push_back(p);
+            }
+
+            if (fracturePolygonArea(frac) <= EPS) {
+                throw std::invalid_argument("DFN fracture polygon has zero area.");
+            }
+            external_dfn_fractures.push_back(std::move(frac));
+        }
+
+        use_external_dfn_fractures = true;
+        fractures = external_dfn_fractures;
+        std::cout << "Loaded external DFN fractures: " << external_dfn_fractures.size() << std::endl;
+    }
+
+    void setDFNContinuumProperties(
+        int nx,
+        int ny,
+        int nz,
+        py::array_t<double, py::array::c_style | py::array::forcecast> phi_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> kx_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> ky_array,
+        py::array_t<double, py::array::c_style | py::array::forcecast> kz_array,
+        py::array_t<bool, py::array::c_style | py::array::forcecast> valid_mask_array) {
+
+        if (nx <= 0 || ny <= 0 || nz <= 0) {
+            throw std::invalid_argument("DFN property grid dimensions must be positive.");
+        }
+        const size_t expected = (size_t)nx * (size_t)ny * (size_t)nz;
+
+        auto phi_buf = phi_array.request();
+        auto kx_buf = kx_array.request();
+        auto ky_buf = ky_array.request();
+        auto kz_buf = kz_array.request();
+        auto mask_buf = valid_mask_array.request();
+        if (phi_buf.ndim != 1 || kx_buf.ndim != 1 || ky_buf.ndim != 1 ||
+            kz_buf.ndim != 1 || mask_buf.ndim != 1) {
+            throw std::invalid_argument("DFN continuum properties must be 1D arrays.");
+        }
+        if ((size_t)phi_buf.shape[0] != expected ||
+            (size_t)kx_buf.shape[0] != expected ||
+            (size_t)ky_buf.shape[0] != expected ||
+            (size_t)kz_buf.shape[0] != expected ||
+            (size_t)mask_buf.shape[0] != expected) {
+            throw std::invalid_argument("DFN continuum property lengths must equal nx * ny * nz.");
+        }
+
+        auto phi = phi_array.unchecked<1>();
+        auto kx = kx_array.unchecked<1>();
+        auto ky = ky_array.unchecked<1>();
+        auto kz = kz_array.unchecked<1>();
+        auto mask = valid_mask_array.unchecked<1>();
+
+        dfn_prop_nx = nx;
+        dfn_prop_ny = ny;
+        dfn_prop_nz = nz;
+        dfn_phi.assign(expected, 0.0);
+        dfn_kx.assign(expected, 0.0);
+        dfn_ky.assign(expected, 0.0);
+        dfn_kz.assign(expected, 0.0);
+        dfn_valid_mask.assign(expected, 0);
+
+        for (size_t i = 0; i < expected; ++i) {
+            bool valid = mask((py::ssize_t)i);
+            double phi_v = phi((py::ssize_t)i);
+            double kx_v = kx((py::ssize_t)i);
+            double ky_v = ky((py::ssize_t)i);
+            double kz_v = kz((py::ssize_t)i);
+            if (!valid) continue;
+            if (!std::isfinite(phi_v) || !std::isfinite(kx_v) ||
+                !std::isfinite(ky_v) || !std::isfinite(kz_v)) {
+                continue;
+            }
+            dfn_valid_mask[i] = 1;
+            dfn_phi[i] = std::max(0.0, phi_v);
+            dfn_kx[i] = std::max(0.0, kx_v);
+            dfn_ky[i] = std::max(0.0, ky_v);
+            dfn_kz[i] = std::max(0.0, kz_v);
+        }
+
+        has_dfn_continuum_properties = true;
+        std::cout << "Loaded external DFN continuum properties: "
+                  << expected << " cells" << std::endl;
+    }
+
+    void setMatrixContinuumProperties(
+        const std::vector<double>& phi,
+        const std::vector<double>& kx,
+        const std::vector<double>& ky,
+        const std::vector<double>& kz)
+    {
+        matrix_phi = phi;
+        matrix_kx  = kx;
+        matrix_ky  = ky;
+        matrix_kz  = kz;
+        has_matrix_continuum_properties = !matrix_phi.empty();
+        if (has_matrix_continuum_properties) {
+            matrix_prop_nx = 0; matrix_prop_ny = 0; matrix_prop_nz = 0;
+            // 维度在 preprocess 里根据实际网格校验
+        }
+    }
+
+    void setSigmaArray(const std::vector<double>& sigma) {
+        sigma_array = sigma;
+        has_sigma_array = !sigma_array.empty();
     }
 
     void setFractureParameters(int total_fracs,
@@ -1661,15 +1966,126 @@ public:
         return rock;
     }
 
-    void applyRockProperties(ParentCell& pc) const {
-        pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+    int activeParentCount() const {
+        int count = 0;
+        for (const auto& p : parents) if (p.active) count++;
+        return count;
+    }
 
+    int inactiveParentCount() const {
+        int count = 0;
+        for (const auto& p : parents) if (!p.active) count++;
+        return count;
+    }
+
+    bool isActiveParentId(int pid) const {
+        return pid >= 0 && pid < (int)parents.size() &&
+               parents[pid].active && parents[pid].leaf_base >= 0;
+    }
+
+    void printACTNUMSummary() const {
+        int mm_count = 0, mf_count = 0, ff_count = 0, wr_count = 0;
+        for (const auto& c : connections) {
+            if (c.type == CONN_MM) mm_count++;
+            else if (c.type == CONN_EDFM_MF || c.type == CONN_WRF_EDFMF) mf_count++;
+            else if (c.type == CONN_EDFM_FF) ff_count++;
+            else if (c.type == CONN_WR_MF) wr_count++;
+        }
+        std::cout << "ACTNUM summary:\n"
+                  << "  parent total    = " << parents.size() << "\n"
+                  << "  parent active   = " << activeParentCount() << "\n"
+                  << "  parent inactive = " << inactiveParentCount() << "\n"
+                  << "  leaf cells      = " << n_leaf << "\n"
+                  << "  segments        = " << n_seg << "\n"
+                  << "  mm connections  = " << mm_count << "\n"
+                  << "  mf connections  = " << mf_count << "\n"
+                  << "  ff connections  = " << ff_count << "\n"
+                  << "  wr connections  = " << wr_count << std::endl;
+    }
+
+    void applyRockProperties(ParentCell& pc) const {
+        if (!pc.active) {
+            pc.matrix_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+            pc.fracture_continuum_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+
+        // --- 基质属性: per-cell 数组优先，回退全局常数 ---
+        if (has_matrix_continuum_properties) {
+            int idx = flatCellIndex(pc.ix, pc.iy, pc.iz, Nx, Ny);
+            if (idx >= 0 && idx < (int)matrix_phi.size() &&
+                idx < (int)matrix_kx.size() && idx < (int)matrix_ky.size() &&
+                idx < (int)matrix_kz.size()) {
+                double mp = matrix_phi[idx];
+                double mkx = matrix_kx[idx];
+                double mky = matrix_ky[idx];
+                double mkz = matrix_kz[idx];
+                if (mp == 99999.0 || !std::isfinite(mp)) mp = phi_matrix;
+                if (mkx == 99999.0 || !std::isfinite(mkx)) mkx = k_matrix_x;
+                if (mky == 99999.0 || !std::isfinite(mky)) mky = k_matrix_y;
+                if (mkz == 99999.0 || !std::isfinite(mkz)) mkz = k_matrix_z;
+                pc.matrix_rock = makeRockProps(
+                    std::max(0.0, mp),
+                    std::max(0.0, mkx),
+                    std::max(0.0, mky),
+                    std::max(0.0, mkz));
+            } else {
+                pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+            }
+        } else {
+            pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+        }
+
+        // --- 裂缝等效属性: DFN 数组由 applyDFNContinuumPropertiesToParents 覆盖 ---
         double vf = std::max(fracture_volume_fraction, 1e-12);
         pc.fracture_continuum_rock = makeRockProps(
             phi_fracture,
             k_fracture_x * vf,
             k_fracture_y * vf,
             k_fracture_z * vf);
+    }
+
+    void applyDFNContinuumPropertiesToParents() {
+        if (!has_dfn_continuum_properties) return;
+        if (dfn_prop_nx != Nx || dfn_prop_ny != Ny || dfn_prop_nz != Nz) {
+            std::ostringstream oss;
+            oss << "DFN property dimensions (" << dfn_prop_nx << ", "
+                << dfn_prop_ny << ", " << dfn_prop_nz
+                << ") do not match parent grid (" << Nx << ", " << Ny << ", " << Nz << ").";
+            throw std::runtime_error(oss.str());
+        }
+        const size_t expected = (size_t)Nx * (size_t)Ny * (size_t)Nz;
+        if (dfn_phi.size() != expected || dfn_kx.size() != expected ||
+            dfn_ky.size() != expected || dfn_kz.size() != expected ||
+            dfn_valid_mask.size() != expected || parents.size() != expected) {
+            throw std::runtime_error("DFN continuum property storage is inconsistent with parent grid.");
+        }
+
+        size_t valid_active_count = 0;
+        size_t active_parent_count = 0;
+        size_t inactive_count = 0;
+        for (ParentCell& pc : parents) {
+            size_t idx = (size_t)pc.parent_id;
+            if (!pc.active) {
+                pc.fracture_continuum_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+                inactive_count++;
+                continue;
+            }
+            active_parent_count++;
+            if (idx >= expected || dfn_valid_mask[idx] == 0) {
+                pc.fracture_continuum_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+                continue;
+            }
+            pc.fracture_continuum_rock = makeRockProps(
+                dfn_phi[idx],
+                dfn_kx[idx],
+                dfn_ky[idx],
+                dfn_kz[idx]);
+            valid_active_count++;
+        }
+        std::cout << "Applied DFN continuum properties to active parent grid: "
+                  << valid_active_count << " / " << active_parent_count << std::endl;
+        std::cout << "Ignored inactive parent cells: " << inactive_count << std::endl;
     }
 
     const RockProps& activeContinuumRock(const ParentCell& pc) const {
@@ -2276,39 +2692,83 @@ public:
         return pc;
     }
 
-    bool buildParentGridFromCornerPointCSV(const std::string& coordFile, const std::string& zcornFile) {
+    double clampZToPillarRange(const Pillar& p, double z) const {
+        double zmin = std::min(p.top.z, p.bot.z);
+        double zmax = std::max(p.top.z, p.bot.z);
+        return clampd(z, zmin, zmax);
+    }
+
+    std::pair<double, double> normalizeCornerZPair(
+        const Pillar& p,
+        double raw_top,
+        double raw_bottom) const {
+
+        if (!p.has_top || !p.has_bot) {
+            throw std::runtime_error("pillar missing top or bottom endpoint.");
+        }
+        double z_top = clampZToPillarRange(p, raw_top);
+        double z_bottom = clampZToPillarRange(p, raw_bottom);
+
+        if (!(z_top > z_bottom)) {
+            z_top = p.top.z;
+            z_bottom = p.bot.z;
+        }
+        if (!(z_top > z_bottom)) {
+            throw std::runtime_error("cannot normalize corner Z pair because pillar top is not above bottom.");
+        }
+        return {z_top, z_bottom};
+    }
+
+    bool buildParentGridFromPillarsAndZCorn(
+        const std::vector<Pillar>& pillars,
+        int coord_max_i,
+        int coord_max_j,
+        const std::vector<std::array<double, 8>>& zcorn_cells,
+        int grid_nx,
+        int grid_ny,
+        int grid_nz,
+        const std::vector<int>* actnum_ptr,
+        const std::string& source_name) {
+
         parents.clear();
 
-        std::vector<Pillar> pillars;
-        std::vector<std::array<double, 8>> zcorn_cells;
-        int coord_max_i = 0, coord_max_j = 0;
-        int zcorn_max_i = 0, zcorn_max_j = 0, zcorn_max_k = 0;
-
-        if (!loadCOORD(coordFile, pillars, coord_max_i, coord_max_j)) {
-            std::cerr << "Error: failed to load COORD file." << std::endl;
+        if (grid_nx <= 0 || grid_ny <= 0 || grid_nz <= 0) {
+            std::cerr << "Error: corner-point grid dimensions must be positive." << std::endl;
             return false;
         }
-        if (!loadZCORN(zcornFile, zcorn_cells, zcorn_max_i, zcorn_max_j, zcorn_max_k)) {
-            std::cerr << "Error: failed to load ZCORN file." << std::endl;
-            return false;
-        }
-
-        if (coord_max_i != zcorn_max_i + 1) {
+        if (coord_max_i != grid_nx + 1) {
             std::cerr << "Error: inconsistent grid size in I direction: COORD max I = "
-                      << coord_max_i << ", but ZCORN max I = " << zcorn_max_i
-                      << " , expected COORD max I = ZCORN max I + 1." << std::endl;
+                      << coord_max_i << ", but grid Nx = " << grid_nx
+                      << " , expected COORD max I = Nx + 1." << std::endl;
             return false;
         }
-        if (coord_max_j != zcorn_max_j + 1) {
+        if (coord_max_j != grid_ny + 1) {
             std::cerr << "Error: inconsistent grid size in J direction: COORD max J = "
-                      << coord_max_j << ", but ZCORN max J = " << zcorn_max_j
-                      << " , expected COORD max J = ZCORN max J + 1." << std::endl;
+                      << coord_max_j << ", but grid Ny = " << grid_ny
+                      << " , expected COORD max J = Ny + 1." << std::endl;
+            return false;
+        }
+        const size_t expected_pillars = (size_t)coord_max_i * (size_t)coord_max_j;
+        const size_t expected_cells = (size_t)grid_nx * (size_t)grid_ny * (size_t)grid_nz;
+        if (pillars.size() != expected_pillars) {
+            std::cerr << "Error: pillar array size mismatch, got " << pillars.size()
+                      << ", expected " << expected_pillars << "." << std::endl;
+            return false;
+        }
+        if (zcorn_cells.size() != expected_cells) {
+            std::cerr << "Error: zcorn cell array size mismatch, got " << zcorn_cells.size()
+                      << ", expected " << expected_cells << "." << std::endl;
+            return false;
+        }
+        if (actnum_ptr && actnum_ptr->size() != expected_cells) {
+            std::cerr << "Error: ACTNUM array size mismatch, got " << actnum_ptr->size()
+                      << ", expected " << expected_cells << "." << std::endl;
             return false;
         }
 
-        Nx = zcorn_max_i;
-        Ny = zcorn_max_j;
-        Nz = zcorn_max_k;
+        Nx = grid_nx;
+        Ny = grid_ny;
+        Nz = grid_nz;
 
         int n_parent = Nx * Ny * Nz;
         parents.resize(n_parent);
@@ -2332,6 +2792,14 @@ public:
                         pc.ix = i;
                         pc.iy = j;
                         pc.iz = k;
+                        pc.active = true;
+                        if (actnum_ptr) {
+                            int av = (*actnum_ptr)[id];
+                            if (av != 0 && av != 1) {
+                                throw std::runtime_error("Invalid ACTNUM value in buildParentGridFromPillarsAndZCorn.");
+                            }
+                            pc.active = (av == 1);
+                        }
 
                         const Pillar& p_ll = getPillar(i,     j    );
                         const Pillar& p_lr = getPillar(i + 1, j    );
@@ -2358,6 +2826,12 @@ public:
                         pc.Nrz = lgr_Nrz;
 
                         computeCellDerivedGeometry(pc);
+                        if (!pc.active) {
+                            pc.refined = false;
+                            pc.leaf_base = -1;
+                            pc.matrix_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+                            pc.fracture_continuum_rock = makeRockProps(0.0, 0.0, 0.0, 0.0);
+                        }
                         parents[id] = pc;
                     }
                 }
@@ -2386,11 +2860,140 @@ public:
             dx = dy = dz = 0.0;
         }
 
-        std::cout << "Parent corner-point grid initialized from CSV successfully." << std::endl;
+        std::cout << "Parent corner-point grid initialized from " << source_name
+                  << " successfully." << std::endl;
         std::cout << "Nx = " << Nx << ", Ny = " << Ny << ", Nz = " << Nz << std::endl;
         std::cout << "Pillars = " << coord_max_i << " x " << coord_max_j << std::endl;
         std::cout << "Parents = " << n_parent << std::endl;
+        std::cout << "Active parents = " << activeParentCount() << " / " << n_parent << std::endl;
+        std::cout << "Inactive parents = " << inactiveParentCount() << " / " << n_parent << std::endl;
         return true;
+    }
+
+    bool buildParentGridFromCornerPointCSV(const std::string& coordFile, const std::string& zcornFile) {
+        std::vector<Pillar> pillars;
+        std::vector<std::array<double, 8>> zcorn_cells;
+        int coord_max_i = 0, coord_max_j = 0;
+        int zcorn_max_i = 0, zcorn_max_j = 0, zcorn_max_k = 0;
+
+        if (!loadCOORD(coordFile, pillars, coord_max_i, coord_max_j)) {
+            std::cerr << "Error: failed to load COORD file." << std::endl;
+            return false;
+        }
+        if (!loadZCORN(zcornFile, zcorn_cells, zcorn_max_i, zcorn_max_j, zcorn_max_k)) {
+            std::cerr << "Error: failed to load ZCORN file." << std::endl;
+            return false;
+        }
+
+        return buildParentGridFromPillarsAndZCorn(
+            pillars,
+            coord_max_i,
+            coord_max_j,
+            zcorn_cells,
+            zcorn_max_i,
+            zcorn_max_j,
+            zcorn_max_k,
+            nullptr,
+            "CSV");
+    }
+
+    bool buildParentGridFromExternalArrays() {
+        if (!use_external_corner_point_grid) {
+            std::cerr << "Error: external corner-point grid arrays have not been set." << std::endl;
+            return false;
+        }
+
+        const int coord_max_i = external_grid_nx + 1;
+        const int coord_max_j = external_grid_ny + 1;
+        const size_t n_parent = (size_t)external_grid_nx * (size_t)external_grid_ny * (size_t)external_grid_nz;
+        const size_t expected_coord = (size_t)coord_max_i * (size_t)coord_max_j * 6;
+        const size_t expected_zcorn = n_parent * 8;
+
+        if (external_grid_coord.size() != expected_coord ||
+            external_grid_zcorn.size() != expected_zcorn ||
+            external_grid_actnum.size() != n_parent) {
+            std::cerr << "Error: external corner-point grid array cache is inconsistent." << std::endl;
+            return false;
+        }
+
+        std::vector<Pillar> pillars((size_t)coord_max_i * (size_t)coord_max_j);
+        for (int j = 0; j < coord_max_j; ++j) {
+            for (int i = 0; i < coord_max_i; ++i) {
+                size_t base = ((size_t)j * (size_t)coord_max_i + (size_t)i) * 6;
+                Point3 p0{external_grid_coord[base + 0],
+                          external_grid_coord[base + 1],
+                          external_grid_coord[base + 2]};
+                Point3 p1{external_grid_coord[base + 3],
+                          external_grid_coord[base + 4],
+                          external_grid_coord[base + 5]};
+                if (std::abs(p0.z - p1.z) < EPS) {
+                    std::cerr << "Error: external grid pillar(" << (i + 1) << "," << (j + 1)
+                              << ") has equal endpoint Z values." << std::endl;
+                    return false;
+                }
+                Pillar& p = pillars[flatPillarIndex(i, j, coord_max_i)];
+                if (p0.z > p1.z) {
+                    p.top = p0;
+                    p.bot = p1;
+                } else {
+                    p.top = p1;
+                    p.bot = p0;
+                }
+                p.has_top = true;
+                p.has_bot = true;
+            }
+        }
+
+        const size_t xy = (size_t)external_grid_nx * (size_t)external_grid_ny;
+        auto rawZ = [&](int i, int j, int k, int is_top_plane, int is_y_plus, int is_x_plus) -> double {
+            size_t plane = (size_t)(2 * k + (is_top_plane ? 1 : 0));
+            size_t idx = plane * 4 * xy
+                       + (size_t)j * 4 * (size_t)external_grid_nx
+                       + (size_t)is_y_plus * 2 * (size_t)external_grid_nx
+                       + (size_t)i * 2
+                       + (size_t)is_x_plus;
+            return external_grid_zcorn[idx];
+        };
+
+        std::vector<std::array<double, 8>> zcorn_cells(n_parent);
+        try {
+            for (int k = 0; k < external_grid_nz; ++k) {
+                for (int j = 0; j < external_grid_ny; ++j) {
+                    for (int i = 0; i < external_grid_nx; ++i) {
+                        const Pillar& p_ll = pillars[flatPillarIndex(i,     j,     coord_max_i)];
+                        const Pillar& p_lr = pillars[flatPillarIndex(i + 1, j,     coord_max_i)];
+                        const Pillar& p_ul = pillars[flatPillarIndex(i,     j + 1, coord_max_i)];
+                        const Pillar& p_ur = pillars[flatPillarIndex(i + 1, j + 1, coord_max_i)];
+
+                        auto z15 = normalizeCornerZPair(p_ll, rawZ(i, j, k, 1, 0, 0), rawZ(i, j, k, 0, 0, 0));
+                        auto z26 = normalizeCornerZPair(p_lr, rawZ(i, j, k, 1, 0, 1), rawZ(i, j, k, 0, 0, 1));
+                        auto z37 = normalizeCornerZPair(p_ul, rawZ(i, j, k, 1, 1, 1), rawZ(i, j, k, 0, 1, 1));
+                        auto z48 = normalizeCornerZPair(p_ur, rawZ(i, j, k, 1, 1, 0), rawZ(i, j, k, 0, 1, 0));
+
+                        std::array<double, 8> z{{
+                            z15.first, z26.first, z37.first, z48.first,
+                            z15.second, z26.second, z37.second, z48.second
+                        }};
+                        zcorn_cells[flatCellIndex(i, j, k, external_grid_nx, external_grid_ny)] = z;
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error while converting external corner-point arrays: "
+                      << e.what() << std::endl;
+            return false;
+        }
+
+        return buildParentGridFromPillarsAndZCorn(
+            pillars,
+            coord_max_i,
+            coord_max_j,
+            zcorn_cells,
+            external_grid_nx,
+            external_grid_ny,
+            external_grid_nz,
+            &external_grid_actnum,
+            "external arrays");
     }
 
     std::array<Point3, 4> buildParentFaceSubQuad(const ParentCell& p, int face_id,
@@ -2421,6 +3024,10 @@ public:
         parent_face_cov.resize(parents.size());
         for (const auto& p : parents) {
             ParentFaceCoverage cov;
+            if (!p.active || p.leaf_base < 0) {
+                parent_face_cov[p.parent_id] = std::move(cov);
+                continue;
+            }
             if (!p.refined) {
                 int lid = p.leaf_base;
                 for (int f = 0; f < 6; ++f) {
@@ -2504,11 +3111,14 @@ public:
             }
             parent_face_cov[p.parent_id] = std::move(cov);
         }
-        std::cout << "Parent face coverage built." << std::endl;
+        std::cout << "Parent face coverage built for active parents only." << std::endl;
     }
 
     void addMMFace(int owner, int owner_local_face, int neighbor, int neighbor_local_face,
                    const std::array<Point3,4>& quad) {
+        if (owner < 0 || owner >= n_leaf || owner_local_face < 0 || owner_local_face >= 6) return;
+        if (neighbor >= n_leaf) return;
+        if (neighbor >= 0 && (neighbor_local_face < 0 || neighbor_local_face >= 6)) return;
         FaceGeom f;
         f.id = (int)mm_faces.size();
         f.owner = owner;
@@ -2538,47 +3148,70 @@ public:
             for (int f = 0; f < 6; ++f) c.subface_ids[f].clear();
         }
 
+        auto parentAt = [&](int i,int j,int k)->int {
+            return k * Nx * Ny + j * Nx + i;
+        };
+        auto isActiveParent = [&](int pid) -> bool {
+            return pid >= 0 && pid < (int)parents.size() &&
+                   parents[pid].active && parents[pid].leaf_base >= 0;
+        };
+        auto overlapPositive = [](double a0, double a1, double b0, double b1, double tol = 1e-12) -> bool {
+            return std::min(a1, b1) - std::max(a0, b0) > tol;
+        };
+
+        auto addBoundaryPatches = [&](const ParentCell& p, int face_id) {
+            if (!p.active || p.leaf_base < 0) return;
+            const auto& patches = parent_face_cov[p.parent_id].patches[face_id];
+            for (const auto& patch : patches) {
+                if (patch.leaf_id < 0 || patch.leaf_id >= n_leaf) continue;
+                auto quad = buildParentFaceSubQuad(p, face_id, patch.s0, patch.s1, patch.t0, patch.t1);
+                addMMFace(patch.leaf_id, patch.leaf_local_face, -1, -1, quad);
+            }
+        };
+
         for (const auto& p : parents) {
-            if (!p.refined) continue;
+            if (!p.active || p.leaf_base < 0 || !p.refined) continue;
             int Nrx = p.Nrx, Nry = p.Nry, Nrz = p.Nrz;
             int base = p.leaf_base;
             for (int lk = 0; lk < Nrz; ++lk) {
                 for (int lj = 0; lj < Nry; ++lj) {
                     for (int li = 0; li < Nrx; ++li) {
                         int lid = base + (lk * Nry + lj) * Nrx + li;
+                        if (lid < 0 || lid >= n_leaf) continue;
                         if (li + 1 < Nrx) {
                             int rid = lid + 1;
-                            auto quad = getCellFaceVertices(leaves[lid], XP);
-                            addMMFace(lid, XP, rid, XM, quad);
+                            if (rid >= 0 && rid < n_leaf) {
+                                auto quad = getCellFaceVertices(leaves[lid], XP);
+                                addMMFace(lid, XP, rid, XM, quad);
+                            }
                         }
                         if (lj + 1 < Nry) {
                             int uid = base + (lk * Nry + (lj + 1)) * Nrx + li;
-                            auto quad = getCellFaceVertices(leaves[lid], YP);
-                            addMMFace(lid, YP, uid, YM, quad);
+                            if (uid >= 0 && uid < n_leaf) {
+                                auto quad = getCellFaceVertices(leaves[lid], YP);
+                                addMMFace(lid, YP, uid, YM, quad);
+                            }
                         }
                         if (lk + 1 < Nrz) {
                             int wid = base + ((lk + 1) * Nry + lj) * Nrx + li;
-                            auto quad = getCellFaceVertices(leaves[lid], ZP);
-                            addMMFace(lid, ZP, wid, ZM, quad);
+                            if (wid >= 0 && wid < n_leaf) {
+                                auto quad = getCellFaceVertices(leaves[lid], ZP);
+                                addMMFace(lid, ZP, wid, ZM, quad);
+                            }
                         }
                     }
                 }
             }
         }
 
-        auto parentAt = [&](int i,int j,int k)->int {
-            return k * Nx * Ny + j * Nx + i;
-        };
-        auto overlapPositive = [](double a0, double a1, double b0, double b1, double tol = 1e-12) -> bool {
-            return std::min(a1, b1) - std::max(a0, b0) > tol;
-        };
-
         auto buildInterfaceFromParentPair =
             [&](const ParentCell& pA, int faceA, const ParentCell& pB, int faceB) {
                 const auto& patchesA = parent_face_cov[pA.parent_id].patches[faceA];
                 const auto& patchesB = parent_face_cov[pB.parent_id].patches[faceB];
                 for (const auto& pa : patchesA) {
+                    if (pa.leaf_id < 0 || pa.leaf_id >= n_leaf) continue;
                     for (const auto& pb : patchesB) {
+                        if (pb.leaf_id < 0 || pb.leaf_id >= n_leaf) continue;
                         if (!overlapPositive(pa.s0, pa.s1, pb.s0, pb.s1)) continue;
                         if (!overlapPositive(pa.t0, pa.t1, pb.t0, pb.t1)) continue;
                         double s0 = std::max(pa.s0, pb.s0);
@@ -2596,35 +3229,40 @@ public:
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
                     int A = parentAt(i, j, k);
-                    const ParentCell& pA = parents[A];
                     if (i + 1 < Nx) {
                         int B = parentAt(i + 1, j, k);
-                        buildInterfaceFromParentPair(pA, XP, parents[B], XM);
+                        bool a_active = isActiveParent(A);
+                        bool b_active = isActiveParent(B);
+                        if (a_active && b_active) buildInterfaceFromParentPair(parents[A], XP, parents[B], XM);
+                        else if (a_active && !b_active) addBoundaryPatches(parents[A], XP);
+                        else if (!a_active && b_active) addBoundaryPatches(parents[B], XM);
                     }
                     if (j + 1 < Ny) {
                         int B = parentAt(i, j + 1, k);
-                        buildInterfaceFromParentPair(pA, YP, parents[B], YM);
+                        bool a_active = isActiveParent(A);
+                        bool b_active = isActiveParent(B);
+                        if (a_active && b_active) buildInterfaceFromParentPair(parents[A], YP, parents[B], YM);
+                        else if (a_active && !b_active) addBoundaryPatches(parents[A], YP);
+                        else if (!a_active && b_active) addBoundaryPatches(parents[B], YM);
                     }
                     if (k + 1 < Nz) {
                         int B = parentAt(i, j, k + 1);
-                        buildInterfaceFromParentPair(pA, ZP, parents[B], ZM);
+                        bool a_active = isActiveParent(A);
+                        bool b_active = isActiveParent(B);
+                        if (a_active && b_active) buildInterfaceFromParentPair(parents[A], ZP, parents[B], ZM);
+                        else if (a_active && !b_active) addBoundaryPatches(parents[A], ZP);
+                        else if (!a_active && b_active) addBoundaryPatches(parents[B], ZM);
                     }
                 }
             }
         }
 
-        auto addBoundaryPatches = [&](const ParentCell& p, int face_id) {
-            const auto& patches = parent_face_cov[p.parent_id].patches[face_id];
-            for (const auto& patch : patches) {
-                auto quad = buildParentFaceSubQuad(p, face_id, patch.s0, patch.s1, patch.t0, patch.t1);
-                addMMFace(patch.leaf_id, patch.leaf_local_face, -1, -1, quad);
-            }
-        };
-
         for (int k = 0; k < Nz; ++k) {
             for (int j = 0; j < Ny; ++j) {
                 for (int i = 0; i < Nx; ++i) {
-                    const ParentCell& p = parents[parentAt(i,j,k)];
+                    int pid = parentAt(i,j,k);
+                    if (!isActiveParent(pid)) continue;
+                    const ParentCell& p = parents[pid];
                     if (i == 0) addBoundaryPatches(p, XM);
                     if (i == Nx - 1) addBoundaryPatches(p, XP);
                     if (j == 0) addBoundaryPatches(p, YM);
@@ -2680,6 +3318,7 @@ public:
                     ParentCell pc;
                     pc.parent_id = pid;
                     pc.ix = i; pc.iy = j; pc.iz = k;
+                    pc.active = true;
                     applyRockProperties(pc);
                     pc.refined = false;
                     pc.leaf_base = -1;
@@ -2816,11 +3455,6 @@ public:
             }
         };
 
-        auto fractureArea = [](const Fracture& f) -> double {
-            return triangleArea3D(f.vertices[0], f.vertices[1], f.vertices[2])
-                 + triangleArea3D(f.vertices[0], f.vertices[2], f.vertices[3]);
-        };
-
         auto fractureInsideGrid = [&](const Fracture& f) -> bool {
             AABB fb = fractureAABB(f);
             if (fb.mn.x < grid_min.x - pos_tol || fb.mx.x > grid_max.x + pos_tol ||
@@ -2829,7 +3463,7 @@ public:
                 return false;
             }
 
-            double full_area = fractureArea(f);
+            double full_area = fracturePolygonArea(f);
             if (full_area <= EPS) return false;
 
             collectCandidateParents(fb);
@@ -2904,10 +3538,12 @@ public:
                     sampleUniform(cz0, cz1)
                 };
 
-                f.vertices[0] = center - u*(len/2) - v*(height/2);
-                f.vertices[1] = center + u*(len/2) - v*(height/2);
-                f.vertices[2] = center + u*(len/2) + v*(height/2);
-                f.vertices[3] = center - u*(len/2) + v*(height/2);
+                f.vertices = {
+                    center - u*(len/2) - v*(height/2),
+                    center + u*(len/2) - v*(height/2),
+                    center + u*(len/2) + v*(height/2),
+                    center - u*(len/2) + v*(height/2)
+                };
 
                 if (fractureInsideGrid(f)) {
                     fractures.push_back(f);
@@ -2987,11 +3623,6 @@ public:
                                     z_max_domain - z_min_domain)));
         double tol = 1e-8 * domain_scale;
 
-        auto fractureArea = [](const Fracture& f) -> double {
-            return triangleArea3D(f.vertices[0], f.vertices[1], f.vertices[2])
-                 + triangleArea3D(f.vertices[0], f.vertices[2], f.vertices[3]);
-        };
-
         auto fractureFullyInsideParentGrid = [&](const Fracture& f) -> bool {
             AABB fb = fractureAABB(f);
             if (fb.mn.x < x_min_domain - tol || fb.mx.x > x_max_domain + tol ||
@@ -3000,7 +3631,7 @@ public:
                 return false;
             }
 
-            double full_area = fractureArea(f);
+            double full_area = fracturePolygonArea(f);
             if (full_area <= EPS) return false;
 
             double covered_area = 0.0;
@@ -3077,10 +3708,12 @@ public:
             }
 
             // 裂缝面位于 x = x_curr，是垂直于 x 方向的 y-z 平面
-            f.vertices[0] = {x_curr, yc - hf_len / 2.0,    zc - hf_height / 2.0};
-            f.vertices[1] = {x_curr, yc + hf_len / 2.0,    zc - hf_height / 2.0};
-            f.vertices[2] = {x_curr, yc + hf_len / 2.0,    zc + hf_height / 2.0};
-            f.vertices[3] = {x_curr, yc - hf_len / 2.0,    zc + hf_height / 2.0};
+            f.vertices = {
+                {x_curr, yc - hf_len / 2.0,    zc - hf_height / 2.0},
+                {x_curr, yc + hf_len / 2.0,    zc - hf_height / 2.0},
+                {x_curr, yc + hf_len / 2.0,    zc + hf_height / 2.0},
+                {x_curr, yc - hf_len / 2.0,    zc + hf_height / 2.0}
+            };
 
             // 对 corner-point grid 做严格几何检查：
             // 四个顶点必须都在真实角点网格内部
@@ -3115,15 +3748,30 @@ public:
         AABB b;
         b.mn = { 1e30,  1e30,  1e30};
         b.mx = {-1e30, -1e30, -1e30};
-        for (int i=0;i<4;++i) {
-            b.mn.x = std::min(b.mn.x, f.vertices[i].x);
-            b.mn.y = std::min(b.mn.y, f.vertices[i].y);
-            b.mn.z = std::min(b.mn.z, f.vertices[i].z);
-            b.mx.x = std::max(b.mx.x, f.vertices[i].x);
-            b.mx.y = std::max(b.mx.y, f.vertices[i].y);
-            b.mx.z = std::max(b.mx.z, f.vertices[i].z);
+        for (const auto& p : f.vertices) {
+            b.mn.x = std::min(b.mn.x, p.x);
+            b.mn.y = std::min(b.mn.y, p.y);
+            b.mn.z = std::min(b.mn.z, p.z);
+            b.mx.x = std::max(b.mx.x, p.x);
+            b.mx.y = std::max(b.mx.y, p.y);
+            b.mx.z = std::max(b.mx.z, p.z);
+        }
+        if (f.vertices.empty()) {
+            b.mn = {0,0,0};
+            b.mx = {0,0,0};
         }
         return b;
+    }
+
+    std::vector<int> collectParentCandidatesForAABB(const AABB& box, double padding = 0.0) const {
+        std::vector<int> ids;
+        if (parents.empty()) return ids;
+        AABB q = padding > 0.0 ? expandAABB(box, padding) : box;
+        for (const auto& p : parents) {
+            AABB parent_box{p.bbox_min, p.bbox_max};
+            if (aabbIntersect(q, parent_box)) ids.push_back(p.parent_id);
+        }
+        return ids;
     }
 
     double epsAreaForBox(double dx_, double dy_, double dz_) const {
@@ -3133,85 +3781,113 @@ public:
     }
 
     void markRefinement() {
-        //*if (!enable_lgr) {
         if (false) {
-            for (auto& p : parents) p.refined = false;
+            for (auto& p : parents) {
+                p.refined = false;
+                if (!p.active) p.leaf_base = -1;
+            }
             return;
         }
-        for (auto& p : parents) p.refined = false;
+        int active_parent_count = 0;
+        int inactive_count = 0;
+        for (auto& p : parents) {
+            if (!p.active) {
+                p.refined = false;
+                p.leaf_base = -1;
+                inactive_count++;
+                continue;
+            }
+            p.refined = false;
+            active_parent_count++;
+        }
         for (const auto& f : fractures) {
             AABB fb = fractureAABB(f);
             AABB fb_exp = expandAABB(fb, d_threshold);
-            int i0 = std::max(0, (int)std::floor(fb_exp.mn.x / std::max(dx, 1e-12)));
-            int i1 = std::min(Nx - 1, (int)std::floor(fb_exp.mx.x / std::max(dx, 1e-12)));
-            int j0 = std::max(0, (int)std::floor(fb_exp.mn.y / std::max(dy, 1e-12)));
-            int j1 = std::min(Ny - 1, (int)std::floor(fb_exp.mx.y / std::max(dy, 1e-12)));
-            int k0 = std::max(0, (int)std::floor(fb_exp.mn.z / std::max(dz, 1e-12)));
-            int k1 = std::min(Nz - 1, (int)std::floor(fb_exp.mx.z / std::max(dz, 1e-12)));
-            for (int k = k0; k <= k1; ++k) {
-                for (int j = j0; j <= j1; ++j) {
-                    for (int i = i0; i <= i1; ++i) {
-                        int pid = k * Nx * Ny + j * Nx + i;
-                        ParentCell& pc = parents[pid];
-                        if (pc.refined) continue;
-                        if (pc.bbox_max.x < fb.mn.x - d_threshold || fb.mx.x < pc.bbox_min.x - d_threshold) continue;
-                        if (pc.bbox_max.y < fb.mn.y - d_threshold || fb.mx.y < pc.bbox_min.y - d_threshold) continue;
-                        if (pc.bbox_max.z < fb.mn.z - d_threshold || fb.mx.z < pc.bbox_min.z - d_threshold) continue;
-                        double epsA = epsAreaForBox(std::max(pc.dx, 1e-12), std::max(pc.dy, 1e-12), std::max(pc.dz, 1e-12));
-                        auto poly = clipFractureCell(f, pc);
-                        double area = polygonArea(poly);
-                        if (area > epsA) {
-                            pc.refined = true;
-                            continue;
-                        }
-                        double dbar = dbarHexQuad(pc, f, dbar_nsx, dbar_nsy, dbar_nsz);
-                        if (dbar < d_threshold) pc.refined = true;
-                    }
+            auto candidate_ids = collectParentCandidatesForAABB(fb_exp);
+            for (int pid : candidate_ids) {
+                if (pid < 0 || pid >= (int)parents.size()) continue;
+                ParentCell& pc = parents[pid];
+                if (!pc.active) continue;
+                if (pc.refined) continue;
+                if (pc.bbox_max.x < fb.mn.x - d_threshold || fb.mx.x < pc.bbox_min.x - d_threshold) continue;
+                if (pc.bbox_max.y < fb.mn.y - d_threshold || fb.mx.y < pc.bbox_min.y - d_threshold) continue;
+                if (pc.bbox_max.z < fb.mn.z - d_threshold || fb.mx.z < pc.bbox_min.z - d_threshold) continue;
+                double epsA = epsAreaForBox(std::max(pc.dx, 1e-12), std::max(pc.dy, 1e-12), std::max(pc.dz, 1e-12));
+                auto poly = clipFractureCell(f, pc);
+                double area = polygonArea(poly);
+                if (area > epsA) {
+                    pc.refined = true;
+                    continue;
                 }
+                double dbar = dbarHexQuad(pc, f, dbar_nsx, dbar_nsy, dbar_nsz);
+                if (dbar < d_threshold) pc.refined = true;
             }
         }
         int cnt = 0;
-        for (const auto& p : parents) if (p.refined) cnt++;
-        std::cout << "Refinement marked (real hex): refined parents = "
-                  << cnt << " / " << (int)parents.size() << std::endl;
+        for (const auto& p : parents) if (p.active && p.refined) cnt++;
+        std::cout << "Refinement marked (real hex): refined active parents = "
+                  << cnt << " / " << active_parent_count << std::endl;
+        std::cout << "Inactive parents skipped = " << inactive_count << std::endl;
     }
 
     void buildLeafGrid() {
         n_leaf = 0;
         for (auto& p : parents) {
+            if (!p.active) {
+                p.refined = false;
+                p.leaf_base = -1;
+                continue;
+            }
+            if (!enable_lgr) p.refined = false;
             p.leaf_base = n_leaf;
-            if (p.refined) n_leaf += (int)p.Nrx * (int)p.Nry * (int)p.Nrz;
+            if (enable_lgr && p.refined) n_leaf += (int)p.Nrx * (int)p.Nry * (int)p.Nrz;
             else n_leaf += 1;
         }
+
         leaves.clear();
-        leaves.resize(n_leaf);
+        leaves.reserve(n_leaf);
         for (const auto& p : parents) {
-            if (!p.refined) {
-                int lid = p.leaf_base;
+            if (!p.active || p.leaf_base < 0) continue;
+            if (!(enable_lgr && p.refined)) {
                 LeafCell lc;
-                lc.leaf_id = lid;
+                lc.leaf_id = (int)leaves.size();
+                if (lc.leaf_id != p.leaf_base) {
+                    throw std::runtime_error("Leaf id and parent leaf_base are inconsistent after ACTNUM filtering.");
+                }
                 lc.parent_id = p.parent_id;
+                lc.active = true;
                 lc.lix = 0; lc.liy = 0; lc.liz = 0;
                 lc.matrix_rock = p.matrix_rock;
                 lc.fracture_continuum_rock = p.fracture_continuum_rock;
                 lc.corners = p.corners;
                 lc.face_ids = {{-1,-1,-1,-1,-1,-1}};
                 computeCellDerivedGeometry(lc);
-                leaves[lid] = lc;
+                leaves.push_back(lc);
             } else {
                 for (uint16_t lk = 0; lk < p.Nrz; ++lk) {
                     for (uint16_t lj = 0; lj < p.Nry; ++lj) {
                         for (uint16_t li = 0; li < p.Nrx; ++li) {
-                            int lid = p.leaf_base + ((int)lk * (int)p.Nry + (int)lj) * (int)p.Nrx + (int)li;
+                            int expected_lid = p.leaf_base + ((int)lk * (int)p.Nry + (int)lj) * (int)p.Nrx + (int)li;
                             LeafCell lc = buildLeafFromParentRefSubcell(p, li, lj, lk);
-                            lc.leaf_id = lid;
-                            leaves[lid] = lc;
+                            lc.leaf_id = (int)leaves.size();
+                            lc.active = true;
+                            if (lc.leaf_id != expected_lid) {
+                                throw std::runtime_error("Refined leaf id is inconsistent after ACTNUM filtering.");
+                            }
+                            leaves.push_back(lc);
                         }
                     }
                 }
             }
         }
-        std::cout << "Leaf corner-point grid built: n_leaf = " << n_leaf << std::endl;
+        if ((int)leaves.size() != n_leaf) {
+            throw std::runtime_error("Leaf grid size mismatch after ACTNUM filtering.");
+        }
+        std::cout << "Leaf grid built from active parents only." << std::endl;
+        std::cout << "  n_parent_total    = " << parents.size() << std::endl;
+        std::cout << "  n_parent_active   = " << activeParentCount() << std::endl;
+        std::cout << "  n_parent_inactive = " << inactiveParentCount() << std::endl;
+        std::cout << "  n_leaf            = " << n_leaf << std::endl;
     }
 
     void buildMMConnections(std::vector<Connection>& mm_out) {
@@ -3221,7 +3897,11 @@ public:
         mm_out.reserve(mm_faces.size());
         for (const auto& f : mm_faces) {
             if (f.owner < 0 || f.neighbor < 0) continue;
+            if (f.owner >= n_leaf || f.neighbor >= n_leaf) continue;
             int u = f.owner, v = f.neighbor;
+            if (leaves[u].parent_id < 0 || leaves[u].parent_id >= (int)parents.size()) continue;
+            if (leaves[v].parent_id < 0 || leaves[v].parent_id >= (int)parents.size()) continue;
+            if (!parents[leaves[u].parent_id].active || !parents[leaves[v].parent_id].active) continue;
             double T = computeMMTransmissibilityTPFA(
                 leaves[u], activeContinuumRock(leaves[u]),
                 leaves[v], activeContinuumRock(leaves[v]),
@@ -3248,72 +3928,65 @@ public:
         int seg_id_counter = 0;
 
         for (const auto& frac : fractures) {
+            if (frac.vertices.size() < 3) continue;
             AABB fb = fractureAABB(frac);
-            int i0 = std::max(0, (int)std::floor(fb.mn.x / std::max(dx, 1e-12)));
-            int i1 = std::min(Nx - 1, (int)std::floor(fb.mx.x / std::max(dx, 1e-12)));
-            int j0 = std::max(0, (int)std::floor(fb.mn.y / std::max(dy, 1e-12)));
-            int j1 = std::min(Ny - 1, (int)std::floor(fb.mx.y / std::max(dy, 1e-12)));
-            int k0 = std::max(0, (int)std::floor(fb.mn.z / std::max(dz, 1e-12)));
-            int k1 = std::min(Nz - 1, (int)std::floor(fb.mx.z / std::max(dz, 1e-12)));
-
-            Point3 vec1 = frac.vertices[1] - frac.vertices[0];
-            Point3 vec2 = frac.vertices[3] - frac.vertices[0];
-            Point3 normal = vec1.cross(vec2);
+            Point3 normal = polygonUnitNormal(frac.vertices);
             double nlen = normal.norm();
             if (nlen < EPS) continue;
             normal = normal * (1.0 / nlen);
 
-            for (int k = k0; k <= k1; ++k) {
-                for (int j = j0; j <= j1; ++j) {
-                    for (int i = i0; i <= i1; ++i) {
-                        int pid = k * Nx * Ny + j * Nx + i;
-                        const ParentCell& p = parents[pid];
-                        if (p.bbox_max.x < fb.mn.x || fb.mx.x < p.bbox_min.x) continue;
-                        if (p.bbox_max.y < fb.mn.y || fb.mx.y < p.bbox_min.y) continue;
-                        if (p.bbox_max.z < fb.mn.z || fb.mx.z < p.bbox_min.z) continue;
+            auto candidate_ids = collectParentCandidatesForAABB(fb);
+            for (int pid : candidate_ids) {
+                if (pid < 0 || pid >= (int)parents.size()) continue;
+                const ParentCell& p = parents[pid];
+                if (!p.active || p.leaf_base < 0) continue;
+                if (p.bbox_max.x < fb.mn.x || fb.mx.x < p.bbox_min.x) continue;
+                if (p.bbox_max.y < fb.mn.y || fb.mx.y < p.bbox_min.y) continue;
+                if (p.bbox_max.z < fb.mn.z || fb.mx.z < p.bbox_min.z) continue;
 
-                        auto try_build_seg_on_leaf = [&](int lid) {
-                            const LeafCell& lc = leaves[lid];
-                            if (lc.bbox_max.x < fb.mn.x || fb.mx.x < lc.bbox_min.x) return;
-                            if (lc.bbox_max.y < fb.mn.y || fb.mx.y < lc.bbox_min.y) return;
-                            if (lc.bbox_max.z < fb.mn.z || fb.mx.z < lc.bbox_min.z) return;
-                            auto poly = clipFractureCell(frac, lc);
-                            if (poly.size() < 3) return;
-                            double area = polygonArea(poly);
-                            double epsA = epsAreaForBox(std::max(lc.dx, 1e-12), std::max(lc.dy, 1e-12), std::max(lc.dz, 1e-12));
-                            if (area <= epsA) return;
+                auto try_build_seg_on_leaf = [&](int lid) {
+                    if (lid < 0 || lid >= n_leaf) return;
+                    const LeafCell& lc = leaves[lid];
+                    if (lc.parent_id < 0 || lc.parent_id >= (int)parents.size()) return;
+                    if (!parents[lc.parent_id].active) return;
+                    if (lc.bbox_max.x < fb.mn.x || fb.mx.x < lc.bbox_min.x) return;
+                    if (lc.bbox_max.y < fb.mn.y || fb.mx.y < lc.bbox_min.y) return;
+                    if (lc.bbox_max.z < fb.mn.z || fb.mx.z < lc.bbox_min.z) return;
+                    auto poly = clipFractureCell(frac, lc);
+                    if (poly.size() < 3) return;
+                    double area = polygonArea(poly);
+                    double epsA = epsAreaForBox(std::max(lc.dx, 1e-12), std::max(lc.dy, 1e-12), std::max(lc.dz, 1e-12));
+                    if (area <= epsA) return;
 
-                            Segment seg;
-                            seg.id = seg_id_counter++;
-                            seg.frac_id = frac.id;
-                            seg.matrix_leaf_id = lid;
-                            seg.parent_id = pid;
-                            seg.area = area;
-                            seg.center = polygonCenter(poly);
-                            seg.normal = normal;
-                            seg.aperture = frac.aperture;
-                            seg.perm = frac.perm;
-                            seg.poly = poly;
-                            if (enable_dual_porosity) {
-                                seg.T_mf = computeContinuumToExplicitFractureTransmissibility(
-                                    lc, activeContinuumRock(lc), seg, 2, 2, 2);
-                            } else {
-                                seg.T_mf = computeMatrixFractureTransmissibility(
-                                    lc, lc.matrix_rock, seg, 2, 2, 2);
-                            }
-                            fillSegmentFaceGeom(seg, lc, mm_faces);
-
-                            segments.push_back(seg);
-                            leaf_to_segs[lid].push_back((int)segments.size() - 1);
-                        };
-
-                        if (!p.refined) {
-                            try_build_seg_on_leaf(p.leaf_base);
-                        } else {
-                            int nsub = (int)p.Nrx * (int)p.Nry * (int)p.Nrz;
-                            for (int off = 0; off < nsub; ++off) try_build_seg_on_leaf(p.leaf_base + off);
-                        }
+                    Segment seg;
+                    seg.id = seg_id_counter++;
+                    seg.frac_id = frac.id;
+                    seg.matrix_leaf_id = lid;
+                    seg.parent_id = pid;
+                    seg.area = area;
+                    seg.center = polygonCenter(poly);
+                    seg.normal = normal;
+                    seg.aperture = frac.aperture;
+                    seg.perm = frac.perm;
+                    seg.poly = poly;
+                    if (enable_dual_porosity) {
+                        seg.T_mf = computeContinuumToExplicitFractureTransmissibility(
+                            lc, activeContinuumRock(lc), seg, 2, 2, 2);
+                    } else {
+                        seg.T_mf = computeMatrixFractureTransmissibility(
+                            lc, lc.matrix_rock, seg, 2, 2, 2);
                     }
+                    fillSegmentFaceGeom(seg, lc, mm_faces);
+
+                    segments.push_back(seg);
+                    leaf_to_segs[lid].push_back((int)segments.size() - 1);
+                };
+
+                if (!p.refined) {
+                    try_build_seg_on_leaf(p.leaf_base);
+                } else {
+                    int nsub = (int)p.Nrx * (int)p.Nry * (int)p.Nrz;
+                    for (int off = 0; off < nsub; ++off) try_build_seg_on_leaf(p.leaf_base + off);
                 }
             }
         }
@@ -3344,6 +4017,7 @@ public:
         int edfm_coupling_type = enable_dual_porosity ? CONN_WRF_EDFMF : CONN_EDFM_MF;
         for (int s = 0; s < n_seg; ++s) {
             int u = segments[s].matrix_leaf_id;
+            if (u < 0 || u >= n_leaf) continue;
             int v = n_leaf + s;
             if (segments[s].T_mf > EPS) {
                 mf_out.push_back({std::min(u, v), std::max(u, v), segments[s].T_mf, edfm_coupling_type});
@@ -3364,18 +4038,23 @@ public:
             if (fg.owner < 0 || fg.neighbor < 0) continue;
             int leaf_u = fg.owner;
             int leaf_v = fg.neighbor;
+            if (leaf_u < 0 || leaf_u >= n_leaf || leaf_v < 0 || leaf_v >= n_leaf) continue;
             int sfid = fg.id;
             const auto& segs_u = leaf_to_segs[leaf_u];
             const auto& segs_v = leaf_to_segs[leaf_v];
             if (segs_u.empty() || segs_v.empty()) continue;
 
             for (int s1 : segs_u) {
+                if (s1 < 0 || s1 >= n_seg) continue;
+                if (segments[s1].matrix_leaf_id < 0 || segments[s1].matrix_leaf_id >= n_leaf) continue;
                 auto it_len1 = segments[s1].subface_trace_len.find(sfid);
                 auto it_dist1 = segments[s1].subface_center_dist.find(sfid);
                 if (it_len1 == segments[s1].subface_trace_len.end()) continue;
                 if (it_dist1 == segments[s1].subface_center_dist.end()) continue;
 
                 for (int s2 : segs_v) {
+                    if (s2 < 0 || s2 >= n_seg) continue;
+                    if (segments[s2].matrix_leaf_id < 0 || segments[s2].matrix_leaf_id >= n_leaf) continue;
                     if (segments[s1].frac_id != segments[s2].frac_id) continue;
                     auto it_len2 = segments[s2].subface_trace_len.find(sfid);
                     auto it_dist2 = segments[s2].subface_center_dist.find(sfid);
@@ -3414,6 +4093,9 @@ public:
                 for (size_t j = i + 1; j < segs.size(); ++j) {
                     int s1 = segs[i];
                     int s2 = segs[j];
+                    if (s1 < 0 || s1 >= n_seg || s2 < 0 || s2 >= n_seg) continue;
+                    if (segments[s1].matrix_leaf_id < 0 || segments[s1].matrix_leaf_id >= n_leaf) continue;
+                    if (segments[s2].matrix_leaf_id < 0 || segments[s2].matrix_leaf_id >= n_leaf) continue;
                     if (segments[s1].frac_id == segments[s2].frac_id) continue;
                     double ell_int = 0.0, L1 = 0.0, L2 = 0.0;
                     if (!computeCrossGeom(segments[s1], segments[s2], ell_int, L1, L2)) continue;
@@ -3438,7 +4120,9 @@ public:
 
     double matrixPermForWarrenRootTransfer(const LeafCell& leaf) const {
         const RockProps& rock = leaf.matrix_rock;
-        return (rock.K[0] + rock.K[1] + rock.K[2]) / 3.0;
+        double k = (rock.K[0] + rock.K[1] + rock.K[2]) / 3.0;
+        if (!std::isfinite(k) || k <= 0.0) return 0.0;
+        return std::max(k, K_FLOOR);
     }
 
     void buildDualPorosityTransferConnections(std::vector<Connection>& wr_mf_out) {
@@ -3451,9 +4135,18 @@ public:
 
         int n_local_wr = 0;
         for (int leaf = 0; leaf < n_leaf; ++leaf) {
+            int pid = leaves[leaf].parent_id;
+            if (pid < 0 || pid >= (int)parents.size() || !parents[pid].active) continue;
             double k_eff = matrixPermForWarrenRootTransfer(leaves[leaf]);
+
+            double sigma_val = wr_shape_factor; // 默认回退
+            if (has_sigma_array && pid >= 0 && pid < (int)sigma_array.size()) {
+                double s = sigma_array[pid];
+                if (s != 99999.0 && std::isfinite(s)) sigma_val = s;
+            }
+
             double T_wr = FLOW_BETA
-                        * wr_shape_factor
+                        * sigma_val
                         * k_eff
                         * std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
             if (!std::isfinite(T_wr) || T_wr <= EPS) continue;
@@ -3498,7 +4191,10 @@ public:
         auto push_unique = [&](const Connection& c) {
             int u = std::min(c.u, c.v);
             int v = std::max(c.u, c.v);
-            if (u < 0 || v < 0 || u >= n_total || v >= n_total) return;
+            if (u < 0 || v < 0 || u >= n_total || v >= n_total) {
+                throw std::runtime_error("Invalid connection node index after ACTNUM filtering.");
+            }
+            if (!std::isfinite(c.T) || c.T <= EPS) return;
             ConnKey key{c.type, u, v};
             if (seen.insert(key).second) connections.push_back({u, v, c.T, c.type});
         };
@@ -3539,8 +4235,19 @@ public:
 
         for (int fid : target_fracs) {
             std::vector<int> cands;
-            for (int s = 0; s < n_seg; ++s) if (segments[s].frac_id == fid) cands.push_back(s);
-            if (cands.empty()) continue;
+            for (int s = 0; s < n_seg; ++s) {
+                if (segments[s].frac_id != fid) continue;
+                if (segments[s].matrix_leaf_id < 0 || segments[s].matrix_leaf_id >= n_leaf) continue;
+                const LeafCell& lc = leaves[segments[s].matrix_leaf_id];
+                if (lc.parent_id < 0 || lc.parent_id >= (int)parents.size()) continue;
+                if (!parents[lc.parent_id].active) continue;
+                cands.push_back(s);
+            }
+            if (cands.empty()) {
+                std::cerr << "[WARNING] Hydraulic fracture " << fid
+                          << " has no active EDFM segment after ACTNUM filtering." << std::endl;
+                continue;
+            }
 
             int best_s = -1;
             double best_d2 = 1e100;
@@ -3607,6 +4314,9 @@ public:
         }
         for(const auto& conn : connections) {
             int u = conn.u, v = conn.v;
+            if (u < 0 || v < 0 || u >= n_total || v >= n_total) {
+                throw std::runtime_error("Invalid connection node index after ACTNUM filtering.");
+            }
             for(int eq=0; eq<2; ++eq) {
                 for(int var=0; var<2; ++var) {
                     trips.emplace_back(2*u+eq, 2*v+var, 0.0);
@@ -3685,20 +4395,25 @@ public:
     }
 
     double nodePhi(int i) const {
+        auto solver_phi = [](double phi) {
+            if (!std::isfinite(phi) || phi <= 0.0) return PHI_FLOOR;
+            return std::max(phi, PHI_FLOOR);
+        };
+
         if (isLeafNode(i)) {
-            return activeContinuumRock(leaves[i]).phi;
+            return solver_phi(activeContinuumRock(leaves[i]).phi);
         }
 
         if (isSegmentNode(i)) {
-            return phi_frac;
+            return solver_phi(phi_frac);
         }
 
         if (isWRMatrixNode(i)) {
             int leaf = i - wrMatrixBase();
-            return leaves[leaf].matrix_rock.phi;
+            return solver_phi(leaves[leaf].matrix_rock.phi);
         }
 
-        return 1e-12;
+        return PHI_FLOOR;
     }
 
     Eigen::Matrix<AD2, 2, 1> computeAccumulation_AD(double dt, const State& s_old_val, const StateAD2& s_new,
@@ -4207,11 +4922,15 @@ public:
         double max_rel_err = 0.0;
         int worst_pid = -1;
         for (const auto& p : parents) {
+            if (!p.active || p.leaf_base < 0) continue;
             double v_sum = 0.0;
             if (!p.refined) v_sum = leaves[p.leaf_base].vol;
             else {
                 int nsub = (int)p.Nrx * (int)p.Nry * (int)p.Nrz;
-                for (int off = 0; off < nsub; ++off) v_sum += leaves[p.leaf_base + off].vol;
+                for (int off = 0; off < nsub; ++off) {
+                    int lid = p.leaf_base + off;
+                    if (lid >= 0 && lid < n_leaf) v_sum += leaves[lid].vol;
+                }
             }
             double rel = std::abs(v_sum - p.vol) / std::max(1e-12, std::abs(p.vol));
             if (rel > max_rel_err) {
@@ -4239,13 +4958,16 @@ public:
 
     void exportStaticGeometry() {
         std::ofstream gridFile("grid_info_lgr.csv");
+        gridFile << "Nx,Ny,Nz,Lx,Ly,Lz,dx,dy,dz,n_parent_total,n_parent_active,n_parent_inactive,n_leaf,n_segment\n";
         gridFile << Nx << "," << Ny << "," << Nz << ","
                  << Lx << "," << Ly << "," << Lz << ","
-                 << dx << "," << dy << "," << dz << "\n";
+                 << dx << "," << dy << "," << dz << ","
+                 << parents.size() << "," << activeParentCount() << "," << inactiveParentCount() << ","
+                 << n_leaf << "," << n_seg << "\n";
         gridFile.close();
 
         std::ofstream pf("parent_cells_lgr.csv");
-        pf << "parent_id,ix,iy,iz,refined,leaf_base,Nrx,Nry,Nrz,"
+        pf << "parent_id,ix,iy,iz,active,refined,leaf_base,Nrx,Nry,Nrz,"
            << "cx,cy,cz,vol,"
            << "bbox_min_x,bbox_min_y,bbox_min_z,"
            << "bbox_max_x,bbox_max_y,bbox_max_z,";
@@ -4253,7 +4975,7 @@ public:
         pf << "face0,face1,face2,face3,face4,face5\n";
         for (const auto& p : parents) {
             pf << p.parent_id << "," << p.ix << "," << p.iy << "," << p.iz << ","
-               << (p.refined ? 1 : 0) << "," << p.leaf_base << ","
+               << (p.active ? 1 : 0) << "," << (p.refined ? 1 : 0) << "," << p.leaf_base << ","
                << p.Nrx << "," << p.Nry << "," << p.Nrz << ","
                << p.center.x << "," << p.center.y << "," << p.center.z << ","
                << p.vol << ","
@@ -4308,23 +5030,19 @@ public:
         ff.close();
 
         std::ofstream fracFile("fracture_geometry_lgr.csv");
-        fracFile << "id,frac_type,is_hydraulic,"
-                << "x0,y0,z0,x1,y1,z1,x2,y2,z2,x3,y3,z3\n";
+        fracFile << "id,frac_type,is_hydraulic,vertex_index,x,y,z\n";
 
         for (const auto& f : fractures) {
             std::string frac_type = f.is_hydraulic ? "hydraulic" : "natural";
-
-            fracFile << f.id << ","
-                    << frac_type << ","
-                    << (f.is_hydraulic ? 1 : 0);
-
-            for (int i = 0; i < 4; ++i) {
-                fracFile << "," << f.vertices[i].x
-                        << "," << f.vertices[i].y
-                        << "," << f.vertices[i].z;
+            for (size_t i = 0; i < f.vertices.size(); ++i) {
+                fracFile << f.id << ","
+                        << frac_type << ","
+                        << (f.is_hydraulic ? 1 : 0) << ","
+                        << i << ","
+                        << f.vertices[i].x << ","
+                        << f.vertices[i].y << ","
+                        << f.vertices[i].z << "\n";
             }
-
-            fracFile << "\n";
         }
         fracFile.close();
 
@@ -4433,14 +5151,16 @@ public:
     }
 
     py::array_t<double> getFractureVertices() const {
-        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(fractures.size()) * 4, 4});
+        size_t vertex_count = 0;
+        for (const auto& f : fractures) vertex_count += f.vertices.size();
+        py::array_t<double> result(std::vector<py::ssize_t>{static_cast<py::ssize_t>(vertex_count), 4});
         auto r = result.mutable_unchecked<2>();
         py::ssize_t row = 0;
         for (const auto& f : fractures) {
-            for (int i = 0; i < 4; ++i) {
-                r(row, 0) = f.vertices[i].x;
-                r(row, 1) = f.vertices[i].y;
-                r(row, 2) = f.vertices[i].z;
+            for (const auto& p : f.vertices) {
+                r(row, 0) = p.x;
+                r(row, 1) = p.y;
+                r(row, 2) = p.z;
                 r(row, 3) = static_cast<double>(f.id);
                 ++row;
             }
@@ -4536,12 +5256,34 @@ public:
         return result;
     }
 
+    py::array_t<double> getTimeSteps() const {
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)time_steps.size()});
+        auto r = result.mutable_unchecked<1>();
+        for (size_t i = 0; i < time_steps.size(); ++i) r((py::ssize_t)i) = time_steps[i];
+        return result;
+    }
+
+    py::array_t<double> getPressureSteps() const {
+        if (pressure_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)pressure_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < pressure_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = pressure_steps[t][i];
+        return result;
+    }
+
     SimulationResult runSimulation() {
-        if (coord_file_path.empty() || zcorn_file_path.empty()) {
-            throw std::runtime_error("Corner-point input files are not set. Call setCornerPointFiles(coord, zcorn) first.");
+        if (!use_external_corner_point_grid &&
+            (coord_file_path.empty() || zcorn_file_path.empty())) {
+            throw std::runtime_error(
+                "Corner-point grid is not set. Call setCornerPointGrid(...) or setCornerPointFiles(coord, zcorn) first.");
         }
 
-        std::cout << "Preprocessing (corner-point CSV parent grid + LGR + EDFM)..." << std::endl;
+        std::cout << "Preprocessing (corner-point "
+                  << (use_external_corner_point_grid ? "array" : "CSV")
+                  << " parent grid + LGR + EDFM)..." << std::endl;
         if (!preprocess()) {
             throw std::runtime_error("Preprocess failed.");
         }
@@ -4563,6 +5305,8 @@ public:
         std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
         std::ofstream file("output_sim_lgr" + run_tag + ".csv");
         file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
+        time_steps.clear();
+        pressure_steps.clear();
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -4599,6 +5343,12 @@ public:
             t += dt_try;
             states_prev = states;
             if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
+
+            // 记录时间步压力场（动态播放用）
+            time_steps.push_back(t);
+            std::vector<double> p_snap(n_leaf);
+            for (int i = 0; i < n_leaf; ++i) p_snap[i] = states[i].P;
+            pressure_steps.push_back(std::move(p_snap));
             tot_w += sw;
             tot_g += sg;
             double avgP = 0.0;
@@ -4641,20 +5391,30 @@ public:
     bool preprocess() {
         if (enable_dual_porosity) validateDualPorosityParameters();
         buildGasPVTTable();
-        if (!buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path)) return false;
-        generateFractures(
-            natural_frac_count,
-            natural_min_length, natural_max_length,
-            10.0, 20.0,  // min_height, max_height
-            natural_max_dip,
-            natural_min_strike, natural_max_strike,
-            natural_aperture, natural_perm,
-            use_region_fractures ? region_x_min : 0.0,
-            use_region_fractures ? region_x_max : -1.0,
-            use_region_fractures ? region_y_min : 0.0,
-            use_region_fractures ? region_y_max : -1.0,
-            use_region_fractures ? region_z_min : 0.0,
-            use_region_fractures ? region_z_max : -1.0);
+        bool grid_ok = use_external_corner_point_grid
+            ? buildParentGridFromExternalArrays()
+            : buildParentGridFromCornerPointCSV(coord_file_path, zcorn_file_path);
+        if (!grid_ok) return false;
+        applyDFNContinuumPropertiesToParents();
+        if (use_external_dfn_fractures) {
+            fractures = external_dfn_fractures;
+            std::cout << "Using external DFN natural fractures: "
+                      << fractures.size() << std::endl;
+        } else {
+            generateFractures(
+                natural_frac_count,
+                natural_min_length, natural_max_length,
+                10.0, 20.0,  // min_height, max_height
+                natural_max_dip,
+                natural_min_strike, natural_max_strike,
+                natural_aperture, natural_perm,
+                use_region_fractures ? region_x_min : 0.0,
+                use_region_fractures ? region_x_max : -1.0,
+                use_region_fractures ? region_y_min : 0.0,
+                use_region_fractures ? region_y_max : -1.0,
+                use_region_fractures ? region_z_min : 0.0,
+                use_region_fractures ? region_z_max : -1.0);
+        }
         generateHydraulicFractures(
             hydraulic_frac_count,
             hydraulic_frac_spacing,
@@ -4683,6 +5443,7 @@ public:
         buildAllConnections(mm, mf, ff, wr_mf);
 
         setupWells();
+        printACTNUMSummary();
         initState();
         buildJacobianPattern();
         checkGeometryConsistency();
@@ -4721,6 +5482,11 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
     py::class_<SimulatorLGR>(m, "EDFMSimulator")
         .def(py::init<>())
         .def("setCornerPointFiles", &SimulatorLGR::setCornerPointFiles)
+        .def("setCornerPointGrid", &SimulatorLGR::setCornerPointGrid)
+        .def("setDFNFractures", &SimulatorLGR::setDFNFractures)
+        .def("setDFNContinuumProperties", &SimulatorLGR::setDFNContinuumProperties)
+        .def("setMatrixContinuumProperties", &SimulatorLGR::setMatrixContinuumProperties)
+        .def("setSigmaArray", &SimulatorLGR::setSigmaArray)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
         .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
@@ -4779,5 +5545,7 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("getCellGeometryWithPressure", &SimulatorLGR::getCellGeometryWithPressure)
         .def("getLGRGridGeometry", &SimulatorLGR::getLGRGridGeometry)
         .def("getParentGridGeometry", &SimulatorLGR::getParentGridGeometry)
-        .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry);
+        .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry)
+        .def("getTimeSteps", &SimulatorLGR::getTimeSteps)
+        .def("getPressureSteps", &SimulatorLGR::getPressureSteps);
 }

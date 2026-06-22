@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """储层工作流界面的独立双状态窗口。"""
 
+import json
 import os
 
 from PyQt5.QtCore import Qt
@@ -23,6 +24,7 @@ from .start_workspace import StartWorkspace
 class WorkbenchWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._child_windows = []
         self.setWindowTitle("储层建模与模拟平台")
         self.resize(1800, 1000)
         self.setMinimumSize(1160, 720)
@@ -134,6 +136,7 @@ class WorkbenchWindow(QMainWindow):
         except ProjectFileError as exc:
             QMessageBox.critical(self, "保存工程失败", str(exc))
             return False
+        self._mark_project_clean(shell)
         add_recent_project(saved_path, shell.project_state.project_name)
         self.ribbon.refresh_recent_projects()
         shell.message_log.append_message(f"[工程] 已保存工程文件：{saved_path}")
@@ -152,6 +155,16 @@ class WorkbenchWindow(QMainWindow):
         return self._open_project_file(path)
 
     def _open_project_file(self, path):
+        target = self._choose_project_target("打开工程")
+        if target is None:
+            return False
+        if target == "new_window":
+            return self._open_project_file_in_new_window(path)
+        if not self._confirm_close_current_project():
+            return False
+        return self._open_project_file_current(path, replace_current=True)
+
+    def _open_project_file_current(self, path, replace_current=False):
         try:
             project_state, validation = load_project_file(path)
         except ProjectFileError as exc:
@@ -162,6 +175,7 @@ class WorkbenchWindow(QMainWindow):
             project_state.project_name or os.path.basename(path),
             project_state=project_state,
             project_root=project_root,
+            replace_current=replace_current,
         )
         shell.message_log.append_message(f"[工程] 已加载工程文件：{path}")
         shell.log_project_references(validation)
@@ -173,11 +187,41 @@ class WorkbenchWindow(QMainWindow):
             self.statusBar().showMessage("工程文件已加载，但存在需要处理的问题", 6500)
         return True
 
+    def _open_project_file_in_new_window(self, path):
+        window = WorkbenchWindow()
+        if not window._open_project_file_current(path, replace_current=True):
+            window.deleteLater()
+            return False
+        self._register_child_window(window)
+        window.resize(self.size())
+        window.move(self.x() + 40, self.y() + 40)
+        window.show()
+        return True
+
     def _new_project(self):
+        target = self._choose_project_target("新建工程")
+        if target is None:
+            return False
+        if target == "new_window":
+            return self._new_project_in_new_window()
+        if not self._confirm_close_current_project():
+            return False
+        return self._new_project_current(replace_current=True)
+
+    def _new_project_current(self, replace_current=False):
         index = self.pages.count()
         name = f"未命名工程{index}"
-        self._open_project(name)
+        self._open_project(name, replace_current=replace_current)
         self.statusBar().showMessage("已新建工程", 4500)
+        return True
+
+    def _new_project_in_new_window(self):
+        window = WorkbenchWindow()
+        window._new_project_current(replace_current=True)
+        self._register_child_window(window)
+        window.resize(self.size())
+        window.move(self.x() + 40, self.y() + 40)
+        window.show()
         return True
 
     def _show_project_message(self, message):
@@ -207,10 +251,13 @@ class WorkbenchWindow(QMainWindow):
         text = str(command or "")
         return "新建" in text
 
-    def _open_project(self, name, module_key=None, project_state=None, project_root=None):
+    def _open_project(self, name, module_key=None, project_state=None,
+                      project_root=None, replace_current=False):
         project_state = project_state or ProjectState(project_name=name)
         if not project_state.project_name:
             project_state.project_name = name
+        if replace_current:
+            self._close_current_project_page()
         shell = ProjectShell(
             project_state.project_name,
             project_state,
@@ -224,6 +271,7 @@ class WorkbenchWindow(QMainWindow):
         shell.message_log.append_message(message)
         if module_key:
             shell.activate_module(module_key)
+        self._mark_project_clean(shell)
         self.statusBar().showMessage("Action performed OK", 4500)
         return shell
 
@@ -246,3 +294,104 @@ class WorkbenchWindow(QMainWindow):
         if isinstance(current, ProjectShell):
             return current.message_log
         return self.message_log
+
+    def _choose_project_target(self, action_title):
+        if self._current_project_shell() is None:
+            return "current_window"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(action_title)
+        dialog.setIcon(QMessageBox.Question)
+        dialog.setText(f"{action_title}方式")
+        dialog.setInformativeText(
+            "请选择在当前窗口切换工程，还是新建一个窗口打开工程。")
+        current_button = dialog.addButton("当前窗口", QMessageBox.AcceptRole)
+        new_window_button = dialog.addButton("新建窗口", QMessageBox.ActionRole)
+        cancel_button = dialog.addButton("取消", QMessageBox.RejectRole)
+        dialog.setDefaultButton(new_window_button)
+        dialog.exec_()
+        clicked = dialog.clickedButton()
+        if clicked == current_button:
+            return "current_window"
+        if clicked == new_window_button:
+            return "new_window"
+        if clicked == cancel_button:
+            return None
+        return None
+
+    def _confirm_close_current_project(self):
+        shell = self._current_project_shell()
+        if shell is None or not self._is_project_dirty(shell):
+            return True
+        name = shell.project_state.project_name or shell.project_name or "未命名工程"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("工程未保存")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText(f"当前工程“{name}”有未保存修改。")
+        dialog.setInformativeText("切换到其他工程前，请选择是否先保存当前工程。")
+        save_button = dialog.addButton("保存工程", QMessageBox.AcceptRole)
+        discard_button = dialog.addButton("不保存", QMessageBox.DestructiveRole)
+        cancel_button = dialog.addButton("取消", QMessageBox.RejectRole)
+        dialog.setDefaultButton(save_button)
+        dialog.exec_()
+        clicked = dialog.clickedButton()
+        if clicked == save_button:
+            return self._save_project()
+        if clicked == discard_button:
+            return True
+        if clicked == cancel_button:
+            return False
+        return False
+
+    def _project_data_signature(self, shell):
+        shell.collect_ui_state()
+        state = shell.project_state.to_dict()
+        state.pop("project_file_path", None)
+        state.pop("ui_state", None)
+        return json.dumps(state, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _mark_project_clean(self, shell):
+        if shell is not None:
+            shell._saved_project_signature = self._project_data_signature(shell)
+
+    def _is_project_dirty(self, shell):
+        if shell is None:
+            return False
+        baseline = getattr(shell, "_saved_project_signature", None)
+        if baseline is None:
+            self._mark_project_clean(shell)
+            return False
+        return baseline != self._project_data_signature(shell)
+
+    def _close_current_project_page(self):
+        shell = self._current_project_shell()
+        if shell is None:
+            return
+        self.pages.removeWidget(shell)
+        shell.deleteLater()
+        self.pages.setCurrentWidget(self.start_page)
+        self.ribbon.set_project_mode(bool(self._project_shells()))
+
+    def _project_shells(self):
+        shells = []
+        for index in range(self.pages.count()):
+            widget = self.pages.widget(index)
+            if isinstance(widget, ProjectShell):
+                shells.append(widget)
+        return shells
+
+    def _register_child_window(self, window):
+        self._child_windows.append(window)
+        window.destroyed.connect(
+            lambda _=None, child=window: self._forget_child_window(child))
+
+    def _forget_child_window(self, window):
+        if window in self._child_windows:
+            self._child_windows.remove(window)
+
+    def closeEvent(self, event):
+        for shell in list(self._project_shells()):
+            self.pages.setCurrentWidget(shell)
+            if not self._confirm_close_current_project():
+                event.ignore()
+                return
+        super().closeEvent(event)

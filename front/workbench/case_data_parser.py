@@ -104,6 +104,77 @@ class CaseData:
         }
 
 
+def case_data_from_dict(payload, path=None, base_dir=None):
+    """从工程快照恢复 CaseData 对象，不重新读取磁盘文件。"""
+    payload = payload or {}
+    data_path = path if path is not None else payload.get("path", "")
+    data_path = os.path.abspath(data_path) if data_path else ""
+    data_base_dir = base_dir if base_dir is not None else payload.get("base_dir", "")
+    if not data_base_dir and data_path:
+        data_base_dir = os.path.dirname(data_path)
+
+    case_data = CaseData(
+        path=data_path,
+        base_dir=data_base_dir,
+        raw_lines=list(payload.get("raw_lines", []) or []),
+        schema=dict(payload.get("schema", {}) or {}),
+        errors=list(payload.get("errors", []) or []),
+        dirty=bool(payload.get("dirty", False)),
+    )
+    for section_payload in payload.get("sections", []) or []:
+        if not isinstance(section_payload, dict):
+            continue
+        section = CaseSection(
+            name=section_payload.get("name", ""),
+            line_number=int(section_payload.get("line_number", 0) or 0),
+            comment=section_payload.get("comment", ""),
+            loose_items=list(section_payload.get("loose_items", []) or []),
+        )
+        for keyword_payload in section_payload.get("keywords", []) or []:
+            keyword = _keyword_from_dict(case_data, keyword_payload)
+            if keyword is not None:
+                section.keywords.append(keyword)
+        case_data.sections.append(section)
+    case_data.dirty = case_data.dirty or any(
+        keyword.is_dirty()
+        for section in case_data.sections
+        for keyword in section.keywords
+    )
+    return case_data
+
+
+def _keyword_from_dict(case_data, payload):
+    """从工程快照恢复单个关键字。"""
+    if not isinstance(payload, dict):
+        return None
+    raw_value = payload.get("raw_value", "")
+    if raw_value is None:
+        raw_value = ""
+    raw_value = str(raw_value)
+    value = payload.get("value")
+    value_type = payload.get("value_type", "")
+    if "value" not in payload or not value_type:
+        value, value_type = _parse_value(raw_value)
+    keyword = CaseKeyword(
+        key=payload.get("key", ""),
+        value=value,
+        raw_value=raw_value,
+        original_raw_value=str(payload.get("original_raw_value", raw_value)),
+        value_type=value_type,
+        comment=payload.get("comment", ""),
+        line_number=int(payload.get("line_number", 0) or 0),
+    )
+    if "is_file_ref" in payload:
+        keyword.is_file_ref = bool(payload.get("is_file_ref"))
+        keyword.file_path = payload.get("file_path", "") or ""
+        keyword.file_exists = bool(payload.get("file_exists"))
+        if keyword.is_file_ref and not keyword.file_path:
+            _resolve_file_ref(case_data, keyword)
+    else:
+        _resolve_file_ref(case_data, keyword)
+    return keyword
+
+
 def parse_case_data(path):
     case_data = CaseData(path=os.path.abspath(path), base_dir=os.path.dirname(os.path.abspath(path)))
     try:
@@ -295,6 +366,52 @@ def save_case_data(case_data, path=None, create_backup=True):
             keyword.original_raw_value = keyword.raw_value
             _resolve_file_ref(case_data, keyword)
     return target_path
+
+
+def export_case_data_snapshot(case_data, target_path):
+    """把当前工程快照导出为临时 CaseData 文件，不修改原始文件。"""
+    if case_data is None:
+        raise ValueError("CaseData 为空，无法导出快照")
+    target_path = os.path.abspath(target_path or "")
+    if not target_path:
+        raise ValueError("CaseData 快照导出路径为空")
+
+    lines = _snapshot_template_lines(case_data)
+    for section in case_data.sections:
+        for keyword in section.keywords:
+            line_index = keyword.line_number - 1
+            raw_value = _snapshot_keyword_raw_value(keyword)
+            if 0 <= line_index < len(lines):
+                lines[line_index] = _replace_keyword_line(
+                    lines[line_index], keyword.key, raw_value)
+
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    with open(target_path, "w", encoding="utf-8", newline="") as file:
+        file.writelines(lines)
+    return target_path
+
+
+def _snapshot_template_lines(case_data):
+    """优先沿用原文件格式；原文件不可用时退化为最小 CaseData 文本。"""
+    if case_data.raw_lines:
+        return list(case_data.raw_lines)
+    if case_data.path and os.path.exists(case_data.path):
+        with open(case_data.path, "r", encoding="utf-8-sig") as file:
+            return file.readlines()
+    lines = []
+    for section in case_data.sections:
+        lines.append(f"[{section.name}]\n")
+        for keyword in section.keywords:
+            lines.append(f"{keyword.key} = {_snapshot_keyword_raw_value(keyword)}\n")
+        lines.append("\n")
+    return lines
+
+
+def _snapshot_keyword_raw_value(keyword):
+    """临时快照位于工程目录内，文件引用要写成可独立解析的绝对路径。"""
+    if keyword.is_file_ref and keyword.file_path:
+        return os.path.abspath(keyword.file_path)
+    return keyword.raw_value
 
 
 def _replace_keyword_line(raw_line, key, raw_value):

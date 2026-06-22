@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """CaseData 输入文件参数面板。"""
 
+import json
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -14,7 +15,10 @@ from .case_file_analyzer import (
     analyze_case_file, analyze_property_against_grid,
     read_expanded_array_preview, read_text_preview,
 )
-from .case_data_parser import parse_case_data, save_case_data, update_keyword_value
+from .case_data_parser import (
+    case_data_from_dict, export_case_data_snapshot, parse_case_data,
+    save_case_data, update_keyword_value,
+)
 from .case_dataset_builder import build_case_dataset
 
 
@@ -130,8 +134,9 @@ class CaseDataPanel(QWidget):
         reload_button = QPushButton("重载")
         reload_button.setObjectName("parameterBrowseButton")
         reload_button.clicked.connect(self.reload)
-        self.save_button = QPushButton("保存")
+        self.save_button = QPushButton("写回文件")
         self.save_button.setObjectName("parameterBrowseButton")
+        self.save_button.setToolTip("把当前参数修改写回原始 CaseData 文件；保存工程请使用文件菜单。")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self.save)
         row.addWidget(self.path_edit, 1)
@@ -170,7 +175,30 @@ class CaseDataPanel(QWidget):
         path = getattr(self.project_state, "case_data_path", "") if self.project_state else ""
         if path:
             self.path_edit.setText(path)
+        if self._load_project_snapshot():
+            return
+        if path:
             self.load_path(path)
+
+    def _load_project_snapshot(self):
+        if self.project_state is None:
+            return False
+        sections = getattr(self.project_state, "case_data_sections", []) or []
+        if not sections:
+            return False
+        path = getattr(self.project_state, "case_data_path", "") or ""
+        self.case_data = case_data_from_dict({
+            "path": path,
+            "sections": sections,
+            "schema": getattr(self.project_state, "case_data_schema", {}) or {},
+            "errors": [],
+            "dirty": False,
+        })
+        self.values_were_saved = False
+        self._populate_sections()
+        self._update_summary()
+        self._update_dataset_status()
+        return True
 
     def _load_saved_dataset_path(self):
         if self.section_locked or not hasattr(self, "dataset_path_edit"):
@@ -215,12 +243,12 @@ class CaseDataPanel(QWidget):
 
     def save(self):
         if self.case_data is None:
-            QMessageBox.warning(self, "保存 CaseData", "尚未加载 CaseData 文件。")
+            QMessageBox.warning(self, "写回 CaseData 文件", "尚未加载 CaseData 文件。")
             return False
         try:
             saved_path = save_case_data(self.case_data)
         except Exception as exc:
-            QMessageBox.critical(self, "保存 CaseData 失败", str(exc))
+            QMessageBox.critical(self, "写回 CaseData 文件失败", str(exc))
             return False
         self.path_edit.setText(saved_path)
         self.values_were_saved = True
@@ -232,20 +260,13 @@ class CaseDataPanel(QWidget):
         self._populate_keywords()
         self._update_summary()
         self._update_dataset_status()
-        QMessageBox.information(self, "保存 CaseData", "CaseData 参数已保存。")
+        QMessageBox.information(self, "写回 CaseData 文件", "CaseData 参数已写回原始文件。")
         return True
 
     def build_dataset(self):
-        """把当前 CaseData 文件生成统一 case_dataset 数据目录。"""
+        """用当前工程 CaseData 快照生成统一 case_dataset 数据目录。"""
         if self.case_data is None:
             QMessageBox.warning(self, "生成 Dataset", "尚未加载 CaseData 文件。")
-            return False
-        if self.case_data.dirty:
-            QMessageBox.warning(
-                self,
-                "生成 Dataset",
-                "CaseData 参数有未保存修改，请先保存后再生成 Dataset。",
-            )
             return False
         output_dir = self.dataset_path_edit.text().strip() if hasattr(self, "dataset_path_edit") else ""
         if not output_dir:
@@ -253,10 +274,12 @@ class CaseDataPanel(QWidget):
             if hasattr(self, "dataset_path_edit"):
                 self.dataset_path_edit.setText(output_dir)
         try:
-            result = build_case_dataset(self.case_data.path, output_dir)
+            snapshot_path = self._export_dataset_case_data_snapshot()
+            result = build_case_dataset(snapshot_path, output_dir)
         except Exception as exc:
             QMessageBox.critical(self, "生成 Dataset 失败", str(exc))
             return False
+        self._attach_dataset_snapshot_metadata(result, snapshot_path)
         if self.project_state is not None:
             self.project_state.set_case_dataset(
                 result.output_dir, result.manifest, result.validation)
@@ -279,6 +302,41 @@ class CaseDataPanel(QWidget):
                 f"Dataset 已生成，警告 {warning_count} 个。",
             )
         return True
+
+    def _export_dataset_case_data_snapshot(self):
+        snapshot_path = os.path.join(
+            os.getcwd(),
+            ".tmp",
+            "project_runtime",
+            self._safe_project_name(),
+            "case_data_snapshot.txt",
+        )
+        return export_case_data_snapshot(self.case_data, snapshot_path)
+
+    def _safe_project_name(self):
+        name = ""
+        if self.project_state is not None:
+            name = getattr(self.project_state, "project_name", "") or ""
+        if not name:
+            source = self.case_data.path if self.case_data is not None else "project"
+            name = os.path.splitext(os.path.basename(source))[0] or "project"
+        return "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in name)
+
+    def _attach_dataset_snapshot_metadata(self, result, snapshot_path):
+        manifest = result.manifest or {}
+        manifest["ui_case_data_source"] = {
+            "mode": "project_snapshot",
+            "snapshot_case_file": os.path.abspath(snapshot_path),
+            "original_case_file": os.path.abspath(self.case_data.path or "")
+            if self.case_data is not None and self.case_data.path else "",
+            "dirty_against_original": bool(
+                self.case_data is not None and self.case_data.dirty),
+        }
+        try:
+            with open(result.manifest_path, "w", encoding="utf-8") as file:
+                json.dump(manifest, file, ensure_ascii=False, indent=2)
+        except OSError:
+            return
 
     def load_path(self, path):
         self.case_data = parse_case_data(path)
@@ -356,6 +414,10 @@ class CaseDataPanel(QWidget):
         if keyword is None:
             return
         update_keyword_value(self.case_data, keyword, item.text())
+        if self.project_state is not None:
+            self.project_state.set_case_data(self.case_data)
+            if hasattr(self.project_state, "mark_case_dataset_stale"):
+                self.project_state.mark_case_dataset_stale()
         self.table.item(item.row(), 2).setText(keyword.value_type)
         self.table.item(item.row(), 3).setText(self._keyword_status(keyword))
         self._sync_detail()
@@ -395,7 +457,7 @@ class CaseDataPanel(QWidget):
         missing = [item for item in refs if not item.file_exists]
         schema_state = "已读取" if self.case_data.schema else "未发现"
         basename = os.path.basename(self.case_data.path)
-        dirty_text = "；已修改，未保存" if self.case_data.dirty else "；已保存"
+        dirty_text = "；已修改，未写回文件" if self.case_data.dirty else "；当前无未写回修改"
         text = (
             f"{basename} | section {len(self.case_data.sections)} 个，"
             f"关键字 {self.case_data.keyword_count()} 个，文件引用 {len(refs)} 个，"
@@ -509,11 +571,14 @@ class CaseKeywordPanel(QWidget):
 
     def _load_keyword(self):
         path = getattr(self.project_state, "case_data_path", "") if self.project_state else ""
-        if not path:
+        if self._load_project_snapshot():
+            pass
+        elif not path:
             self.info.setPlainText("尚未加载 CaseData 文件。请先双击 CaseData 输入并选择文件。")
             self._clear_tabs()
             return
-        self.case_data = parse_case_data(path)
+        else:
+            self.case_data = parse_case_data(path)
         section = self.case_data.section(self.section_name)
         if section is None:
             self.info.setPlainText(f"未找到 section: {self.section_name}")
@@ -528,6 +593,22 @@ class CaseKeywordPanel(QWidget):
             self._clear_tabs()
             return
         self._render_keyword(section.name, self.keyword)
+
+    def _load_project_snapshot(self):
+        if self.project_state is None:
+            return False
+        sections = getattr(self.project_state, "case_data_sections", []) or []
+        if not sections:
+            return False
+        path = getattr(self.project_state, "case_data_path", "") or ""
+        self.case_data = case_data_from_dict({
+            "path": path,
+            "sections": sections,
+            "schema": getattr(self.project_state, "case_data_schema", {}) or {},
+            "errors": [],
+            "dirty": False,
+        })
+        return True
 
     def _render_keyword(self, section_name, keyword):
         title = f"[{section_name}] {keyword.key}"

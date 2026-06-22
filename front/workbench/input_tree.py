@@ -183,9 +183,18 @@ class InputTree(QTreeWidget):
                 self._restore_case_data_snapshot(before_case_data)
                 self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
         elif isinstance(key, str) and key.startswith("case_data_"):
-            if self._case_data_signature() != before_signature:
-                self.refresh_case_data_sections(preserve_expanded=True)
+            confirmed = (
+                result == dialog.Accepted
+                or getattr(dialog, "values_were_applied", False)
+                or getattr(getattr(dialog, "panel", None), "values_were_saved", False)
+            )
+            if confirmed:
+                if self._case_data_signature() != before_signature:
+                    self.refresh_case_data_sections(preserve_expanded=True)
+                else:
+                    self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
             else:
+                self._restore_case_data_snapshot(before_case_data)
                 self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
 
     def _case_data_signature(self):
