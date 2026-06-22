@@ -10,7 +10,10 @@ import math
 import os
 import sys
 
+import numpy as np
+
 from .data_models import SimulationData
+from .workbench.case_dataset_reader import load_case_dataset
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,6 +46,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 def run_simulation(params):
     """执行模拟并返回 SimulationData。"""
+    if params.get('interface_source') == 'case_dataset':
+        return run_case_dataset_simulation(params)
     if params.get('interface_source') == 'case_data':
         return run_case_data_simulation(params)
     algorithm = params.get('algorithm', 'black_oil')
@@ -322,6 +327,223 @@ def apply_corner_initial_state(sim, params):
     sim.setInitialStateParameters(pressure, sw, sg)
 
 
+def run_case_dataset_simulation(params):
+    """Run the solver from a standard case_dataset directory."""
+    dataset_dir = os.path.abspath(params.get('case_dataset_path', '') or '')
+    if not dataset_dir:
+        raise ValueError("case_dataset_path is required for case_dataset simulation")
+
+    strict = not bool(params.get('allow_invalid_case_dataset', False))
+    dataset = load_case_dataset(dataset_dir, strict=strict)
+    edfm_core_corner = load_corner_edfm_lgr_module()
+    sim = edfm_core_corner.EDFMSimulator()
+
+    _apply_case_dataset_grid(sim, dataset)
+    _apply_case_dataset_properties(sim, dataset)
+    _apply_case_dataset_dfn(sim, dataset)
+    _apply_case_dataset_controls(sim, params)
+
+    result = sim.runSimulation()
+    result_params = _case_dataset_result_params(params, dataset)
+    return _collect_case_data_simulation_result(sim, result, result_params)
+
+
+def _apply_case_dataset_grid(sim, dataset):
+    if not hasattr(sim, 'setCornerPointGrid'):
+        raise RuntimeError("edfm_core_corner_lgr does not expose setCornerPointGrid")
+    grid = dataset.grid
+    sim.setCornerPointGrid(
+        int(grid.nx),
+        int(grid.ny),
+        int(grid.nz),
+        _array_float64(grid.coord),
+        _array_float64(grid.zcorn),
+        np.asarray(grid.actnum, dtype=np.int32),
+    )
+
+
+def _apply_case_dataset_properties(sim, dataset):
+    properties = dataset.properties or {}
+    matrix_keys = ('matrix_phi', 'matrix_kx', 'matrix_ky', 'matrix_kz')
+    if all(key in properties for key in matrix_keys):
+        if not hasattr(sim, 'setMatrixContinuumProperties'):
+            raise RuntimeError("edfm_core_corner_lgr does not expose setMatrixContinuumProperties")
+        sim.setMatrixContinuumProperties(*[
+            _array_float64(properties[key]).tolist() for key in matrix_keys
+        ])
+    else:
+        missing = [key for key in matrix_keys if key not in properties]
+        print(f"WARNING: matrix continuum properties are incomplete: {missing}", flush=True)
+
+    fracture_keys = ('fracture_phi', 'fracture_kx', 'fracture_ky', 'fracture_kz')
+    if all(key in properties for key in fracture_keys):
+        if not hasattr(sim, 'setDFNContinuumProperties'):
+            raise RuntimeError("edfm_core_corner_lgr does not expose setDFNContinuumProperties")
+        mask = _combined_valid_mask(dataset, fracture_keys)
+        sim.setDFNContinuumProperties(
+            int(dataset.grid.nx),
+            int(dataset.grid.ny),
+            int(dataset.grid.nz),
+            *[_array_float64(properties[key]) for key in fracture_keys],
+            mask,
+        )
+    else:
+        missing = [key for key in fracture_keys if key not in properties]
+        print(f"WARNING: fracture continuum properties are incomplete: {missing}", flush=True)
+
+    sigma = properties.get('sigma')
+    if sigma is not None:
+        if not hasattr(sim, 'setSigmaArray'):
+            raise RuntimeError("edfm_core_corner_lgr does not expose setSigmaArray")
+        sim.setSigmaArray(_array_float64(sigma).tolist())
+
+
+def _apply_case_dataset_dfn(sim, dataset):
+    if not hasattr(sim, 'setDFNFractures'):
+        raise RuntimeError("edfm_core_corner_lgr does not expose setDFNFractures")
+    ids, offsets, vertices, apertures, permeabilities = _dfn_arrays(dataset.dfn)
+    if len(ids) == 0:
+        print("WARNING: case_dataset has no DFN fractures; solver will use generated fractures", flush=True)
+        return
+    sim.setDFNFractures(ids, offsets, vertices, apertures, permeabilities)
+
+
+def _apply_case_dataset_controls(sim, params):
+    if hasattr(sim, 'setHydraulicFractureParameters'):
+        hf_enabled = bool(params.get('hf_enabled', False))
+        hf_count = int(params.get('hf_count', 0)) if hf_enabled else 0
+        sim.setHydraulicFractureParameters(
+            hf_count,
+            float(params.get('hf_spacing_x', 0.0)),
+            float(params.get('hf_length', 120.0)),
+            float(params.get('hf_height', 30.0)),
+            float(params.get('hf_aperture', 0.1)),
+            float(params.get('hf_perm', 1000.0)),
+            float(params.get('hf_center_x', -1.0)),
+            float(params.get('hf_center_y', -1.0)),
+            float(params.get('hf_center_z', -1.0)),
+        )
+    if hasattr(sim, 'setWellParameters'):
+        sim.setWellParameters(
+            float(params.get('well_radius', 0.05)),
+            float(params.get('well_pressure', 100.0)),
+        )
+    apply_corner_fluid_properties(sim, params)
+    apply_corner_gas_pvt_properties(sim, params)
+    apply_corner_initial_state(sim, params)
+
+    if hasattr(sim, 'setLGRParameters'):
+        sim.setLGRParameters(
+            bool(params.get('enable_lgr', True)),
+            float(params.get('d_threshold', 5.05)),
+            int(params.get('lgr_nrx', 2)),
+            int(params.get('lgr_nry', 2)),
+            int(params.get('lgr_nrz', 2)),
+        )
+    if hasattr(sim, 'setDualPorosityParameters') and params.get('enable_dual_porosity') is not None:
+        sim.setDualPorosityParameters(
+            bool(params.get('enable_dual_porosity', False)),
+            float(params.get('phi_matrix', 0.04)),
+            float(params.get('phi_fracture', 0.4)),
+            float(params.get('k_matrix_x', 0.005)),
+            float(params.get('k_matrix_y', 0.005)),
+            float(params.get('k_matrix_z', 0.005)),
+            float(params.get('k_fracture_x', 1.0)),
+            float(params.get('k_fracture_y', 1.0)),
+            float(params.get('k_fracture_z', 0.1)),
+            float(params.get('matrix_volume_fraction', 0.98)),
+            float(params.get('fracture_volume_fraction', 0.02)),
+            float(params.get('wr_shape_factor', 0.12)),
+        )
+    _apply_case_data_solver_parameters(sim, params)
+
+
+def _case_dataset_result_params(params, dataset):
+    result_params = dict(params)
+    lx, ly, lz = _grid_extents(dataset.grid.coord)
+    result_params.update({
+        'nx': int(dataset.grid.nx),
+        'ny': int(dataset.grid.ny),
+        'nz': int(dataset.grid.nz),
+        'lx': lx,
+        'ly': ly,
+        'lz': lz,
+    })
+    return result_params
+
+
+def _grid_extents(coord):
+    coord = _array_float64(coord)
+    if coord.size == 0 or coord.size % 6 != 0:
+        return 0.0, 0.0, 0.0
+    pillars = coord.reshape((-1, 6))
+    xs = np.concatenate([pillars[:, 0], pillars[:, 3]])
+    ys = np.concatenate([pillars[:, 1], pillars[:, 4]])
+    zs = np.concatenate([pillars[:, 2], pillars[:, 5]])
+    return (
+        float(np.max(xs) - np.min(xs)),
+        float(np.max(ys) - np.min(ys)),
+        float(np.max(zs) - np.min(zs)),
+    )
+
+
+def _combined_valid_mask(dataset, property_keys):
+    masks = []
+    for key in property_keys:
+        mask = dataset.valid_masks.get(key)
+        if mask is not None:
+            masks.append(np.asarray(mask, dtype=np.bool_))
+    if not masks:
+        return np.asarray(dataset.grid.active_mask, dtype=np.bool_)
+    combined = masks[0].copy()
+    for mask in masks[1:]:
+        n = min(combined.size, mask.size)
+        combined[:n] = combined[:n] & mask[:n]
+        if mask.size < combined.size:
+            combined[mask.size:] = False
+    return np.asarray(combined, dtype=np.bool_)
+
+
+def _dfn_arrays(dfn_payload):
+    dfn_payload = dfn_payload or {}
+    fractures = dfn_payload.get('fractures') or [] if isinstance(dfn_payload, dict) else []
+    ids = []
+    offsets = [0]
+    vertices = []
+    apertures = []
+    permeabilities = []
+    for index, fracture in enumerate(fractures):
+        points = fracture.get('vertices') or fracture.get('points') or []
+        if len(points) < 3:
+            continue
+        try:
+            clean_points = [
+                (float(point[0]), float(point[1]), float(point[2]))
+                for point in points
+            ]
+        except (TypeError, ValueError, IndexError):
+            continue
+        frac_id = fracture.get('fracture_id', fracture.get('id', index))
+        aperture = fracture.get('aperture', 0.01)
+        permeability = fracture.get('permeability', fracture.get('perm', 10000.0))
+        ids.append(int(frac_id))
+        vertices.extend(clean_points)
+        offsets.append(len(vertices))
+        apertures.append(max(float(aperture), 1e-12))
+        permeabilities.append(max(float(permeability), 0.0))
+    return (
+        np.asarray(ids, dtype=np.int32),
+        np.asarray(offsets, dtype=np.int32),
+        np.asarray(vertices, dtype=np.float64).reshape((-1, 3)),
+        np.asarray(apertures, dtype=np.float64),
+        np.asarray(permeabilities, dtype=np.float64),
+    )
+
+
+def _array_float64(values):
+    return np.ascontiguousarray(values, dtype=np.float64)
+
+
 def run_case_data_simulation(params):
     """执行 CaseData 接入流程的模拟。
 
@@ -466,6 +688,16 @@ def _collect_case_data_simulation_result(sim, result, params):
             sim_data.dual_porosity_pressure_field = sim.getDualPorosityPressureData()
         except Exception as exc:
             print(f"WARNING: getDualPorosityPressureData failed: {exc}", flush=True)
+    if hasattr(sim, 'getTimeSteps'):
+        try:
+            sim_data.time_steps = _array_float64(sim.getTimeSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getTimeSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPressureSteps'):
+        try:
+            sim_data.pressure_steps = _array_float64(sim.getPressureSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPressureSteps failed: {exc}", flush=True)
     sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
     return sim_data
 

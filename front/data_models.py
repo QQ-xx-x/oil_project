@@ -14,6 +14,29 @@ def _safe_to_list(value):
     return list(value)
 
 
+
+def _group_fracture_vertices(vertices):
+    """Group C++ fracture vertex rows by fracture id."""
+    grouped = []
+    index_by_id = {}
+    for row_index, row in enumerate(vertices or []):
+        if len(row) < 3:
+            continue
+        try:
+            point = (float(row[0]), float(row[1]), float(row[2]))
+        except (TypeError, ValueError):
+            continue
+        try:
+            frac_id = int(row[3]) if len(row) > 3 else row_index // 4
+        except (TypeError, ValueError):
+            frac_id = row_index // 4
+        if frac_id not in index_by_id:
+            index_by_id[frac_id] = len(grouped)
+            grouped.append({'id': frac_id, 'points': []})
+        grouped[index_by_id[frac_id]]['points'].append(point)
+    return [fracture for fracture in grouped if len(fracture.get('points', [])) >= 3]
+
+
 class OutputCapture:
     """捕获C++输出并重定向到Qt界面"""
     def __init__(self, callback):
@@ -150,6 +173,8 @@ class SimulationData:
         self.corner_lgr_refined_grid_geometry = None  # 加密后的子网格几何
         self.dual_porosity_pressure_field = None      # WR dual porosity 压力场
         self.has_dual_porosity = False                # 本次模拟是否启用了 WR
+        self.time_steps = []
+        self.pressure_steps = []
 
     def generate_from_cpp(self, sim_result, nx, ny, nz, lx, ly, lz, grid_lines=None, interpolated_pressure=None):
         """从C++结果生成数据"""
@@ -163,22 +188,8 @@ class SimulationData:
         self.grid_lines = _safe_to_list(grid_lines)
         self.interpolated_pressure = _safe_to_list(interpolated_pressure)
         
-        self.fractures = []
         vertices = _safe_to_list(getattr(sim_result, 'fracture_vertices', []))
-        
-        for i in range(0, len(vertices), 4):
-            if i + 3 < len(vertices):
-                frac_id = int(vertices[i][3]) if len(vertices[i]) > 3 else (i // 4)
-                frac = {
-                    'id': frac_id,
-                    'points': [
-                        (vertices[i][0], vertices[i][1], vertices[i][2]),
-                        (vertices[i+1][0], vertices[i+1][1], vertices[i+1][2]),
-                        (vertices[i+2][0], vertices[i+2][1], vertices[i+2][2]),
-                        (vertices[i+3][0], vertices[i+3][1], vertices[i+3][2])
-                    ]
-                }
-                self.fractures.append(frac)
+        self.fractures = _group_fracture_vertices(vertices)
         
         print(f"Loaded {len(self.pressure_field)} pressure points, {len(self.fractures)} fractures")
     
@@ -250,6 +261,9 @@ class SimulationData:
         if self.dual_porosity_pressure_field is not None:
             dual_poro_list = [list(point) for point in self.dual_porosity_pressure_field]
 
+        time_steps_list = list(self.time_steps or [])
+        pressure_steps_list = [list(step) for step in self.pressure_steps or []]
+
         return {
             'grid_info': dict(self.grid_info),
             'pressure_field': [list(point) for point in self.pressure_field],
@@ -272,6 +286,8 @@ class SimulationData:
             'corner_lgr_refined_grid_geometry': refined_geom_list,
             'dual_porosity_pressure_field': dual_poro_list,
             'has_dual_porosity': self.has_dual_porosity,
+            'time_steps': time_steps_list,
+            'pressure_steps': pressure_steps_list,
         }
 
     def load_dict(self, payload):
@@ -331,6 +347,11 @@ class SimulationData:
             self.dual_porosity_pressure_field = None
 
         self.has_dual_porosity = bool(payload.get('has_dual_porosity', False))
+        self.time_steps = [float(value) for value in payload.get('time_steps', [])]
+        self.pressure_steps = [
+            [float(value) for value in step]
+            for step in payload.get('pressure_steps', [])
+        ]
 
     def save_json(self, output_path):
         """将模拟结果写入JSON文件。"""

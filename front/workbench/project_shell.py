@@ -423,6 +423,15 @@ class ProjectShell(QWidget):
         self.result_store.run_status = "running"
         self.message_log.append_message(
             f"[运行] 算法=corner_edfm，加密={params.get('corner_grid_refinement')}")
+        if params.get("interface_source") == "case_dataset":
+            self.message_log.append_message(
+                f"[运行] Dataset={params.get('case_dataset_path', '')}")
+            self.message_log.append_message(
+                f"[运行] Grid={params.get('nx')} x {params.get('ny')} x {params.get('nz')}，"
+                f"arrays={params.get('array_count')}，properties={params.get('property_count')}，"
+                f"DFN={params.get('dfn_fracture_count')}")
+            self._show_status("case_dataset 模拟运行中")
+            return
         self.message_log.append_message(
             f"[运行] COORD={os.path.basename(params.get('coord_file', ''))}, "
             f"ZCORN={os.path.basename(params.get('zcorn_file', ''))}")

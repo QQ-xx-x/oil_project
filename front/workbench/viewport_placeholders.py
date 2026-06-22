@@ -183,9 +183,15 @@ class ThreeDViewport(QWidget):
                 renderer.ensure_fractures(sim_data)
             fracture_type = "hydraulic" if layer_key == "hydraulic_fractures" else "natural"
             if hasattr(renderer, "toggle_fractures_visibility"):
-                renderer.toggle_fractures_visibility(bool(enabled), fracture_type)
+                try:
+                    renderer.toggle_fractures_visibility(bool(enabled), fracture_type)
+                except TypeError:
+                    renderer.toggle_fractures_visibility(bool(enabled))
             elif hasattr(renderer, "toggle_fractures"):
-                renderer.toggle_fractures(bool(enabled), fracture_type)
+                try:
+                    renderer.toggle_fractures(bool(enabled), fracture_type)
+                except TypeError:
+                    renderer.toggle_fractures(bool(enabled))
         elif layer_key == "well":
             if enabled and hasattr(renderer, "render_wells"):
                 renderer.render_wells(sim_data)

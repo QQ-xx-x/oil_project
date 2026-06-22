@@ -13,6 +13,10 @@ from .case_data_simulation_adapter import (
     CaseDataSimulationAdapterError,
     build_case_data_simulation_input,
 )
+from .case_dataset_simulation_adapter import (
+    CaseDatasetSimulationAdapterError,
+    build_case_dataset_params,
+)
 from .corner_parameter_adapter import CornerParameterError, build_corner_grid_params
 
 
@@ -39,7 +43,11 @@ class WorkbenchSimulationService(QObject):
 
         try:
             params = self._build_run_params(project_state)
-        except (CornerParameterError, CaseDataSimulationAdapterError) as exc:
+        except (
+            CornerParameterError,
+            CaseDataSimulationAdapterError,
+            CaseDatasetSimulationAdapterError,
+        ) as exc:
             self.failed.emit(str(exc))
             return
 
@@ -68,13 +76,23 @@ class WorkbenchSimulationService(QObject):
         self.process.errorOccurred.connect(self._handle_error)
 
         self.started.emit(params)
-        if params.get("interface_source") == "case_data":
+        if params.get("interface_source") == "case_dataset":
+            self.log_message.emit("[运行] case_dataset 模拟参数已提交")
+        elif params.get("interface_source") == "case_data":
             self.log_message.emit("[运行] CaseData 模拟参数已提交")
         else:
             self.log_message.emit("[运行] Corner Grid LGR 模拟已启动")
         self.process.start()
 
     def _build_run_params(self, project_state):
+        dataset_path = str(getattr(project_state, "case_dataset_path", "") or "").strip()
+        dataset_summary = getattr(project_state, "case_dataset_summary", {}) or {}
+        if dataset_path:
+            if dataset_summary.get("stale"):
+                reason = dataset_summary.get("stale_reason") or "CaseData 已修改，请重新生成 Dataset"
+                raise CaseDatasetSimulationAdapterError(reason)
+            return build_case_dataset_params(dataset_path)
+
         case_data_path = str(getattr(project_state, "case_data_path", "") or "").strip()
         if case_data_path:
             case_input = build_case_data_simulation_input(case_data_path)
