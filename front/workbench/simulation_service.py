@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
 
 from PyQt5.QtCore import QObject, QProcess, pyqtSignal
 
@@ -29,6 +30,7 @@ class WorkbenchSimulationService(QObject):
     def __init__(self, project_root, parent=None):
         super().__init__(parent)
         self.project_root = project_root
+        self.app_root = str(Path(__file__).resolve().parents[2])
         self.process = None
         self.result_path = ""
         self._output_buffer = ""
@@ -59,7 +61,7 @@ class WorkbenchSimulationService(QObject):
         self._output_buffer = ""
 
         self.process = QProcess(self)
-        self.process.setWorkingDirectory(self.project_root)
+        self.process.setWorkingDirectory(self.app_root)
         self.process.setProgram(sys.executable)
         self.process.setArguments([
             "-u",

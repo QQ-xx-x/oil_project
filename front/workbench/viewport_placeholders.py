@@ -10,6 +10,14 @@ from PyQt5.QtWidgets import QFrame, QVBoxLayout, QWidget
 from .view_toolbar import ViewToolbar
 
 
+THREE_D_RESULT_KEYS = {
+    "pressure_field",
+    "water_saturation_field",
+    "permeability_field",
+    "porosity_field",
+    "layer_control",
+}
+
 RESULT_STYLES = {
     "pressure_field": {
         "legend": "压力",
@@ -93,6 +101,8 @@ class ThreeDViewport(QWidget):
         }
 
     def set_context(self, title, detail, display_key=None):
+        if display_key and display_key not in THREE_D_RESULT_KEYS:
+            return
         self.context_title = title
         self.context_detail = detail
         if display_key:

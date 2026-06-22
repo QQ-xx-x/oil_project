@@ -132,7 +132,22 @@ class WorkbenchWindow(QMainWindow):
     def _write_project_file(self, shell, path):
         try:
             shell.collect_ui_state()
-            saved_path = save_project_file(shell.project_state, path)
+            result_store = getattr(shell, "result_store", None)
+            simulation_result_path = ""
+            result_files = {}
+            if result_store is not None and result_store.run_status == "done":
+                simulation_result_path = getattr(result_store, "result_json_path", "") or ""
+                result_files = {
+                    "output_sim_path": getattr(result_store, "output_sim_path", "") or "",
+                    "final_field_path": getattr(result_store, "final_field_path", "") or "",
+                    "gas_pvt_table_path": getattr(result_store, "gas_pvt_table_path", "") or "",
+                }
+            saved_path = save_project_file(
+                shell.project_state,
+                path,
+                simulation_result_path=simulation_result_path,
+                result_files=result_files,
+            )
         except ProjectFileError as exc:
             QMessageBox.critical(self, "保存工程失败", str(exc))
             return False

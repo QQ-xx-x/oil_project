@@ -172,9 +172,10 @@ class WorkspaceTabs(QTabWidget):
 
     def update_context(self, title, detail, preferred_view="3d", display_key=None):
         self._last_context = (title, detail, display_key)
-        for page in self._pages():
-            page.set_context(title, detail, display_key)
         target = self._first_page_of_type(preferred_view)
+        pages = self._pages_of_type(preferred_view) if target is not None else self._pages()
+        for page in pages:
+            page.set_context(title, detail, display_key)
         if target is not None:
             self.setCurrentWidget(target)
 

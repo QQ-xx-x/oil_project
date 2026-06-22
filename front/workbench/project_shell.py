@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..data_models import SimulationData
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
@@ -22,6 +23,15 @@ from .results_tree import ResultsTree
 from .simulation_service import WorkbenchSimulationService
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
+
+
+LAZY_SIMULATION_DATA_KEYS = {
+    "pressure_field",
+    "water_saturation_field",
+    "permeability_field",
+    "porosity_field",
+    "layer_control",
+}
 
 
 class DockTabPanel(QFrame):
@@ -223,6 +233,7 @@ class ProjectShell(QWidget):
         main_splitter.setCollapsible(0, False)
         layout.addWidget(main_splitter)
         self.restore_ui_state()
+        self._restore_packaged_simulation_result()
 
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
@@ -235,6 +246,8 @@ class ProjectShell(QWidget):
         state["upper_tab_index"] = self.upper_tabs.tab_widget.currentIndex()
         state["lower_tab_index"] = self.lower_tabs.tab_widget.currentIndex()
         state["workspace_tab_index"] = self.workspace.currentIndex()
+        state.pop("loaded_result_json_path", None)
+        state.pop("loaded_results_dir", None)
         self.project_state.ui_state = state
         return state
 
@@ -248,6 +261,44 @@ class ProjectShell(QWidget):
         self._restore_tab_index(self.upper_tabs.tab_widget, state.get("upper_tab_index"))
         self._restore_tab_index(self.lower_tabs.tab_widget, state.get("lower_tab_index"))
         self._restore_tab_index(self.workspace, state.get("workspace_tab_index"))
+
+    def _restore_packaged_simulation_result(self):
+        state = getattr(self.project_state, "ui_state", {}) or {}
+        result_path = state.get("loaded_result_json_path") or ""
+        if not result_path:
+            return
+        if not os.path.exists(result_path):
+            self.message_log.append_message(
+                f"[结果] 工程包内结果 JSON 不存在：{result_path}")
+            return
+        self.result_store.run_status = "done"
+        self.result_store.simulation_data = None
+        self.result_store.result_json_path = result_path
+        self._restore_packaged_result_files(state.get("loaded_results_dir") or "")
+        self._publish_loaded_charts()
+        self.message_log.append_message(
+            f"[结果] 已恢复工程包模拟结果索引，3D 结果将在首次查看时加载：{result_path}")
+
+    def _restore_packaged_result_files(self, results_dir):
+        if not results_dir or not os.path.isdir(results_dir):
+            return
+        restored = WorkbenchWorkflowRunner(results_dir).discover_results()
+        self._copy_result_file_state(restored)
+
+    def _copy_result_file_state(self, source_store):
+        if source_store.output_sim_path:
+            self.result_store.output_sim_path = source_store.output_sim_path
+            self.result_store.production_data = source_store.production_data
+        if source_store.final_field_path:
+            self.result_store.final_field_path = source_store.final_field_path
+        if source_store.gas_pvt_table_path:
+            self.result_store.gas_pvt_table_path = source_store.gas_pvt_table_path
+            self.result_store.pvt_data = source_store.pvt_data
+
+    def _refresh_result_file_paths(self):
+        app_root = getattr(self.simulation_service, "app_root", self.project_root)
+        discovered = WorkbenchWorkflowRunner(app_root).discover_results()
+        self._copy_result_file_state(discovered)
 
     def _restore_tab_index(self, tab_widget, index):
         try:
@@ -279,6 +330,54 @@ class ProjectShell(QWidget):
             self.message_log.append_message(f"[工程警告] {warning}")
         for error in validation.get("errors", []) or []:
             self.message_log.append_message(f"[工程错误] {error}")
+        self._log_package_checks(validation)
+
+    def _log_package_checks(self, validation):
+        checks = (validation or {}).get("package_checks") or {}
+        if not checks:
+            return
+        if checks.get("errors"):
+            status = "存在问题"
+        elif checks.get("warnings"):
+            status = "有警告"
+        else:
+            status = "通过"
+        self.message_log.append_message(f"[工程包] 自检{status}")
+        for item in checks.get("info", []) or []:
+            self.message_log.append_message(f"[工程包] {item}")
+        summary = checks.get("result_summary") or {}
+        if summary:
+            self._log_package_result_summary(summary)
+
+    def _log_package_result_summary(self, summary):
+        result_files = summary.get("result_files") or {}
+        self.message_log.append_message(
+            "[工程包] 结果摘要："
+            f"3D JSON={'有' if summary.get('has_3d_json') else '无'}，"
+            f"大小={self._format_bytes(summary.get('simulation_result_size_bytes', 0))}，"
+            f"压力点={summary.get('pressure_points', 0)}，"
+            f"角点单元={summary.get('corner_cell_count', 0)}，"
+            f"裂缝={summary.get('fracture_count', 0)}，"
+            f"井={summary.get('well_count', 0)}，"
+            f"时间步={summary.get('time_step_count', 0)}，"
+            f"结果文件={len(result_files)} 个")
+        if summary.get("summary_error"):
+            self.message_log.append_message(
+                f"[工程包警告] 结果摘要读取失败：{summary.get('summary_error')}")
+
+    def _format_bytes(self, value):
+        try:
+            size = float(value or 0)
+        except (TypeError, ValueError):
+            size = 0.0
+        units = ["B", "KB", "MB", "GB"]
+        unit_index = 0
+        while size >= 1024 and unit_index < len(units) - 1:
+            size /= 1024.0
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(size)} {units[unit_index]}"
+        return f"{size:.2f} {units[unit_index]}"
 
     def activate_module(self, module_key):
         routes = {
@@ -362,16 +461,44 @@ class ProjectShell(QWidget):
     def _handle_result_selected(self, key, title, view):
         if key == "layer_control":
             self.workspace.update_context(*self._result_context(key, title), "3d", key)
+            self._ensure_simulation_data_loaded()
             self.message_log.append_message("[结果] 已激活图层控制")
             self._show_status("当前查看结果图层控制")
             return
         context_title, detail = self._result_context(key, title)
         if view == "chart":
             self._load_chart_data(key, title)
-        self.workspace.update_context(context_title, detail, view, key)
+            self.workspace.update_context(context_title, detail, view, key)
+        elif view == "3d" and key in LAZY_SIMULATION_DATA_KEYS:
+            self.workspace.update_context(context_title, detail, view, key)
+            self._ensure_simulation_data_loaded()
+        else:
+            self.workspace.update_context(context_title, detail, view, key)
         prefix = "图表" if view == "chart" else "结果"
         self.message_log.append_message(f"[{prefix}] 已激活：{title}")
         self._show_status(f"当前查看{prefix}：{title}")
+
+    def _ensure_simulation_data_loaded(self):
+        if self.result_store.simulation_data is not None:
+            return self.result_store.simulation_data
+        result_path = self.result_store.result_json_path or ""
+        if not result_path:
+            return None
+        if not os.path.exists(result_path):
+            self.message_log.append_message(
+                f"[结果] 模拟结果 JSON 不存在：{result_path}")
+            return None
+        try:
+            sim_data = SimulationData()
+            sim_data.load_json(result_path)
+        except Exception as exc:
+            self.message_log.append_message(f"[结果] 按需加载模拟结果失败：{exc}")
+            return None
+        self.result_store.simulation_data = sim_data
+        self.workspace.set_simulation_data(sim_data)
+        self._log_simulation_summary(sim_data)
+        self.message_log.append_message(f"[结果] 已按需加载 3D 模拟结果：{result_path}")
+        return sim_data
 
     def _handle_result_layer_checked(self, layer_key, title, checked):
         if not layer_key:
@@ -445,6 +572,7 @@ class ProjectShell(QWidget):
         self.result_store.run_status = "done"
         self.result_store.simulation_data = sim_data
         self.result_store.result_json_path = result_path
+        self._refresh_result_file_paths()
         self.workspace.set_simulation_data(sim_data)
         self.workspace.update_context(
             "当前结果：Corner Grid 压力场",
@@ -581,9 +709,9 @@ class ProjectShell(QWidget):
         cell_geometry = getattr(sim_data, "cell_geometry_with_pressure", None)
         if cell_geometry is not None:
             for row in cell_geometry:
-                if len(row) > 0:
+                if len(row) > 28:
                     try:
-                        pressures.append(float(row[-1]))
+                        pressures.append(float(row[28]))
                     except (TypeError, ValueError):
                         pass
         if not pressures:

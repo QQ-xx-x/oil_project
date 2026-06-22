@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .case_data_parser import parse_case_data
@@ -25,14 +25,24 @@ PROJECT_FILE_EXT = ".oilproj"
 PACKAGE_PROJECT_FILE = "project.json"
 PACKAGE_MANIFEST_FILE = "package_manifest.json"
 PACKAGE_DATASET_DIR = "case_dataset"
+PACKAGE_RESULTS_DIR = "results"
+PACKAGE_SIMULATION_RESULT_FILE = "simulation_result.json"
 PACKAGE_CACHE_DIR = os.path.join(".tmp", "project_cache")
+PROJECT_CACHE_MAX_AGE_DAYS = 7
+PROJECT_CACHE_KEEP_RECENT = 10
+PROJECT_CACHE_MAX_BYTES = 5 * 1024 ** 3
+PROJECT_CACHE_TARGET_BYTES = 4 * 1024 ** 3
 
 
 class ProjectFileError(ValueError):
     """工程文件无法保存或读取时抛出。"""
 
 
-def save_project_file(project_state, project_file_path):
+def save_project_file(
+        project_state,
+        project_file_path,
+        simulation_result_path=None,
+        result_files=None):
     """把当前 ProjectState 保存为包式 .oilproj 文件。"""
     if project_state is None:
         raise ProjectFileError("当前没有可保存的工程")
@@ -43,7 +53,8 @@ def save_project_file(project_state, project_file_path):
         raise ProjectFileError("工程文件目录为空")
     os.makedirs(project_dir, exist_ok=True)
 
-    _save_project_package(project_state, project_file_path)
+    _save_project_package(
+        project_state, project_file_path, simulation_result_path, result_files)
 
     project_state.project_file_path = project_file_path
     if not project_state.project_name:
@@ -86,10 +97,21 @@ def _load_legacy_project_file(project_file_path):
     return state, validation
 
 
-def _save_project_package(project_state, project_file_path):
+def _save_project_package(
+        project_state,
+        project_file_path,
+        simulation_result_path=None,
+        result_files=None):
     raw_dataset_path = getattr(project_state, "case_dataset_path", "") or ""
     dataset_path = os.path.abspath(raw_dataset_path) if raw_dataset_path else ""
     has_dataset = bool(dataset_path and os.path.isdir(dataset_path))
+    result_path = os.path.abspath(simulation_result_path or "") if simulation_result_path else ""
+    has_result = bool(result_path and os.path.isfile(result_path))
+    packaged_result_files = _existing_result_files(result_files)
+    result_file_manifest = {
+        key: f"{PACKAGE_RESULTS_DIR}/{os.path.basename(path)}"
+        for key, path in packaged_result_files.items()
+    }
     payload = _build_package_payload(project_state, project_file_path, dataset_path)
     package_manifest = {
         "schema_version": PACKAGE_SCHEMA_VERSION,
@@ -97,6 +119,16 @@ def _save_project_package(project_state, project_file_path):
         "project_file": PACKAGE_PROJECT_FILE,
         "has_case_dataset": has_dataset,
         "case_dataset_dir": PACKAGE_DATASET_DIR if has_dataset else "",
+        "has_results": has_result,
+        "simulation_result_file": (
+            f"{PACKAGE_RESULTS_DIR}/{PACKAGE_SIMULATION_RESULT_FILE}"
+            if has_result else ""),
+        "result_files": result_file_manifest,
+        "result_summary": _build_result_summary(
+            result_path if has_result else "",
+            packaged_result_files,
+            result_file_manifest,
+        ),
     }
     temp_path = f"{project_file_path}.tmp"
     try:
@@ -107,6 +139,12 @@ def _save_project_package(project_state, project_file_path):
             _write_json_to_zip(archive, PACKAGE_MANIFEST_FILE, package_manifest)
             if has_dataset:
                 _write_directory_to_zip(archive, dataset_path, PACKAGE_DATASET_DIR)
+            if has_result:
+                archive.write(
+                    result_path,
+                    f"{PACKAGE_RESULTS_DIR}/{PACKAGE_SIMULATION_RESULT_FILE}")
+            for path in packaged_result_files.values():
+                archive.write(path, f"{PACKAGE_RESULTS_DIR}/{os.path.basename(path)}")
         os.replace(temp_path, project_file_path)
     except Exception:
         if os.path.exists(temp_path):
@@ -119,6 +157,8 @@ def _load_project_package(project_file_path):
     project_json = os.path.join(cache_dir, PACKAGE_PROJECT_FILE)
     if not os.path.exists(project_json):
         raise ProjectFileError(f"工程包缺少 {PACKAGE_PROJECT_FILE}")
+    manifest = _read_package_manifest(cache_dir)
+    package_checks = _validate_package_contents(cache_dir, manifest)
     with open(project_json, "r", encoding="utf-8-sig") as file:
         payload = json.load(file)
     if payload.get("schema_version") not in {
@@ -131,10 +171,22 @@ def _load_project_package(project_file_path):
     if not state.project_name:
         state.project_name = os.path.splitext(os.path.basename(project_file_path))[0]
     state.ui_state.setdefault("package_cache_dir", cache_dir)
+    results_dir = os.path.join(cache_dir, PACKAGE_RESULTS_DIR)
+    result_json_path = os.path.join(
+        results_dir, PACKAGE_SIMULATION_RESULT_FILE)
+    if os.path.isdir(results_dir):
+        state.ui_state["loaded_results_dir"] = results_dir
+    if os.path.exists(result_json_path):
+        state.ui_state["loaded_result_json_path"] = result_json_path
     if state.case_data_sections:
         state.ui_state["case_data_source_mode"] = "snapshot"
     validation = validate_project_state(state, refresh_case_data=False)
     validation["package_cache_dir"] = cache_dir
+    validation["package_manifest"] = manifest
+    validation["package_checks"] = package_checks
+    validation["warnings"].extend(package_checks.get("warnings", []))
+    validation["errors"].extend(package_checks.get("errors", []))
+    validation["ok"] = not validation["errors"]
     return state, validation
 
 
@@ -267,6 +319,171 @@ def _restore_path(path_record, base_dir):
     return ""
 
 
+def _existing_result_files(result_files):
+    if not result_files:
+        return {}
+    existing = {}
+    for key, path in dict(result_files).items():
+        if not path:
+            continue
+        abs_path = os.path.abspath(path)
+        if os.path.isfile(abs_path):
+            existing[str(key)] = abs_path
+    return existing
+
+
+def _build_result_summary(result_path, result_files, result_file_manifest):
+    summary = {
+        "has_3d_json": bool(result_path),
+        "simulation_result_size_bytes": _file_size(result_path),
+        "pressure_points": 0,
+        "corner_cell_count": 0,
+        "corner_grid_cell_count": 0,
+        "fracture_count": 0,
+        "well_count": 0,
+        "time_step_count": 0,
+        "pressure_step_count": 0,
+        "has_dual_porosity": False,
+        "result_files": _result_file_summaries(result_files, result_file_manifest),
+    }
+    if not result_path:
+        return summary
+    try:
+        with open(result_path, "r", encoding="utf-8-sig") as file:
+            payload = json.load(file)
+    except Exception as exc:
+        summary["summary_error"] = str(exc)
+        return summary
+
+    summary.update({
+        "pressure_points": _sequence_length(payload.get("pressure_field")),
+        "corner_cell_count": _sequence_length(
+            payload.get("cell_geometry_with_pressure")),
+        "corner_grid_cell_count": _corner_grid_cell_count(
+            payload.get("corner_point_grid")),
+        "fracture_count": _sequence_length(payload.get("fractures")),
+        "well_count": _sequence_length(payload.get("wells")),
+        "time_step_count": _sequence_length(payload.get("time_steps")),
+        "pressure_step_count": _sequence_length(payload.get("pressure_steps")),
+        "has_dual_porosity": bool(payload.get("has_dual_porosity", False)),
+    })
+    return summary
+
+
+def _result_file_summaries(result_files, result_file_manifest):
+    summaries = {}
+    for key, path in dict(result_files or {}).items():
+        summaries[key] = {
+            "package_path": result_file_manifest.get(key, ""),
+            "source_basename": os.path.basename(path),
+            "size_bytes": _file_size(path),
+        }
+    return summaries
+
+
+def _read_package_manifest(cache_dir):
+    manifest_path = os.path.join(cache_dir, PACKAGE_MANIFEST_FILE)
+    if not os.path.exists(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8-sig") as file:
+            manifest = json.load(file)
+    except Exception as exc:
+        return {"_read_error": str(exc)}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def _validate_package_contents(cache_dir, manifest):
+    checks = {
+        "ok": True,
+        "errors": [],
+        "warnings": [],
+        "info": [],
+        "result_summary": dict((manifest or {}).get("result_summary") or {}),
+    }
+    if not manifest:
+        checks["warnings"].append("工程包缺少 package_manifest.json，已按旧包格式兼容打开")
+    elif manifest.get("_read_error"):
+        checks["warnings"].append(
+            f"工程包 package_manifest.json 读取失败：{manifest.get('_read_error')}")
+
+    _require_package_file(cache_dir, PACKAGE_PROJECT_FILE, checks, "工程状态 project.json")
+
+    dataset_dir = (manifest or {}).get("case_dataset_dir") or ""
+    if (manifest or {}).get("has_case_dataset"):
+        if dataset_dir:
+            _require_package_dir(cache_dir, dataset_dir, checks, "CaseDataset")
+        else:
+            checks["errors"].append("工程包声明包含 CaseDataset，但 manifest 未记录目录")
+
+    result_file = (manifest or {}).get("simulation_result_file") or ""
+    if (manifest or {}).get("has_results"):
+        if result_file:
+            _require_package_file(cache_dir, result_file, checks, "模拟结果 JSON")
+        else:
+            checks["errors"].append("工程包声明包含模拟结果，但 manifest 未记录结果 JSON")
+    elif _package_file_exists(cache_dir, f"{PACKAGE_RESULTS_DIR}/{PACKAGE_SIMULATION_RESULT_FILE}"):
+        checks["info"].append("工程包包含模拟结果 JSON，但 manifest 未声明 has_results")
+
+    for key, package_path in dict((manifest or {}).get("result_files") or {}).items():
+        label = f"结果文件 {key}"
+        _require_package_file(cache_dir, package_path, checks, label)
+
+    checks["ok"] = not checks["errors"]
+    return checks
+
+
+def _require_package_file(cache_dir, package_path, checks, label):
+    if not package_path:
+        checks["warnings"].append(f"{label} 未记录包内路径")
+        return
+    if _package_file_exists(cache_dir, package_path):
+        checks["info"].append(f"{label} 可用：{package_path}")
+    else:
+        checks["errors"].append(f"{label} 缺失：{package_path}")
+
+
+def _require_package_dir(cache_dir, package_path, checks, label):
+    abs_path = _package_abs_path(cache_dir, package_path)
+    if abs_path and os.path.isdir(abs_path):
+        checks["info"].append(f"{label} 可用：{package_path}")
+    else:
+        checks["errors"].append(f"{label} 缺失：{package_path}")
+
+
+def _package_file_exists(cache_dir, package_path):
+    abs_path = _package_abs_path(cache_dir, package_path)
+    return bool(abs_path and os.path.isfile(abs_path))
+
+
+def _package_abs_path(cache_dir, package_path):
+    parts = str(package_path or "").replace("\\", "/").split("/")
+    parts = [part for part in parts if part and part not in {".", ".."}]
+    if not parts:
+        return ""
+    abs_path = os.path.abspath(os.path.join(cache_dir, *parts))
+    cache_dir = os.path.abspath(cache_dir)
+    if abs_path != cache_dir and abs_path.startswith(cache_dir + os.sep):
+        return abs_path
+    return ""
+
+
+def _sequence_length(value):
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def _corner_grid_cell_count(corner_point_grid):
+    if not isinstance(corner_point_grid, dict):
+        return 0
+    return _sequence_length(corner_point_grid.get("cells"))
+
+
+def _file_size(path):
+    try:
+        return os.path.getsize(path) if path else 0
+    except OSError:
+        return 0
+
 def _write_json_to_zip(archive, arcname, payload):
     data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     archive.writestr(arcname, data)
@@ -284,6 +501,7 @@ def _write_directory_to_zip(archive, source_dir, target_dir):
 def _extract_project_package(project_file_path):
     cache_root = os.path.abspath(PACKAGE_CACHE_DIR)
     os.makedirs(cache_root, exist_ok=True)
+    _cleanup_project_cache(cache_root)
     basename = os.path.splitext(os.path.basename(project_file_path))[0]
     cache_name = (
         f"{_safe_cache_name(basename)}_"
@@ -301,6 +519,85 @@ def _extract_project_package(project_file_path):
         shutil.rmtree(cache_dir, ignore_errors=True)
         raise
     return cache_dir
+
+
+def _cleanup_project_cache(cache_root):
+    entries = _list_project_cache_entries(cache_root)
+    if not entries:
+        return
+
+    keep_paths = {entry["path"] for entry in entries[:PROJECT_CACHE_KEEP_RECENT]}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PROJECT_CACHE_MAX_AGE_DAYS)
+    for entry in reversed(entries):
+        if entry["path"] in keep_paths:
+            continue
+        if entry["modified_at"] < cutoff:
+            _remove_cache_dir(entry["path"])
+
+    entries = _list_project_cache_entries(cache_root)
+    total_size = sum(entry["size"] for entry in entries)
+    if total_size <= PROJECT_CACHE_MAX_BYTES:
+        return
+
+    keep_paths = {entry["path"] for entry in entries[:PROJECT_CACHE_KEEP_RECENT]}
+    for entry in reversed(entries):
+        if total_size <= PROJECT_CACHE_TARGET_BYTES:
+            break
+        if entry["path"] in keep_paths:
+            continue
+        if _remove_cache_dir(entry["path"]):
+            total_size -= entry["size"]
+
+
+def _list_project_cache_entries(cache_root):
+    entries = []
+    try:
+        names = os.listdir(cache_root)
+    except OSError:
+        return entries
+    for name in names:
+        path = os.path.abspath(os.path.join(cache_root, name))
+        if not _is_direct_child_dir(cache_root, path):
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        entries.append({
+            "path": path,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc),
+            "size": _cache_dir_size(path),
+        })
+    entries.sort(key=lambda entry: entry["modified_at"], reverse=True)
+    return entries
+
+
+def _is_direct_child_dir(parent, path):
+    parent = os.path.abspath(parent)
+    path = os.path.abspath(path)
+    if os.path.dirname(path) != parent:
+        return False
+    return os.path.isdir(path)
+
+
+def _cache_dir_size(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            try:
+                total += os.path.getsize(file_path)
+            except OSError:
+                pass
+    return total
+
+
+def _remove_cache_dir(path):
+    try:
+        shutil.rmtree(path)
+        return True
+    except OSError:
+        return False
 
 
 def _safe_extract_zip(archive, target_dir):
