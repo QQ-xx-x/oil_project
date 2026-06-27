@@ -3,7 +3,7 @@
 
 import os
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QMenu, QSplitter, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
@@ -37,6 +37,28 @@ LAZY_SIMULATION_DATA_KEYS = {
     "permeability_field",  # legacy alias for Kx
     "layer_control",
 }
+
+
+class SimulationResultLoadWorker(QObject):
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, result_path):
+        super().__init__()
+        self.result_path = result_path
+
+    def run(self):
+        try:
+            self.progress.emit(15, "准备读取 3D 结果")
+            sim_data = SimulationData()
+            self.progress.emit(35, "读取 simulation_result.json")
+            sim_data.load_json(self.result_path)
+            self.progress.emit(75, "3D 结果 JSON 读取完成")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(sim_data)
 
 
 class DockTabPanel(QFrame):
@@ -174,6 +196,9 @@ class ProjectShell(QWidget):
         self.result_store = self.workflow_runner.discover_results()
         self.simulation_service = WorkbenchSimulationService(self.project_root, self)
         self._last_simulation_params = {}
+        self._result_load_thread = None
+        self._result_load_worker = None
+        self._autoload_result_path = ""
         self.setObjectName("projectShell")
 
         layout = QHBoxLayout(self)
@@ -248,6 +273,8 @@ class ProjectShell(QWidget):
         """保存工程前收集当前界面状态。"""
         state = dict(getattr(self.project_state, "ui_state", {}) or {})
         state["input_tree"] = self.input_tree.export_ui_state()
+        state["results_tree"] = self.results_tree.export_ui_state()
+        state["workspace"] = self.workspace.export_ui_state()
         state["upper_tab_index"] = self.upper_tabs.tab_widget.currentIndex()
         state["lower_tab_index"] = self.lower_tabs.tab_widget.currentIndex()
         state["workspace_tab_index"] = self.workspace.currentIndex()
@@ -263,9 +290,18 @@ class ProjectShell(QWidget):
         if not tree_state and state.get("input_tree_current_key"):
             tree_state = {"current_key": state.get("input_tree_current_key")}
         self.input_tree.restore_ui_state(tree_state)
+        self.results_tree.restore_ui_state(state.get("results_tree") or {})
+        self.workspace.restore_ui_state(state.get("workspace") or {})
         self._restore_tab_index(self.upper_tabs.tab_widget, state.get("upper_tab_index"))
         self._restore_tab_index(self.lower_tabs.tab_widget, state.get("lower_tab_index"))
-        self._restore_tab_index(self.workspace, state.get("workspace_tab_index"))
+        if not state.get("workspace"):
+            self._restore_tab_index(self.workspace, state.get("workspace_tab_index"))
+
+    def _has_saved_workspace_state(self):
+        state = getattr(self.project_state, "ui_state", {}) or {}
+        workspace_state = state.get("workspace") or {}
+        pages = workspace_state.get("pages") if isinstance(workspace_state, dict) else None
+        return bool(pages)
 
     def _restore_packaged_simulation_result(self):
         state = getattr(self.project_state, "ui_state", {}) or {}
@@ -282,7 +318,70 @@ class ProjectShell(QWidget):
         self._restore_packaged_result_files(state.get("loaded_results_dir") or "")
         self._publish_loaded_charts()
         self.message_log.append_message(
-            f"[结果] 已恢复工程包模拟结果索引，3D 结果将在首次查看时加载：{result_path}")
+            f"[结果] 已恢复工程包模拟结果索引，正在自动加载 3D 结果：{result_path}")
+        QTimer.singleShot(0, lambda path=result_path: self._start_initial_3d_result_load(path))
+
+    def _start_initial_3d_result_load(self, result_path):
+        if not result_path or not os.path.exists(result_path):
+            return
+        if self.result_store.simulation_data is not None:
+            return
+        if self._result_load_thread is not None:
+            return
+        self._autoload_result_path = result_path
+        self._show_progress("加载 3D 结果", 5, "准备加载工程包结果")
+        self.message_log.append_message("[结果] 开始自动加载 3D 模拟结果")
+
+        thread = QThread(self)
+        worker = SimulationResultLoadWorker(result_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._handle_initial_result_load_progress)
+        worker.finished.connect(self._handle_initial_result_load_finished)
+        worker.failed.connect(self._handle_initial_result_load_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._cleanup_initial_result_load_thread)
+
+        self._result_load_thread = thread
+        self._result_load_worker = worker
+        thread.start()
+
+    def _handle_initial_result_load_progress(self, percent, detail):
+        self._show_progress("加载 3D 结果", percent, detail)
+        self._show_status(f"加载 3D 结果：{detail}")
+
+    def _handle_initial_result_load_finished(self, sim_data):
+        self._show_progress("加载 3D 结果", 82, "补齐 Corner Point Grid")
+        self._ensure_corner_point_grid_for_slice(sim_data)
+        self._show_progress("加载 3D 结果", 90, "推送到 3D 窗口")
+        self.result_store.simulation_data = sim_data
+        self.workspace.set_simulation_data(sim_data)
+        if not self._has_saved_workspace_state():
+            self.workspace.update_context(
+                *self._result_context("pressure_field", "压力场"),
+                "3d",
+                "pressure_field",
+            )
+        self._log_simulation_summary(sim_data)
+        self.message_log.append_message(
+            f"[结果] 已自动加载 3D 模拟结果：{self._autoload_result_path}")
+        self._finish_progress("3D 结果加载完成")
+        self._show_status("3D 结果加载完成")
+
+    def _handle_initial_result_load_failed(self, message):
+        self.message_log.append_message(f"[结果] 自动加载 3D 模拟结果失败：{message}")
+        self._fail_progress(f"3D 结果加载失败：{message}")
+        self._show_status("3D 结果加载失败")
+
+    def _cleanup_initial_result_load_thread(self):
+        thread = self._result_load_thread
+        self._result_load_thread = None
+        self._result_load_worker = None
+        if thread is not None:
+            thread.deleteLater()
 
     def _restore_packaged_result_files(self, results_dir):
         if not results_dir or not os.path.isdir(results_dir):
@@ -395,7 +494,7 @@ class ProjectShell(QWidget):
             "results_visualization": ("result", "pressure_field"),
             "relative_perm": ("result", "relative_permeability_curve"),
             "reservoir_analysis": ("result", "production_curve"),
-            "project_management": ("input", "grid_foundation"),
+            "project_management": ("input", "grid_input"),
         }
         route = routes.get(module_key)
         if route is None:
@@ -486,6 +585,10 @@ class ProjectShell(QWidget):
     def _ensure_simulation_data_loaded(self):
         if self.result_store.simulation_data is not None:
             return self.result_store.simulation_data
+        if self._result_load_thread is not None:
+            self.message_log.append_message("[结果] 3D 结果正在自动加载，请稍候")
+            self._show_status("3D 结果正在自动加载")
+            return None
         result_path = self.result_store.result_json_path or ""
         if not result_path:
             return None
@@ -838,3 +941,18 @@ class ProjectShell(QWidget):
         window = self.window()
         if hasattr(window, "statusBar"):
             window.statusBar().showMessage(message, 4500)
+
+    def _show_progress(self, task, percent=None, detail=""):
+        window = self.window()
+        if hasattr(window, "show_task_progress"):
+            window.show_task_progress(task, percent, detail)
+
+    def _finish_progress(self, message):
+        window = self.window()
+        if hasattr(window, "finish_task_progress"):
+            window.finish_task_progress(message)
+
+    def _fail_progress(self, message):
+        window = self.window()
+        if hasattr(window, "fail_task_progress"):
+            window.fail_task_progress(message)

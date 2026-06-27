@@ -244,6 +244,85 @@ class ViewToolbar(QFrame):
         except (AttributeError, TypeError, ValueError):
             pass
 
+    def export_ui_state(self):
+        state = {
+            "view_selector_index": self.view_selector.currentIndex(),
+            "view_selector_data": self.view_selector.currentData(),
+            "view_selector_text": self.view_selector.currentText(),
+        }
+        if hasattr(self, "scale_selector"):
+            state["scale"] = self.scale_selector.currentText()
+        if hasattr(self, "slice_property"):
+            state["slice_property"] = self.slice_property.currentData()
+            state["slice_axis"] = self.slice_axis.currentText()
+            state["slice_layer"] = int(self.slice_layer.value())
+        if hasattr(self, "threshold_min"):
+            state["threshold_min"] = self.threshold_min.text()
+            state["threshold_max"] = self.threshold_max.text()
+        if hasattr(self, "time_step_index"):
+            state["time_step_index"] = int(self.time_step_index.value())
+        return state
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self._set_combo_from_state(
+            self.view_selector,
+            state.get("view_selector_data"),
+            state.get("view_selector_text"),
+            state.get("view_selector_index"),
+        )
+        if hasattr(self, "scale_selector") and state.get("scale") is not None:
+            self._set_combo_text(self.scale_selector, state.get("scale"))
+        if hasattr(self, "slice_property"):
+            self._set_combo_from_state(self.slice_property, state.get("slice_property"), None, None)
+            self._set_combo_text(self.slice_axis, state.get("slice_axis"))
+            try:
+                self.slice_layer.setValue(max(0, int(state.get("slice_layer", 0))))
+            except (TypeError, ValueError):
+                pass
+        if hasattr(self, "threshold_min"):
+            min_text = state.get("threshold_min", "")
+            max_text = state.get("threshold_max", "")
+            self.threshold_min.setText("" if min_text is None else str(min_text))
+            self.threshold_max.setText("" if max_text is None else str(max_text))
+        if hasattr(self, "time_step_index"):
+            try:
+                self.time_step_index.setValue(max(0, int(state.get("time_step_index", 0))))
+            except (TypeError, ValueError):
+                pass
+
+    def _set_combo_from_state(self, combo, data, text, index):
+        previous = combo.blockSignals(True)
+        try:
+            if data is not None:
+                found = combo.findData(data)
+                if found >= 0:
+                    combo.setCurrentIndex(found)
+                    return
+            if text:
+                found = combo.findText(str(text))
+                if found >= 0:
+                    combo.setCurrentIndex(found)
+                    return
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                return
+            if 0 <= index < combo.count():
+                combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(previous)
+
+    def _set_combo_text(self, combo, text):
+        previous = combo.blockSignals(True)
+        try:
+            found = combo.findText(str(text))
+            if found >= 0:
+                combo.setCurrentIndex(found)
+        finally:
+            combo.blockSignals(previous)
+
     def export_scale(self):
         try:
             return float(self.scale_selector.currentText())

@@ -204,3 +204,53 @@ class ResultsTree(QTreeWidget):
             if found is not None:
                 return found
         return None
+
+    def export_ui_state(self):
+        check_states = {}
+        expanded_keys = []
+        for item in self._iter_items():
+            key = item.data(0, KEY_ROLE)
+            if key:
+                check_states[key] = item.checkState(0) == Qt.Checked
+                if item.isExpanded():
+                    expanded_keys.append(key)
+        current = self.currentItem()
+        return {
+            "current_key": current.data(0, KEY_ROLE) if current is not None else None,
+            "check_states": check_states,
+            "expanded_keys": expanded_keys,
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self._building = True
+        try:
+            check_states = state.get("check_states") or {}
+            if isinstance(check_states, dict):
+                for key, checked in check_states.items():
+                    item = self._find_item(key)
+                    if item is not None:
+                        item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+            expanded_keys = set(state.get("expanded_keys") or [])
+            for item in self._iter_items():
+                key = item.data(0, KEY_ROLE)
+                if key:
+                    item.setExpanded(key in expanded_keys)
+        finally:
+            self._building = False
+        current_key = state.get("current_key")
+        if current_key:
+            item = self._find_item(current_key)
+            if item is not None:
+                self.setCurrentItem(item)
+                self.scrollToItem(item)
+
+    def _iter_items(self):
+        for index in range(self.topLevelItemCount()):
+            yield from self._iter_item_recursive(self.topLevelItem(index))
+
+    def _iter_item_recursive(self, item):
+        yield item
+        for index in range(item.childCount()):
+            yield from self._iter_item_recursive(item.child(index))

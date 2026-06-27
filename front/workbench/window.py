@@ -4,10 +4,10 @@
 import json
 import os
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QFileDialog, QMainWindow, QMessageBox, QSplitter, QStackedWidget,
-    QStatusBar, QVBoxLayout, QWidget,
+    QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QProgressBar, QSplitter, QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from .message_log import MessageLogPanel
@@ -19,6 +19,57 @@ from .project_state import ProjectState
 from .recent_projects import add_recent_project
 from .ribbon import QuickAccessBar, RibbonWidget
 from .start_workspace import StartWorkspace
+
+
+class WorkbenchProgressWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("workbenchProgressWidget")
+        self.setVisible(False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.label = QLabel("")
+        self.label.setObjectName("workbenchProgressLabel")
+        self.label.setMinimumWidth(150)
+        layout.addWidget(self.label)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("workbenchProgressBar")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedWidth(210)
+        self.progress.setTextVisible(True)
+        layout.addWidget(self.progress)
+
+    def set_task(self, task, percent=None, detail=""):
+        self.setVisible(True)
+        text = str(task or "任务处理中")
+        if detail:
+            text = f"{text}：{detail}"
+        self.label.setText(text)
+        if percent is None:
+            self.progress.setRange(0, 0)
+            self.progress.setFormat("%p%")
+            return
+        self.progress.setRange(0, 100)
+        value = max(0, min(100, int(percent)))
+        self.progress.setValue(value)
+        self.progress.setFormat(f"{value}%")
+
+    def finish(self, message):
+        self.set_task(message or "任务完成", 100)
+        QTimer.singleShot(3500, self.hide)
+
+    def fail(self, message):
+        self.setVisible(True)
+        self.label.setText(message or "任务失败")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("失败")
+        QTimer.singleShot(6500, self.hide)
 
 
 class WorkbenchWindow(QMainWindow):
@@ -50,7 +101,18 @@ class WorkbenchWindow(QMainWindow):
 
         status = QStatusBar()
         status.showMessage("平台初始化完成，等待打开工程")
+        self.progress_widget = WorkbenchProgressWidget(status)
+        status.addPermanentWidget(self.progress_widget)
         self.setStatusBar(status)
+
+    def show_task_progress(self, task, percent=None, detail=""):
+        self.progress_widget.set_task(task, percent, detail)
+
+    def finish_task_progress(self, message):
+        self.progress_widget.finish(message)
+
+    def fail_task_progress(self, message):
+        self.progress_widget.fail(message)
 
     def _create_start_page(self):
         vertical = QSplitter(Qt.Vertical)
@@ -180,11 +242,14 @@ class WorkbenchWindow(QMainWindow):
         return self._open_project_file_current(path, replace_current=True)
 
     def _open_project_file_current(self, path, replace_current=False):
+        self.show_task_progress("打开工程", 5, "读取工程文件")
         try:
             project_state, validation = load_project_file(path)
         except ProjectFileError as exc:
+            self.fail_task_progress(f"工程打开失败：{exc}")
             QMessageBox.critical(self, "打开工程失败", str(exc))
             return False
+        self.show_task_progress("打开工程", 35, "恢复工程界面")
         project_root = os.path.dirname(os.path.abspath(path))
         shell = self._open_project(
             project_state.project_name or os.path.basename(path),
@@ -192,14 +257,21 @@ class WorkbenchWindow(QMainWindow):
             project_root=project_root,
             replace_current=replace_current,
         )
+        self.show_task_progress("打开工程", 60, "恢复工程引用")
         shell.message_log.append_message(f"[工程] 已加载工程文件：{path}")
         shell.log_project_references(validation)
         add_recent_project(path, project_state.project_name)
         self.ribbon.refresh_recent_projects()
+        has_packaged_result = bool(
+            (getattr(project_state, "ui_state", {}) or {}).get("loaded_result_json_path"))
         if validation.get("ok"):
             self.statusBar().showMessage("工程文件加载完成", 4500)
         else:
             self.statusBar().showMessage("工程文件已加载，但存在需要处理的问题", 6500)
+        if has_packaged_result:
+            self.show_task_progress("打开工程", 80, "等待 3D 结果加载")
+        else:
+            self.finish_task_progress("工程加载完成")
         return True
 
     def _open_project_file_in_new_window(self, path):

@@ -147,6 +147,8 @@ class ThreeDViewport(QWidget):
         self.display_key = "pressure_field"
         self._rendered_display_key = None
         self._slice_state = None
+        self._threshold_state = None
+        self._camera_state = None
         self.current_render_context = self._make_render_context("pressure_field")
         self.interaction_mode = "normal"
         self.coordinate_axes_visible = False
@@ -215,6 +217,7 @@ class ThreeDViewport(QWidget):
         if display_key:
             if display_key != self.display_key:
                 self._slice_state = None
+                self._threshold_state = None
             self.display_key = display_key
             self._set_full_render_context(display_key)
         should_render = (
@@ -228,7 +231,7 @@ class ThreeDViewport(QWidget):
     def set_simulation_data(self, sim_data):
         self.simulation_data = sim_data
         if self._ensure_real_view():
-            self._render_real_result()
+            self._restore_saved_visual_state()
         self.update()
 
     def set_layer_state(self, layer_key, enabled):
@@ -242,6 +245,7 @@ class ThreeDViewport(QWidget):
         if property_key not in DISPLAY_KEY_TO_PROPERTY:
             return False, f"[属性场] 不支持的属性：{property_key}"
         self._slice_state = None
+        self._threshold_state = None
         self.display_key = property_key
         self._set_full_render_context(property_key)
         if self.simulation_data is None:
@@ -578,6 +582,11 @@ class ThreeDViewport(QWidget):
         self._slice_state = None
         self._set_full_render_context(display_key)
         self.display_key = display_key
+        self._threshold_state = {
+            "display_key": display_key,
+            "min": min_value,
+            "max": max_value,
+        }
         property_name = self._current_pick_property()
         try:
             renderer.clear_cache()
@@ -588,6 +597,7 @@ class ThreeDViewport(QWidget):
                 max_value=max_value,
             )
         except Exception as exc:
+            self._threshold_state = None
             self._render_real_result()
             return False, f"[阈值] 应用失败：{exc}"
         self._rendered_display_key = (
@@ -601,6 +611,7 @@ class ThreeDViewport(QWidget):
         )
 
     def clear_threshold_filter(self):
+        self._threshold_state = None
         renderer = self._real_renderer
         if renderer is None:
             return False, "[阈值] 当前没有可用 3D 渲染器"
@@ -798,6 +809,216 @@ class ThreeDViewport(QWidget):
         except (TypeError, ValueError):
             return str(value)
 
+    def export_ui_state(self):
+        slice_state = None
+        if self._slice_state is not None:
+            property_key, axis, layer = self._slice_state
+            slice_state = {
+                "property_key": property_key,
+                "axis": axis,
+                "layer": int(layer),
+            }
+        return {
+            "context_title": self.context_title,
+            "context_detail": self.context_detail,
+            "display_key": self.display_key,
+            "render_context": dict(self.current_render_context or {}),
+            "slice_state": slice_state,
+            "threshold_state": dict(self._threshold_state or {}),
+            "camera_state": self._export_camera_state(),
+            "coordinate_axes_visible": bool(self.coordinate_axes_visible),
+            "camera_direction_locked": bool(self.camera_direction_locked),
+            "layers": dict(self.layers),
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self.context_title = state.get("context_title") or self.context_title
+        self.context_detail = state.get("context_detail") or self.context_detail
+        display_key = state.get("display_key") or self.display_key
+        if display_key in DISPLAY_KEY_TO_PROPERTY:
+            self.display_key = display_key
+            self._set_full_render_context(display_key)
+        render_context = self._normalize_render_context(state.get("render_context"))
+        if render_context is not None:
+            self.current_render_context = render_context
+            self.display_key = render_context.get("display_key", self.display_key)
+        self._slice_state = self._normalize_slice_state(state.get("slice_state"))
+        self._threshold_state = self._normalize_threshold_state(state.get("threshold_state"))
+        self._camera_state = self._normalize_camera_state(state.get("camera_state"))
+        self.coordinate_axes_visible = bool(state.get("coordinate_axes_visible", False))
+        self.camera_direction_locked = bool(state.get("camera_direction_locked", False))
+        layers = state.get("layers")
+        if isinstance(layers, dict):
+            for layer_key, enabled in layers.items():
+                if layer_key in self.layers:
+                    self.layers[layer_key] = bool(enabled)
+        if self.simulation_data is not None and self._ensure_real_view():
+            self._restore_saved_visual_state()
+        self.update()
+
+    def _normalize_render_context(self, state):
+        if not isinstance(state, dict):
+            return None
+        display_key = state.get("display_key")
+        if display_key not in DISPLAY_KEY_TO_PROPERTY:
+            return None
+        mode = state.get("mode") or "full"
+        axis = state.get("axis")
+        layer_index = state.get("layer_index")
+        if mode == "layer" and axis is not None and layer_index is not None:
+            try:
+                return self._make_render_context(
+                    display_key,
+                    mode="layer",
+                    axis=str(axis).lower(),
+                    layer_index=int(layer_index),
+                )
+            except (TypeError, ValueError):
+                return self._make_render_context(display_key)
+        return self._make_render_context(display_key)
+
+    def _normalize_slice_state(self, state):
+        if not isinstance(state, dict):
+            return None
+        property_key = state.get("property_key")
+        axis = str(state.get("axis") or "").lower()
+        if property_key not in DISPLAY_KEY_TO_PROPERTY or axis not in {"i", "j", "k"}:
+            return None
+        try:
+            layer = int(state.get("layer", 0))
+        except (TypeError, ValueError):
+            layer = 0
+        return (property_key, axis, layer)
+
+    def _normalize_threshold_state(self, state):
+        if not isinstance(state, dict):
+            return None
+        display_key = state.get("display_key") or self.display_key
+        if display_key not in DISPLAY_KEY_TO_PROPERTY:
+            return None
+        min_value = self._coerce_optional_float(state.get("min"))
+        max_value = self._coerce_optional_float(state.get("max"))
+        if min_value is None and max_value is None:
+            return None
+        return {"display_key": display_key, "min": min_value, "max": max_value}
+
+    def _coerce_optional_float(self, value):
+        if value is None or value == "":
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(result):
+            return None
+        return result
+
+    def _export_camera_state(self):
+        renderer = self._real_renderer
+        plotter = getattr(renderer, "plotter", None) if renderer is not None else None
+        if plotter is None:
+            return dict(self._camera_state or {})
+        try:
+            camera_position = getattr(plotter, "camera_position", None)
+        except Exception:
+            camera_position = None
+        state = self._normalize_camera_state({"camera_position": camera_position})
+        if not state:
+            return dict(self._camera_state or {})
+        camera = getattr(plotter, "camera", None)
+        if camera is not None:
+            for attr_name, getter_name, state_key in [
+                ("parallel_projection", "GetParallelProjection", "parallel_projection"),
+                ("parallel_scale", "GetParallelScale", "parallel_scale"),
+                ("view_angle", "GetViewAngle", "view_angle"),
+            ]:
+                getter = getattr(camera, getter_name, None)
+                if getter is None:
+                    continue
+                try:
+                    value = getter()
+                except Exception:
+                    continue
+                state[state_key] = bool(value) if attr_name == "parallel_projection" else value
+        return state
+
+    def _normalize_camera_state(self, state):
+        if not isinstance(state, dict):
+            return None
+        camera_position = state.get("camera_position")
+        if not isinstance(camera_position, (list, tuple)) or len(camera_position) != 3:
+            return None
+        normalized = []
+        for point in camera_position:
+            if not isinstance(point, (list, tuple)) or len(point) != 3:
+                return None
+            try:
+                normalized.append([float(point[0]), float(point[1]), float(point[2])])
+            except (TypeError, ValueError):
+                return None
+        result = {"camera_position": normalized}
+        for key in ("parallel_projection", "parallel_scale", "view_angle"):
+            if key in state:
+                result[key] = state[key]
+        return result
+
+    def _apply_saved_camera_state(self):
+        if not self._camera_state:
+            return
+        renderer = self._real_renderer
+        plotter = getattr(renderer, "plotter", None) if renderer is not None else None
+        if plotter is None:
+            return
+        try:
+            plotter.camera_position = [tuple(point) for point in self._camera_state["camera_position"]]
+            camera = getattr(plotter, "camera", None)
+            if camera is not None:
+                if "parallel_projection" in self._camera_state:
+                    setter = getattr(camera, "SetParallelProjection", None)
+                    if setter is not None:
+                        setter(bool(self._camera_state["parallel_projection"]))
+                if "parallel_scale" in self._camera_state:
+                    setter = getattr(camera, "SetParallelScale", None)
+                    if setter is not None:
+                        setter(float(self._camera_state["parallel_scale"]))
+                if "view_angle" in self._camera_state:
+                    setter = getattr(camera, "SetViewAngle", None)
+                    if setter is not None:
+                        setter(float(self._camera_state["view_angle"]))
+            if hasattr(plotter, "reset_camera_clipping_range"):
+                plotter.reset_camera_clipping_range()
+            if hasattr(plotter, "render"):
+                plotter.render()
+            self._camera_state = None
+        except Exception:
+            pass
+
+    def _restore_saved_visual_state(self):
+        if self._threshold_state:
+            display_key = self._threshold_state.get("display_key") or self.display_key
+            if display_key in DISPLAY_KEY_TO_PROPERTY:
+                self.display_key = display_key
+                self._set_full_render_context(display_key)
+            min_value = self._threshold_state.get("min")
+            max_value = self._threshold_state.get("max")
+            ok, _ = self.apply_threshold_filter(
+                "" if min_value is None else str(min_value),
+                "" if max_value is None else str(max_value),
+            )
+            if ok:
+                self._apply_saved_camera_state()
+                return
+        if self._slice_state is not None:
+            property_key, axis, layer = self._slice_state
+            ok, _ = self.render_property_slice(property_key, axis, layer)
+            if ok:
+                self._apply_saved_camera_state()
+                return
+        self._render_real_result()
+        self._apply_saved_camera_state()
+
     def _ensure_real_view(self):
         if self._real_renderer is not None:
             return True
@@ -829,22 +1050,28 @@ class ThreeDViewport(QWidget):
             self._set_interaction_mode("normal")
         renderer.clear_cache()
         self._rendered_display_key = self.display_key
-        if getattr(sim_data, "corner_point_grid", None) is not None:
+        if (
+                getattr(sim_data, "corner_point_grid", None) is not None
+                and hasattr(renderer, "render_corner_point_grid")):
             renderer.render_corner_point_grid(sim_data)
         rendered_field = False
         if getattr(sim_data, "cell_geometry_with_pressure", None) is not None:
             rendered_field = self._render_corner_property_field(renderer, sim_data)
-        if not rendered_field and getattr(sim_data, "pressure_field", None):
+        if (
+                not rendered_field
+                and getattr(sim_data, "pressure_field", None)
+                and hasattr(renderer, "render_mode3_smooth_pressure")):
             renderer.render_mode3_smooth_pressure(sim_data)
         if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None or (
                 getattr(sim_data, "corner_lgr_refined_grid_geometry", None) is not None):
-            renderer.render_corner_lgr_grid(sim_data)
+            if hasattr(renderer, "render_corner_lgr_grid"):
+                renderer.render_corner_lgr_grid(sim_data)
         if getattr(sim_data, "fractures", None):
             if hasattr(renderer, "render_corner_fractures"):
                 renderer.render_corner_fractures(sim_data)
-            else:
+            elif hasattr(renderer, "render_fractures"):
                 renderer.render_fractures(sim_data)
-        if getattr(sim_data, "wells", None):
+        if getattr(sim_data, "wells", None) and hasattr(renderer, "render_wells"):
             renderer.render_wells(sim_data)
         for layer_key, enabled in self.layers.items():
             self._apply_real_layer_state(layer_key, enabled)
@@ -853,6 +1080,7 @@ class ThreeDViewport(QWidget):
 
     def render_property_slice(self, property_key, axis, layer):
         self._slice_state = (property_key, axis, int(layer))
+        self._threshold_state = None
         self.display_key = property_key
         if not self._ensure_real_view():
             return False, f"[切片] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
@@ -1198,6 +1426,21 @@ class TwoDViewport(QWidget):
         self.display_key = display_key
         self.update()
 
+    def export_ui_state(self):
+        return {
+            "context_title": self.context_title,
+            "context_detail": self.context_detail,
+            "display_key": self.display_key,
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self.context_title = state.get("context_title") or self.context_title
+        self.context_detail = state.get("context_detail") or self.context_detail
+        self.display_key = state.get("display_key")
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -1305,6 +1548,23 @@ class ChartViewport(QWidget):
         if chart_key:
             self.chart_data[chart_key] = dict(data or {})
             self.update()
+
+    def export_ui_state(self):
+        return {
+            "context_title": self.context_title,
+            "context_detail": self.context_detail,
+            "display_key": self.display_key,
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self.context_title = state.get("context_title") or self.context_title
+        self.context_detail = state.get("context_detail") or self.context_detail
+        display_key = state.get("display_key")
+        if display_key:
+            self.display_key = display_key
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1760,3 +2020,25 @@ class ViewPage(QFrame):
     def set_chart_data(self, chart_key, data):
         if hasattr(self.viewport, "set_chart_data"):
             self.viewport.set_chart_data(chart_key, data)
+
+    def export_ui_state(self):
+        toolbar_state = {}
+        viewport_state = {}
+        if hasattr(self.toolbar, "export_ui_state"):
+            toolbar_state = self.toolbar.export_ui_state()
+        if hasattr(self.viewport, "export_ui_state"):
+            viewport_state = self.viewport.export_ui_state()
+        return {
+            "view_type": self.view_type,
+            "toolbar": toolbar_state,
+            "viewport": viewport_state,
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        self._stop_time_playback_timer()
+        if hasattr(self.toolbar, "restore_ui_state"):
+            self.toolbar.restore_ui_state(state.get("toolbar") or {})
+        if hasattr(self.viewport, "restore_ui_state"):
+            self.viewport.restore_ui_state(state.get("viewport") or {})

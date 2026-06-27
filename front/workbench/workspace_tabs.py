@@ -198,6 +198,67 @@ class WorkspaceTabs(QTabWidget):
         for page in self._pages_of_type("chart"):
             page.set_chart_data(chart_key, data)
 
+    def export_ui_state(self):
+        pages = []
+        for index in range(self.count()):
+            page = self.widget(index)
+            page_state = {}
+            if hasattr(page, "export_ui_state"):
+                page_state = page.export_ui_state()
+            pages.append({
+                "title": self.tabText(index),
+                "view_type": self._page_view_type(page),
+                "state": page_state,
+            })
+        return {
+            "current_index": self.currentIndex(),
+            "last_context": list(self._last_context),
+            "layer_states": dict(self._layer_states),
+            "pages": pages,
+        }
+
+    def restore_ui_state(self, state):
+        if not isinstance(state, dict):
+            return
+        pages = state.get("pages")
+        if not isinstance(pages, list) or not pages:
+            return
+        normalized_pages = [
+            page_info for page_info in pages
+            if isinstance(page_info, dict)
+            and page_info.get("view_type") in {"2d", "3d", "chart"}
+        ]
+        if not normalized_pages:
+            return
+
+        self._layer_states = dict(state.get("layer_states") or {})
+        last_context = state.get("last_context")
+        if isinstance(last_context, (list, tuple)) and len(last_context) >= 3:
+            self._last_context = (last_context[0], last_context[1], last_context[2])
+
+        while self.count():
+            page = self.widget(0)
+            self.removeTab(0)
+            page.deleteLater()
+
+        for page_info in normalized_pages:
+            view_type = page_info.get("view_type")
+            title = page_info.get("title") or self._title_for(view_type, self._counters.get(view_type, 0) + 1)
+            page = self._create_page(view_type)
+            if hasattr(page, "restore_ui_state"):
+                page.restore_ui_state(page_info.get("state") or {})
+            self._add_page(page, view_type, title)
+
+        self._rebuild_counters_from_tabs()
+        current_index = state.get("current_index", 0)
+        try:
+            current_index = int(current_index)
+        except (TypeError, ValueError):
+            current_index = 0
+        if 0 <= current_index < self.count():
+            self.setCurrentIndex(current_index)
+        self._refresh_primary_references()
+
     def _apply_last_context(self, page):
         title, detail, display_key = self._last_context
         page.set_context(title, detail, display_key)
@@ -263,6 +324,14 @@ class WorkspaceTabs(QTabWidget):
             if page is not self.two_d_primary:
                 self.two_d_secondary = page
                 break
+
+    def _rebuild_counters_from_tabs(self):
+        counters = {"2d": 0, "3d": 0, "chart": 0}
+        for page in self._pages():
+            view_type = self._page_view_type(page)
+            if view_type in counters:
+                counters[view_type] += 1
+        self._counters = counters
 
     def _title_for(self, view_type, number):
         if view_type == "chart":

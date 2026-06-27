@@ -84,31 +84,32 @@ class InputTree(QTreeWidget):
     def _populate(self):
         self._building = True
         module_tree = [
-            ("CaseData 输入", "case_data_manifest", "CaseData 文件", "case_root", True, [
+            ("CaseData 原始输入", "case_data_manifest", "CaseData 文件", "case_root", True, [
                 (section, f"case_data_section:{section}", "CaseData Section",
                  self._case_section_icon(section), True)
                 for section in self._case_section_names()
             ]),
-            ("网格与基础参数", "grid_foundation", "文件夹", "grid", True, [
-                ("网格加密", "grid_refinement_enabled", "网格开关", "lgr", False),
-                ("网格文件导入", "grid_file_import", "导入操作", "grid_file", False),
-                ("网格参数", "grid_basic", "网格参数", "grid", True),
+            ("网格与导入", "grid_input", "功能模块", "grid", True, [
+                ("网格数量、尺寸与文件", "grid_basic", "网格参数", "grid", True),
+            ]),
+            ("储层基础属性", "reservoir_properties", "功能模块", "matrix", True, [
                 ("初始状态", "initial_state", "初始状态参数", "initial", True),
                 ("基质属性", "matrix_properties", "岩石参数", "matrix", True),
                 ("双重介质", "dual_porosity", "岩石参数", "dual_porosity", False),
-                ("模拟控制", "simulation_control", "模拟参数", "solver", True),
             ]),
-            ("流体属性", "fluid_properties", "文件夹", "fluid", True, [
+            ("流体与 PVT", "fluid_pvt", "功能模块", "fluid", True, [
                 ("油水相基础参数", "oil_water_properties", "流体参数", "oil_water", True),
                 ("气相真实气体 PVT", "gas_pvt", "流体参数", "gas", False),
             ]),
-            ("井参数", "well_system", "文件夹", "well", True, [
-                ("井基础参数", "well_parameters", "井参数", "well", True),
+            ("井参数", "well_system", "功能模块", "well", True, [
+                ("井位置与控制", "well_parameters", "井参数", "well", True),
             ]),
-            ("裂缝参数", "fracture_system", "文件夹", "fracture", True, [
-                ("启用人工裂缝", "enable_hydraulic_fractures", "裂缝开关", "validate", True),
+            ("裂缝参数", "fracture_system", "功能模块", "fracture", True, [
                 ("天然裂缝", "natural_fractures", "裂缝参数", "fracture", True),
                 ("人工裂缝", "hydraulic_fractures", "裂缝参数", "fracture", True),
+            ]),
+            ("模拟控制", "simulation_system", "功能模块", "solver", True, [
+                ("时间控制", "simulation_control", "模拟参数", "solver", True),
             ]),
         ]
 

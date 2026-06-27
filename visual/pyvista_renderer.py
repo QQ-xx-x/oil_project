@@ -1397,8 +1397,7 @@ class PyVistaRenderer:
             "corner_surface_actor": None,
             "corner_grid_hash": None,
             "well_actors": [],
-            "pressure_field_actor": None,
-            "pressure_scalar_bar": None,
+
             "original_grid_opacity": None,
             "original_pressure_opacity": None,
             "corner_lgr_parent_grid_actor": None,
@@ -1406,6 +1405,9 @@ class PyVistaRenderer:
             "selection_outline_actor": None,
             "selection_fill_actor": None,
             "selection_handle_actors": [],
+            
+            "pressure_field_actor": None,
+            "pressure_scalar_bar": None,
             "layer_pressure_actor": None,
             "layer_pressure_scalar_bar": None,
             "layer_coarse_grid_actor": None,
@@ -1416,10 +1418,12 @@ class PyVistaRenderer:
             "sw_scalar_bar": None,
             "layer_sw_actor": None,
             "layer_sw_scalar_bar": None,
+            "layer_sw_coarse_grid_actor": None,
+            "layer_sw_frac_actors": [],
+            "layer_sw_well_actors": [],
 
             "phi_field_actor": None,
             "phi_scalar_bar": None,
-
             "layer_phi_actor": None,
             "layer_phi_scalar_bar": None,
             "layer_phi_coarse_grid_actor": None,
@@ -1428,10 +1432,11 @@ class PyVistaRenderer:
 
             "threshold_actor": None,
             "threshold_scalar_bar": None,
+            "threshold_grid_actor": None,
+            "threshold_grid_visible": True,
 
             "perm_field_actor": None,
             "perm_scalar_bar": None,
-
             "layer_perm_actor": None,
             "layer_perm_scalar_bar": None,
             "layer_perm_coarse_grid_actor": None,
@@ -1791,7 +1796,13 @@ class PyVistaRenderer:
         self._remove_actor_list(self.cache.get("selection_handle_actors", []))
 
         self._remove_actor(self.cache.get("sw_field_actor"))
+        self._remove_actor(self.cache.get("layer_sw_actor"))
+        self._remove_actor(self.cache.get("layer_sw_coarse_grid_actor"))
+        self._remove_actor_list(self.cache.get("layer_sw_frac_actors", []))
+        self._remove_actor_list(self.cache.get("layer_sw_well_actors", []))
+        
         self._remove_actor(self.cache.get("threshold_actor"))
+        self._remove_actor(self.cache.get("threshold_grid_actor"))
 
         self._remove_actor(self.cache.get("phi_field_actor"))
         self._remove_actor(self.cache.get("layer_phi_actor"))
@@ -2117,11 +2128,11 @@ class PyVistaRenderer:
         self.setup_camera(sim_data)
         self._render()
 
-    def _get_active_parent_cells_from_leaf_data(self, sim_data):
-        """
-        根据 cell_geometry_with_pressure 中的 parent_id，
-        获取所有参与计算的 active 父网格。
-        """
+    """def _get_active_parent_cells_from_leaf_data(self, sim_data):
+        
+        #根据 cell_geometry_with_pressure 中的 parent_id，
+        #获取所有参与计算的 active 父网格。
+        
         cell_data = getattr(
             sim_data,
             "cell_geometry_with_pressure",
@@ -2171,9 +2182,9 @@ class PyVistaRenderer:
         return active_parent_cells
 
     def render_corner_point_grid(self, sim_data):
-        """
-        渲染父网格 / 粗网格。
-        """
+        
+        #渲染父网格 / 粗网格。
+        
         cpg = getattr(
             sim_data,
             "corner_point_grid",
@@ -2401,7 +2412,7 @@ class PyVistaRenderer:
 
         self.setup_camera_for_corner_grid(cpg)
 
-        self.plotter.render()
+        self.plotter.render()"""
 
     def setup_camera_for_corner_grid(self, cpg):
         min_x = min_y = min_z = float("inf")
@@ -4427,6 +4438,7 @@ class PyVistaRenderer:
                 self.plotter.remove_scalar_bar(render=False)
             except Exception:
                 pass
+
             self.cache["sw_scalar_bar"] = None
 
         try:
@@ -4436,10 +4448,22 @@ class PyVistaRenderer:
             if n_cells == 0:
                 return
 
+            # 水饱和度在第 33 列
             sw = cell_data[:, 33].astype(np.float32)
 
-            smin = 0.0
-            smax = 1.0
+            valid_sw = sw[np.isfinite(sw)]
+
+            if valid_sw.size == 0:
+                print("No valid values for Sw")
+                return
+
+            smin = float(np.nanmin(valid_sw))
+            smax = float(np.nanmax(valid_sw))
+
+            if smin == smax:
+                delta = abs(smin) * 0.01 if smin != 0 else 0.01
+                smin -= delta
+                smax += delta
 
             all_points = []
             cells = []
@@ -4447,14 +4471,28 @@ class PyVistaRenderer:
 
             for i in range(n_cells):
 
-                pts = cell_data[i, 4:28].reshape(8, 3).astype(np.float32)
+                pts = cell_data[
+                    i,
+                    4:28
+                ].reshape(
+                    8,
+                    3
+                ).astype(np.float32)
+
                 all_points.append(pts)
 
                 cells.append([
                     8,
-                    offset, offset+1, offset+2, offset+3,
-                    offset+4, offset+5, offset+6, offset+7
+                    offset,
+                    offset + 1,
+                    offset + 2,
+                    offset + 3,
+                    offset + 4,
+                    offset + 5,
+                    offset + 6,
+                    offset + 7,
                 ])
+
                 offset += 8
 
             points = np.vstack(all_points)
@@ -4466,7 +4504,11 @@ class PyVistaRenderer:
                 dtype=np.uint8
             )
 
-            grid = pv.UnstructuredGrid(cells, cell_types, points)
+            grid = pv.UnstructuredGrid(
+                cells,
+                cell_types,
+                points
+            )
 
             grid.cell_data["Sw"] = sw
 
@@ -4517,607 +4559,802 @@ class PyVistaRenderer:
             if getattr(sim_data, "wells", None):
                 self.render_corner_wells(sim_data)
 
+            print(
+                f"[Sw Field] "
+                f"cell_count={n_cells}, "
+                f"sw_range=[{smin:.6f}, {smax:.6f}]"
+            )
+
             self._render()
 
         except Exception as exc:
             print("\n")
             print("=" * 60)
             print("ERROR IN render_corner_sw_field")
-            print(exc)
+            print(type(exc).__name__, exc)
             print("=" * 60)
             print("\n")
 
 
 
-    # 水饱和度分层渲染
-    def _add_layer_sw_mesh(
-        self,
-        surface,
-        sw_all
-    ):
+    # =====================================================================
+    # 水饱和度 Sw 分层渲染
+    # =====================================================================
 
-        actor = self.plotter.add_mesh(
-            surface,
-            scalars="Sw",
-            cmap=get_bright_jet_cmap(),
-            clim=[0.0, 1.0],
-            opacity=0.72,
-            show_scalar_bar=False,
-            show_edges=False,
-            lighting=False,
-            smooth_shading=False,
-            ambient=1.0,
-            diffuse=0.0,
-            specular=0.0,
-            interpolate_before_map=False,
-            render=False,
-        )
-
-        scalar_bar = self._replace_scalar_bar(
-            "layer_sw_scalar_bar",
-            "Sw",
-            position_x=0.02,
-            position_y=0.55,
-            width=0.08,
-            height=0.4,
-            label_font_size=14,
-            title_font_size=16,
-            color="#2f3640",
-            vertical=True,
-            render=False,
-        )
-
-        self.cache["layer_sw_actor"] = actor
-        self.cache["layer_sw_scalar_bar"] = scalar_bar
-
-        return actor, scalar_bar
-
-    def _render_corner_sw_layer(
+    def render_corner_sw_by_layer(
         self,
         sim_data,
-        axis,
-        layer_index,
+        axis="k",
+        layer_index=0,
+        opacity=0.72,
+        show_edges=False,
+        show_grid=True,
+        show_fractures=True,
+        show_wells=True,
     ):
 
-        self._remove_actor(self.cache.get("layer_sw_actor"))
-
-        self._remove_actor_list(
-            self.cache.get("layer_frac_actors", [])
-        )
-
-        self._remove_actor_list(
-            self.cache.get("layer_well_actors", [])
-        )
-
-        self.cache["layer_frac_actors"] = []
-        self.cache["layer_well_actors"] = []
-        self.cache["layer_sw_actor"] = None
-
-        try:
-            self.plotter.remove_scalar_bar(render=False)
-        except Exception:
-            pass
-
-        self.cache["layer_sw_scalar_bar"] = None
-
-        all_data = sim_data.cell_geometry_with_pressure
-
-        try:
-            selected_indices = self._get_layer_row_indices_by_parent_id(
-                sim_data=sim_data,
-                axis=axis,
-                layer_index=layer_index,
-                cell_data=all_data,
-            )
-        except ValueError as exc:
-            print(exc)
-            self._render()
-            return
-
-        if selected_indices.size == 0:
-            self._render()
-            return
-
-        selected_rows = all_data[selected_indices]
-
-        all_points = []
-
-        for row in selected_rows:
-
-            pts = row[4:28].reshape(8, 3)
-
-            all_points.extend(pts)
-
-        all_points = np.array(all_points)
-
-        points, inverse = np.unique(
-            all_points,
-            axis=0,
-            return_inverse=True
-        )
-
-        n_cells = len(selected_rows)
-
-        cell_array = np.empty(
-            n_cells * 9,
-            dtype=np.int64
-        )
-
-        for i in range(n_cells):
-
-            cell_array[i * 9] = 8
-
-            ids = inverse[i * 8:(i + 1) * 8]
-
-            cell_array[
-                i * 9 + 1:i * 9 + 9
-            ] = ids
-
-        cell_types = np.full(
-            n_cells,
-            pv.CellType.HEXAHEDRON,
-            dtype=np.uint8
-        )
-
-        grid = pv.UnstructuredGrid(
-            cell_array,
-            cell_types,
-            points
-        )
-
-        sw = selected_rows[:, 33].astype(np.float32)
-
-        sw_all = sim_data.cell_geometry_with_pressure[:, 33].astype(np.float32)
-
-        grid.cell_data["Sw"] = sw
-
-        surface = grid.extract_surface()
-
-        self._add_layer_sw_mesh(
-            surface,
-            sw_all
-        )
-
-        # -------------------------------------------------
-        # 天然裂缝
-        # -------------------------------------------------
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=(0.0, 0.25, 0.4),
-                    edge_color=(0.0, 0.15, 0.25),
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
-                )
-
-                self.cache["layer_frac_actors"].append(fac)
-
-        # -------------------------------------------------
-        # 人工裂缝
-        # -------------------------------------------------
-        well_centers = []
-
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                if not (
-                    int(frac.get("is_hydraulic", 0)) == 1 or
-                    frac.get("type") == "hydraulic"
-                ):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=(0.72, 0.38, 0.38),
-                    edge_color=(0.54, 0.29, 0.29),
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
-                )
-
-                self.cache["layer_frac_actors"].append(fac)
-
-                well_centers.append([cx, cy, cz])
-
-        # -------------------------------------------------
-        # 井线
-        # -------------------------------------------------
-        if len(well_centers) >= 2:
-
-            well_centers = np.array(well_centers)
-
-            well_centers = well_centers[
-                np.argsort(well_centers[:, 0])
-            ]
-
-            segments = [
-                (
-                    well_centers[i].tolist(),
-                    well_centers[i + 1].tolist()
-                )
-                for i in range(len(well_centers) - 1)
-            ]
-
-            well_line = self._polydata_from_line_segments(
-                segments
-            )
-
-            if well_line:
-
-                actor = self.plotter.add_mesh(
-                    well_line.tube(radius=2.0),
-                    color=(0.31, 0.35, 0.40),
-                    opacity=1.0,
-                    lighting=True,
-                    ambient=0.9,
-                    diffuse=1.0,
-                    render=False
-                )
-
-                self.cache["layer_well_actors"].append(actor)
-
-        self._render()
-
-    # k方向水饱和度渲染
-    def render_corner_sw_by_layer_k(self, sim_data, k_layer: int):
-
-        self._remove_actor(self.cache.get("layer_sw_actor"))
-        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
-
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
-
-        self.cache["layer_frac_actors"] = []
-        self.cache["layer_well_actors"] = []
-        self.cache["layer_sw_actor"] = None
-        self.cache["layer_coarse_grid_actor"] = None
-
         if not sim_data.corner_point_grid:
             return
 
-        cpg = sim_data.corner_point_grid
-
-        nx = int(sim_data.grid_info["nx"])
-        ny = int(sim_data.grid_info["ny"])
-        nz = int(sim_data.grid_info["nz"])
-
-        if k_layer < 0 or k_layer >= nz:
+        if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
             return
 
-        start = k_layer * nx * ny
-        end = (k_layer + 1) * nx * ny
+        axis = str(axis).lower().strip()
 
-        coarse_cells = cpg.cells[start:end]
-
-        coarse_boxes = []
-
-        coarse_points = []
-        coarse_cell_array = []
-        coarse_cell_types = []
-
-        point_offset = 0
-
-        for cell in coarse_cells:
-
-            pts = np.array(cell.corners, dtype=np.float32)
-
-            xs = pts[:, 0]
-            ys = pts[:, 1]
-            zs = pts[:, 2]
-
-            coarse_boxes.append({
-                "xmin": xs.min(),
-                "xmax": xs.max(),
-                "ymin": ys.min(),
-                "ymax": ys.max(),
-                "zmin": zs.min(),
-                "zmax": zs.max(),
-            })
-
-            coarse_points.extend(pts)
-
-            coarse_cell_array.extend([
-                8,
-                point_offset + 0,
-                point_offset + 1,
-                point_offset + 2,
-                point_offset + 3,
-                point_offset + 4,
-                point_offset + 5,
-                point_offset + 6,
-                point_offset + 7
-            ])
-
-            coarse_cell_types.append(
-                pv.CellType.HEXAHEDRON
+        if axis not in ("i", "j", "k"):
+            print(
+                f"Invalid axis = {axis}, "
+                "use 'i', 'j', or 'k'"
             )
+            return
 
-            point_offset += 8
+        cell_data = sim_data.cell_geometry_with_pressure
 
-        coarse_grid = pv.UnstructuredGrid(
-            np.array(coarse_cell_array, dtype=np.int64),
-            np.array(coarse_cell_types, dtype=np.uint8),
-            np.array(coarse_points, dtype=np.float32)
+        if cell_data is None or cell_data.shape[0] == 0:
+            return
+
+        # Sw 对应 cell_geometry_with_pressure 第 33 列
+        sw_col = 33
+
+        if cell_data.shape[1] <= sw_col:
+            print(
+                f"Column index out of range for Sw: "
+                f"column={sw_col}, "
+                f"data columns={cell_data.shape[1]}"
+            )
+            return
+
+        self._remove_actor(
+            self.cache.get("layer_sw_actor")
         )
 
-        coarse_edges = coarse_grid.extract_all_edges()
-
-        actor = self.plotter.add_mesh(
-            coarse_edges,
-            color=(0.78, 0.82, 0.87),
-            line_width=1,
-            opacity=1,
-            render=False,
+        self._remove_actor(
+            self.cache.get("layer_sw_coarse_grid_actor")
         )
 
-        self.cache["layer_coarse_grid_actor"] = actor
-
-        self._render_corner_sw_layer(
-            sim_data=sim_data,
-            axis="k",
-            layer_index=k_layer,
+        self._remove_actor_list(
+            self.cache.get("layer_sw_frac_actors", [])
         )
 
-    # i方向水饱和度渲染
-    def render_corner_sw_by_layer_i(self, sim_data, i_layer: int):
+        self._remove_actor_list(
+            self.cache.get("layer_sw_well_actors", [])
+        )
 
-        self._remove_actor(self.cache.get("layer_sw_actor"))
-        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
-
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
-
-        self.cache["layer_frac_actors"] = []
-        self.cache["layer_well_actors"] = []
         self.cache["layer_sw_actor"] = None
-        self.cache["layer_coarse_grid_actor"] = None
+        self.cache["layer_sw_coarse_grid_actor"] = None
+        self.cache["layer_sw_frac_actors"] = []
+        self.cache["layer_sw_well_actors"] = []
 
-        if not sim_data.corner_point_grid:
-            return
+        if self.cache.get("layer_sw_scalar_bar") is not None:
+            try:
+                self.plotter.remove_scalar_bar(
+                    render=False
+                )
+            except Exception:
+                pass
 
-        cpg = sim_data.corner_point_grid
+            self.cache["layer_sw_scalar_bar"] = None
 
-        nx = int(sim_data.grid_info["nx"])
-        ny = int(sim_data.grid_info["ny"])
-        nz = int(sim_data.grid_info["nz"])
+        try:
+            # =========================================================
+            # 2. 根据 I/J/K 方向选当前 coarse cells
+            # =========================================================
+            cpg = sim_data.corner_point_grid
 
-        if i_layer < 0 or i_layer >= nx:
-            return
+            nx = int(sim_data.grid_info["nx"])
+            ny = int(sim_data.grid_info["ny"])
+            nz = int(sim_data.grid_info["nz"])
 
-        coarse_cells = []
+            if axis == "i":
 
-        for j in range(ny):
-            for k in range(nz):
+                if layer_index < 0 or layer_index >= nx:
+                    print(
+                        f"Invalid i layer = {layer_index}"
+                    )
+                    return
 
-                idx = i_layer + j * nx + k * nx * ny
+                coarse_cells = []
 
-                if idx < len(cpg.cells):
-                    coarse_cells.append(cpg.cells[idx])
+                for k in range(nz):
+                    for j in range(ny):
 
-        coarse_boxes = []
+                        idx = (
+                            layer_index
+                            + j * nx
+                            + k * nx * ny
+                        )
 
-        coarse_points = []
-        coarse_cell_array = []
-        coarse_cell_types = []
+                        if idx < len(cpg.cells):
+                            coarse_cells.append(
+                                cpg.cells[idx]
+                            )
 
-        point_offset = 0
+            elif axis == "j":
 
-        for cell in coarse_cells:
+                if layer_index < 0 or layer_index >= ny:
+                    print(
+                        f"Invalid j layer = {layer_index}"
+                    )
+                    return
 
-            pts = np.array(cell.corners, dtype=np.float32)
+                coarse_cells = []
 
-            xs = pts[:, 0]
-            ys = pts[:, 1]
-            zs = pts[:, 2]
+                for k in range(nz):
+                    for i in range(nx):
 
-            coarse_boxes.append({
-                "xmin": xs.min(),
-                "xmax": xs.max(),
-                "ymin": ys.min(),
-                "ymax": ys.max(),
-                "zmin": zs.min(),
-                "zmax": zs.max(),
-            })
+                        idx = (
+                            i
+                            + layer_index * nx
+                            + k * nx * ny
+                        )
 
-            coarse_points.extend(pts)
+                        if idx < len(cpg.cells):
+                            coarse_cells.append(
+                                cpg.cells[idx]
+                            )
 
-            coarse_cell_array.extend([
-                8,
-                point_offset + 0,
-                point_offset + 1,
-                point_offset + 2,
-                point_offset + 3,
-                point_offset + 4,
-                point_offset + 5,
-                point_offset + 6,
-                point_offset + 7
-            ])
+            else:
+                if layer_index < 0 or layer_index >= nz:
+                    print(
+                        f"Invalid k layer = {layer_index}"
+                    )
+                    return
 
-            coarse_cell_types.append(
-                pv.CellType.HEXAHEDRON
+                start = layer_index * nx * ny
+                end = (layer_index + 1) * nx * ny
+
+                coarse_cells = cpg.cells[start:end]
+
+            if not coarse_cells:
+                print(
+                    f"No coarse cells found for "
+                    f"axis={axis}, layer={layer_index}"
+                )
+                self._render()
+                return
+
+            # =========================================================
+            # 3. 构建 coarse_boxes，并绘制 Sw 当前层粗网格边线
+            # =========================================================
+            coarse_boxes = []
+
+            coarse_points = []
+            coarse_cell_array = []
+            coarse_cell_types = []
+
+            point_offset = 0
+
+            for cell in coarse_cells:
+
+                pts = np.asarray(
+                    cell.corners,
+                    dtype=np.float32,
+                )
+
+                if pts.shape != (8, 3):
+                    continue
+
+                xs = pts[:, 0]
+                ys = pts[:, 1]
+                zs = pts[:, 2]
+
+                coarse_boxes.append(
+                    {
+                        "xmin": float(xs.min()),
+                        "xmax": float(xs.max()),
+                        "ymin": float(ys.min()),
+                        "ymax": float(ys.max()),
+                        "zmin": float(zs.min()),
+                        "zmax": float(zs.max()),
+                    }
+                )
+
+                coarse_points.extend(pts)
+
+                coarse_cell_array.extend(
+                    [
+                        8,
+                        point_offset + 0,
+                        point_offset + 1,
+                        point_offset + 2,
+                        point_offset + 3,
+                        point_offset + 4,
+                        point_offset + 5,
+                        point_offset + 6,
+                        point_offset + 7,
+                    ]
+                )
+
+                coarse_cell_types.append(
+                    pv.CellType.HEXAHEDRON
+                )
+
+                point_offset += 8
+
+            if not coarse_boxes:
+                print(
+                    f"No valid coarse boxes for "
+                    f"axis={axis}, layer={layer_index}"
+                )
+                self._render()
+                return
+
+            if show_grid and coarse_points:
+
+                coarse_grid = pv.UnstructuredGrid(
+                    np.asarray(
+                        coarse_cell_array,
+                        dtype=np.int64,
+                    ),
+                    np.asarray(
+                        coarse_cell_types,
+                        dtype=np.uint8,
+                    ),
+                    np.asarray(
+                        coarse_points,
+                        dtype=np.float32,
+                    ),
+                )
+
+                if coarse_grid.n_points > 0:
+
+                    coarse_edges = (
+                        coarse_grid.extract_all_edges()
+                    )
+
+                    if coarse_edges.n_points > 0:
+
+                        coarse_actor = self.plotter.add_mesh(
+                            coarse_edges,
+                            color=(0.78, 0.82, 0.87),
+                            line_width=1.0,
+                            opacity=1.0,
+                            lighting=False,
+                            render=False,
+                        )
+
+                        self.cache[
+                            "layer_sw_coarse_grid_actor"
+                        ] = coarse_actor
+
+            # =========================================================
+            # 4. 按 parent_id 获取当前 I/J/K 逻辑层 active leaf
+            # =========================================================
+            selected_indices = (
+                self._get_layer_row_indices_by_parent_id(
+                    sim_data=sim_data,
+                    axis=axis,
+                    layer_index=layer_index,
+                    cell_data=cell_data,
+                )
             )
 
-            point_offset += 8
+            if selected_indices.size == 0:
+                print(
+                    f"No leaf cells found for Sw, "
+                    f"axis={axis}, "
+                    f"layer={layer_index}"
+                )
+                self._render()
+                return
 
-        coarse_grid = pv.UnstructuredGrid(
-            np.array(coarse_cell_array, dtype=np.int64),
-            np.array(coarse_cell_types, dtype=np.uint8),
-            np.array(coarse_points, dtype=np.float32)
-        )
+            selected_rows = cell_data[selected_indices]
 
-        coarse_edges = coarse_grid.extract_all_edges()
+            # =========================================================
+            # 5. 构建当前层 Sw UnstructuredGrid
+            # =========================================================
+            all_points = []
 
-        actor = self.plotter.add_mesh(
-            coarse_edges,
-            color=(0.78, 0.82, 0.87),
-            line_width=1,
-            opacity=1,
-            render=False,
-        )
+            for row in selected_rows:
 
-        self.cache["layer_coarse_grid_actor"] = actor
+                pts = row[4:28].reshape(
+                    8,
+                    3,
+                ).astype(np.float32)
 
-        self._render_corner_sw_layer(
+                all_points.extend(pts)
+
+            all_points = np.asarray(
+                all_points,
+                dtype=np.float32,
+            )
+
+            points, inverse = np.unique(
+                all_points,
+                axis=0,
+                return_inverse=True,
+            )
+
+            n_cells = len(selected_rows)
+
+            cell_array = np.empty(
+                n_cells * 9,
+                dtype=np.int64,
+            )
+
+            cell_types = np.full(
+                n_cells,
+                pv.CellType.HEXAHEDRON,
+                dtype=np.uint8,
+            )
+
+            for i in range(n_cells):
+
+                cell_array[i * 9] = 8
+
+                ids = inverse[
+                    i * 8:
+                    (i + 1) * 8
+                ]
+
+                cell_array[
+                    i * 9 + 1:
+                    i * 9 + 9
+                ] = ids
+
+            grid = pv.UnstructuredGrid(
+                cell_array,
+                cell_types,
+                points,
+            )
+
+            selected_sw = selected_rows[
+                :,
+                sw_col,
+            ].astype(np.float32)
+
+            all_sw = cell_data[
+                :,
+                sw_col,
+            ].astype(np.float32)
+
+            grid.cell_data["Sw"] = selected_sw
+
+            surface = grid.extract_surface()
+
+            surface = surface.compute_normals(
+                consistent_normals=True,
+                auto_orient_normals=True,
+            )
+
+            # =========================================================
+            # 6. 计算全场 Sw min/max，作为所有 Sw 切片统一颜色范围
+            # =========================================================
+            valid_sw = all_sw[
+                np.isfinite(all_sw)
+            ]
+
+            if valid_sw.size == 0:
+                print("No valid values for Sw")
+                self._render()
+                return
+
+            sw_min = float(
+                np.nanmin(valid_sw)
+            )
+
+            sw_max = float(
+                np.nanmax(valid_sw)
+            )
+
+            if sw_min == sw_max:
+                delta = (
+                    abs(sw_min) * 0.01
+                    if sw_min != 0
+                    else 0.01
+                )
+
+                sw_min -= delta
+                sw_max += delta
+
+            # =========================================================
+            # 7. 渲染当前层 Sw
+            # =========================================================
+            sw_actor = self.plotter.add_mesh(
+                surface,
+                scalars="Sw",
+                cmap=get_bright_jet_cmap(),
+                clim=[sw_min, sw_max],
+                opacity=opacity,
+                show_scalar_bar=False,
+                show_edges=show_edges,
+                edge_color=(0.18, 0.18, 0.18),
+                line_width=0.3,
+                lighting=False,
+                smooth_shading=False,
+                ambient=1.0,
+                diffuse=0.0,
+                specular=0.0,
+                interpolate_before_map=False,
+                render=False,
+            )
+
+            scalar_bar = self._replace_scalar_bar(
+                "layer_sw_scalar_bar",
+                "Sw",
+                position_x=0.02,
+                position_y=0.55,
+                width=0.08,
+                height=0.40,
+                label_font_size=14,
+                title_font_size=16,
+                color="#2f3640",
+                vertical=True,
+                render=False,
+            )
+
+            self.cache["layer_sw_actor"] = sw_actor
+            self.cache["layer_sw_scalar_bar"] = scalar_bar
+
+            # =========================================================
+            # 8. 当前层 / 剖面裂缝显示
+            #
+            # 天然裂缝：
+            #   I/J/K 都只显示中心处于当前 coarse_boxes 内的裂缝。
+            #
+            # 人工裂缝：
+            #   K 层：当前 K 层命中任意人工裂缝，显示所有人工裂缝；
+            #   I/J：仅显示当前剖面内人工裂缝。
+            # =========================================================
+            selected_hydraulic_fracs = []
+            show_all_hydraulic = False
+
+            if (
+                show_fractures
+                and getattr(sim_data, "fractures", None)
+            ):
+
+                # -----------------------------------------------------
+                # 8.1 显示天然裂缝，并判断人工裂缝是否属于当前层
+                # -----------------------------------------------------
+                for frac in sim_data.fractures:
+
+                    is_hydraulic = (
+                        int(
+                            frac.get(
+                                "is_hydraulic",
+                                0,
+                            )
+                        ) == 1
+                        or frac.get("type") == "hydraulic"
+                    )
+
+                    pts = np.asarray(
+                        frac.get("points", []),
+                        dtype=np.float64,
+                    )
+
+                    if len(pts) < 3:
+                        continue
+
+                    cx, cy, cz = pts.mean(axis=0)
+
+                    inside = any(
+                        box["xmin"] <= cx <= box["xmax"]
+                        and box["ymin"] <= cy <= box["ymax"]
+                        and box["zmin"] <= cz <= box["zmax"]
+                        for box in coarse_boxes
+                    )
+
+                    # -------------------------------------------------
+                    # 人工裂缝
+                    # -------------------------------------------------
+                    if is_hydraulic:
+
+                        if axis == "k":
+                            if inside:
+                                show_all_hydraulic = True
+
+                        else:
+                            if inside:
+                                selected_hydraulic_fracs.append(
+                                    frac
+                                )
+
+                        continue
+
+                    # -------------------------------------------------
+                    # 天然裂缝
+                    # -------------------------------------------------
+                    if not inside:
+                        continue
+
+                    poly = pv.PolyData(pts)
+
+                    poly.faces = np.asarray(
+                        [
+                            len(pts),
+                            *range(len(pts)),
+                        ],
+                        dtype=np.int32,
+                    )
+
+                    frac_actor = self.plotter.add_mesh(
+                        poly,
+                        color=(0.0, 0.25, 0.40),
+                        edge_color=(0.0, 0.15, 0.25),
+                        show_edges=True,
+                        line_width=1.5,
+                        opacity=0.9,
+                        lighting=False,
+                        render=False,
+                    )
+
+                    self.cache[
+                        "layer_sw_frac_actors"
+                    ].append(
+                        frac_actor
+                    )
+
+                # -----------------------------------------------------
+                # 8.2 按 I/J/K 的规则显示人工裂缝
+                # -----------------------------------------------------
+                if axis == "k" and show_all_hydraulic:
+
+                    hydraulic_fracs_to_render = [
+                        frac
+                        for frac in sim_data.fractures
+                        if (
+                            int(
+                                frac.get(
+                                    "is_hydraulic",
+                                    0,
+                                )
+                            ) == 1
+                            or frac.get("type")
+                            == "hydraulic"
+                        )
+                    ]
+
+                else:
+                    hydraulic_fracs_to_render = (
+                        selected_hydraulic_fracs
+                    )
+
+                for frac in hydraulic_fracs_to_render:
+
+                    pts = np.asarray(
+                        frac.get("points", []),
+                        dtype=np.float64,
+                    )
+
+                    if len(pts) < 3:
+                        continue
+
+                    poly = pv.PolyData(pts)
+
+                    poly.faces = np.asarray(
+                        [
+                            len(pts),
+                            *range(len(pts)),
+                        ],
+                        dtype=np.int32,
+                    )
+
+                    frac_actor = self.plotter.add_mesh(
+                        poly,
+                        color=(0.72, 0.38, 0.38),
+                        edge_color=(0.54, 0.29, 0.29),
+                        show_edges=True,
+                        line_width=1.5,
+                        opacity=0.9,
+                        lighting=False,
+                        render=False,
+                    )
+
+                    self.cache[
+                        "layer_sw_frac_actors"
+                    ].append(
+                        frac_actor
+                    )
+
+            # =========================================================
+            # 9. 当前层 / 剖面井线显示
+            # =========================================================
+            if (
+                show_wells
+                and getattr(sim_data, "fractures", None)
+            ):
+
+                well_centers = []
+
+                if axis == "k" and show_all_hydraulic:
+
+                    well_source_fracs = [
+                        frac
+                        for frac in sim_data.fractures
+                        if (
+                            int(
+                                frac.get(
+                                    "is_hydraulic",
+                                    0,
+                                )
+                            ) == 1
+                            or frac.get("type")
+                            == "hydraulic"
+                        )
+                    ]
+
+                else:
+                    well_source_fracs = (
+                        selected_hydraulic_fracs
+                    )
+
+                for frac in well_source_fracs:
+
+                    pts = np.asarray(
+                        frac.get("points", []),
+                        dtype=np.float64,
+                    )
+
+                    if len(pts) < 3:
+                        continue
+
+                    well_centers.append(
+                        pts.mean(axis=0)
+                    )
+
+                if len(well_centers) >= 2:
+
+                    well_centers = np.asarray(
+                        well_centers,
+                        dtype=np.float64,
+                    )
+
+                    # I 剖面固定 I，显示 Y-Z 面，所以按 Y 排序；
+                    # J 剖面固定 J，显示 X-Z 面，所以按 X 排序；
+                    # K 平面显示 X-Y 面，仍按 X 排序。
+                    if axis == "i":
+                        sorted_idx = np.argsort(
+                            well_centers[:, 1]
+                        )
+                    else:
+                        sorted_idx = np.argsort(
+                            well_centers[:, 0]
+                        )
+
+                    ordered_centers = well_centers[
+                        sorted_idx
+                    ]
+
+                    segments = [
+                        (
+                            ordered_centers[i].tolist(),
+                            ordered_centers[
+                                i + 1
+                            ].tolist(),
+                        )
+                        for i in range(
+                            len(ordered_centers) - 1
+                        )
+                    ]
+
+                    well_line = self._polydata_from_line_segments(
+                        segments
+                    )
+
+                    if well_line is not None:
+
+                        well_actor = self.plotter.add_mesh(
+                            well_line.tube(radius=2.0),
+                            color=(0.31, 0.35, 0.40),
+                            opacity=1.0,
+                            lighting=True,
+                            ambient=0.9,
+                            diffuse=1.0,
+                            render=False,
+                        )
+
+                        self.cache[
+                            "layer_sw_well_actors"
+                        ].append(
+                            well_actor
+                        )
+
+            # =========================================================
+            # 10. 输出检查信息
+            # =========================================================
+            selected_parent_ids = np.rint(
+                selected_rows[:, 1]
+            ).astype(np.int64)
+
+            print(
+                "[Sw Layer] "
+                f"axis={axis}, "
+                f"layer={layer_index}, "
+                f"leaf_count={n_cells}, "
+                f"unique_parent_count="
+                f"{len(np.unique(selected_parent_ids))}, "
+                f"coarse_box_count={len(coarse_boxes)}, "
+                f"sw_range=[{sw_min:.6f}, {sw_max:.6f}], "
+                f"fracture_actor_count="
+                f"{len(self.cache['layer_sw_frac_actors'])}, "
+                f"well_actor_count="
+                f"{len(self.cache['layer_sw_well_actors'])}"
+            )
+
+            self._render()
+
+        except Exception as exc:
+            print("\n")
+            print("=" * 60)
+            print("ERROR IN render_corner_sw_by_layer")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+            print("\n")
+
+
+    # =====================================================================
+    # I 方向 Sw 剖面
+    # =====================================================================
+
+    def render_corner_sw_by_layer_i(
+        self,
+        sim_data,
+        i_layer: int,
+    ):
+        """渲染 I 方向水饱和度 Sw 剖面。"""
+
+        self.render_corner_sw_by_layer(
             sim_data=sim_data,
             axis="i",
             layer_index=i_layer,
         )
 
-    # j方向水饱和度渲染
-    def render_corner_sw_by_layer_j(self, sim_data, j_layer: int):
 
-        self._remove_actor(self.cache.get("layer_sw_actor"))
-        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
+    # =====================================================================
+    # J 方向 Sw 剖面
+    # =====================================================================
 
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
+    def render_corner_sw_by_layer_j(
+        self,
+        sim_data,
+        j_layer: int,
+    ):
+        """渲染 J 方向水饱和度 Sw 剖面。"""
 
-        self.cache["layer_frac_actors"] = []
-        self.cache["layer_well_actors"] = []
-        self.cache["layer_sw_actor"] = None
-        self.cache["layer_coarse_grid_actor"] = None
-
-        if not sim_data.corner_point_grid:
-            return
-
-        cpg = sim_data.corner_point_grid
-
-        nx = int(sim_data.grid_info["nx"])
-        ny = int(sim_data.grid_info["ny"])
-        nz = int(sim_data.grid_info["nz"])
-
-        if j_layer < 0 or j_layer >= ny:
-            return
-
-        coarse_cells = []
-
-        for i in range(nx):
-            for k in range(nz):
-
-                idx = i + j_layer * nx + k * nx * ny
-
-                if idx < len(cpg.cells):
-                    coarse_cells.append(cpg.cells[idx])
-
-        coarse_boxes = []
-
-        coarse_points = []
-        coarse_cell_array = []
-        coarse_cell_types = []
-
-        point_offset = 0
-
-        for cell in coarse_cells:
-
-            pts = np.array(cell.corners, dtype=np.float32)
-
-            xs = pts[:, 0]
-            ys = pts[:, 1]
-            zs = pts[:, 2]
-
-            coarse_boxes.append({
-                "xmin": xs.min(),
-                "xmax": xs.max(),
-                "ymin": ys.min(),
-                "ymax": ys.max(),
-                "zmin": zs.min(),
-                "zmax": zs.max(),
-            })
-
-            coarse_points.extend(pts)
-
-            coarse_cell_array.extend([
-                8,
-                point_offset + 0,
-                point_offset + 1,
-                point_offset + 2,
-                point_offset + 3,
-                point_offset + 4,
-                point_offset + 5,
-                point_offset + 6,
-                point_offset + 7
-            ])
-
-            coarse_cell_types.append(
-                pv.CellType.HEXAHEDRON
-            )
-
-            point_offset += 8
-
-        coarse_grid = pv.UnstructuredGrid(
-            np.array(coarse_cell_array, dtype=np.int64),
-            np.array(coarse_cell_types, dtype=np.uint8),
-            np.array(coarse_points, dtype=np.float32)
-        )
-
-        coarse_edges = coarse_grid.extract_all_edges()
-
-        actor = self.plotter.add_mesh(
-            coarse_edges,
-            color=(0.78, 0.82, 0.87),
-            line_width=1,
-            opacity=1,
-            render=False,
-        )
-
-        self.cache["layer_coarse_grid_actor"] = actor
-
-        self._render_corner_sw_layer(
+        self.render_corner_sw_by_layer(
             sim_data=sim_data,
             axis="j",
             layer_index=j_layer,
+        )
+
+
+    # =====================================================================
+    # K 方向 Sw 层面
+    # =====================================================================
+
+    def render_corner_sw_by_layer_k(
+        self,
+        sim_data,
+        k_layer: int,
+    ):
+        """渲染 K 方向水饱和度 Sw 层面。"""
+
+        self.render_corner_sw_by_layer(
+            sim_data=sim_data,
+            axis="k",
+            layer_index=k_layer,
         )
 
 
@@ -5796,7 +6033,10 @@ class PyVistaRenderer:
 
 
 
-    #阈值过滤
+    # =====================================================================
+    # 阈值过滤
+    # =====================================================================
+
     def render_threshold_property_field(
         self,
         sim_data,
@@ -5804,40 +6044,14 @@ class PyVistaRenderer:
         min_value=None,
         max_value=None,
         opacity=0.95,
-        show_edges=False
+        show_edges=False,
     ):
-        """
-        属性阈值过滤渲染。
 
-        功能：
-            只显示指定属性值在 [min_value, max_value] 范围内的网格单元。
-
-        参数：
-            sim_data:
-                模拟数据对象，要求包含 cell_geometry_with_pressure。
-
-            property_name:
-                要过滤的属性名称。
-                支持：
-                    "Pressure"      压力
-                    "Sw"            水饱和度
-                    "Phi"           孔隙度
-                    "Kx,Ky,Kz"       渗透率
-
-            min_value:
-                最小阈值。如果为 None，则不限制最小值。
-
-            max_value:
-                最大阈值。如果为 None，则不限制最大值。
-
-            opacity:
-                透明度。
-
-            show_edges:
-                是否显示网格边线。
-        """
-
-        if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
+        if getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        ) is None:
             print("No cell_geometry_with_pressure data")
             return
 
@@ -5848,43 +6062,42 @@ class PyVistaRenderer:
             "Pressure": {
                 "column": 28,
                 "title": "Pressure (bar)",
-                "clim": None,
             },
 
             "Kx": {
                 "column": 29,
                 "title": "Permeability X",
-                "clim": None,
             },
 
             "Ky": {
                 "column": 30,
                 "title": "Permeability Y",
-                "clim": None,
             },
 
             "Kz": {
                 "column": 31,
                 "title": "Permeability Z",
-                "clim": None,
             },
 
             "Phi": {
                 "column": 32,
                 "title": "Phi",
-                "clim": None,
             },
 
             "Sw": {
                 "column": 33,
                 "title": "Sw",
-                "clim": [0.0, 1.0],
             },
         }
 
         if property_name not in property_config:
-            print(f"Unsupported property_name: {property_name}")
-            print(f"Supported properties: {list(property_config.keys())}")
+            print(
+                f"Unsupported property_name: {property_name}"
+            )
+            print(
+                f"Supported properties: "
+                f"{list(property_config.keys())}"
+            )
             return
 
         config = property_config[property_name]
@@ -5898,31 +6111,63 @@ class PyVistaRenderer:
 
         if cell_data.shape[1] <= col:
             print(
-                f"Column index out of range: property={property_name}, "
-                f"column={col}, data columns={cell_data.shape[1]}"
+                f"Column index out of range: "
+                f"property={property_name}, "
+                f"column={col}, "
+                f"data columns={cell_data.shape[1]}"
             )
             return
 
         # =========================================================
-        # 2. 清理上一次阈值过滤结果
+        # 2. 记录筛选网格线当前显示状态
+        #
+        # 初次阈值渲染时默认 True。
+        # 用户通过按钮关闭后，再次筛选会保持关闭。
         # =========================================================
-        self._remove_actor(self.cache.get("threshold_actor"))
+        threshold_grid_visible = bool(
+            self.cache.get(
+                "threshold_grid_visible",
+                True,
+            )
+        )
+
+        # =========================================================
+        # 3. 清理上一次阈值过滤结果
+        # =========================================================
+        self._remove_actor(
+            self.cache.get("threshold_actor")
+        )
+
+        self._remove_actor(
+            self.cache.get("threshold_grid_actor")
+        )
+
         self.cache["threshold_actor"] = None
+        self.cache["threshold_grid_actor"] = None
 
         if self.cache.get("threshold_scalar_bar") is not None:
             try:
-                self.plotter.remove_scalar_bar(render=False)
+                self.plotter.remove_scalar_bar(
+                    render=False
+                )
             except Exception:
                 pass
+
             self.cache["threshold_scalar_bar"] = None
 
         try:
             # =========================================================
-            # 3. 读取属性值，并生成阈值 mask
+            # 4. 读取属性值并生成阈值 mask
             # =========================================================
-            values = cell_data[:, col].astype(np.float32)
+            values = cell_data[
+                :,
+                col,
+            ].astype(
+                np.float32
+            )
 
-            mask = np.ones(values.shape[0], dtype=bool)
+            # NaN / Inf 不参与筛选和渲染。
+            mask = np.isfinite(values)
 
             if min_value is not None:
                 mask &= values >= float(min_value)
@@ -5943,67 +6188,133 @@ class PyVistaRenderer:
 
             print(
                 f"Threshold render: {property_name}, "
-                f"selected {selected_rows.shape[0]} / {cell_data.shape[0]} cells"
+                f"selected {selected_rows.shape[0]} / "
+                f"{cell_data.shape[0]} cells"
             )
 
             # =========================================================
-            # 4. 构建筛选后的 UnstructuredGrid
+            # 5. 只用筛选后的单元构建 UnstructuredGrid
             # =========================================================
             all_points = []
-            cells = []
+            vtk_cells = []
             offset = 0
 
-            for i in range(selected_rows.shape[0]):
+            for row in selected_rows:
 
-                pts = selected_rows[i, 4:28].reshape(8, 3).astype(np.float32)
+                pts = row[
+                    4:28
+                ].reshape(
+                    8,
+                    3,
+                ).astype(
+                    np.float32
+                )
 
                 all_points.append(pts)
 
-                cells.append([
+                vtk_cells.append([
                     8,
-                    offset, offset + 1, offset + 2, offset + 3,
-                    offset + 4, offset + 5, offset + 6, offset + 7
+                    offset + 0,
+                    offset + 1,
+                    offset + 2,
+                    offset + 3,
+                    offset + 4,
+                    offset + 5,
+                    offset + 6,
+                    offset + 7,
                 ])
 
                 offset += 8
 
-            points = np.vstack(all_points)
-            cells = np.hstack(cells)
+            points = np.vstack(
+                all_points
+            ).astype(
+                np.float32
+            )
+
+            cells = np.hstack(
+                vtk_cells
+            ).astype(
+                np.int64
+            )
 
             cell_types = np.full(
                 selected_rows.shape[0],
                 pv.CellType.HEXAHEDRON,
-                dtype=np.uint8
+                dtype=np.uint8,
             )
 
-            grid = pv.UnstructuredGrid(cells, cell_types, points)
+            grid = pv.UnstructuredGrid(
+                cells,
+                cell_types,
+                points,
+            )
 
-            grid.cell_data[property_name] = selected_values
+            grid.cell_data[property_name] = (
+                selected_values
+            )
 
+            # =========================================================
+            # 6. 提取筛选后属性表面
+            # =========================================================
             surface = grid.extract_surface()
 
             surface = surface.compute_normals(
                 consistent_normals=True,
-                auto_orient_normals=True
+                auto_orient_normals=True,
             )
 
             # =========================================================
-            # 5. 颜色范围
-            # Sw 固定 0~1，其他属性默认用全场 min/max
-            # 这样过滤后颜色条不会乱跳
+            # 7. 计算全场有效值的颜色范围
             # =========================================================
-            if config["clim"] is not None:
-                clim = config["clim"]
-            else:
-                clim = [
-                    float(np.nanmin(values)),
-                    float(np.nanmax(values))
-                ]
+            valid_values = values[
+                np.isfinite(values)
+            ]
+
+            if valid_values.size == 0:
+                print(
+                    f"No valid values for {property_name}"
+                )
+                self._render()
+                return
+
+            value_min = float(
+                np.nanmin(valid_values)
+            )
+
+            value_max = float(
+                np.nanmax(valid_values)
+            )
+
+            # 全场数值相同或差异极小时，
+            # 防止 clim=[x, x] 或浮点误差导致颜色异常。
+            if np.isclose(
+                value_min,
+                value_max,
+                rtol=1e-6,
+                atol=1e-8,
+            ):
+                center_value = float(
+                    np.nanmean(valid_values)
+                )
+
+                delta = max(
+                    abs(center_value) * 0.01,
+                    0.001,
+                )
+
+                value_min = center_value - delta
+                value_max = center_value + delta
+
+            clim = [
+                value_min,
+                value_max,
+            ]
 
             # =========================================================
-            # 6. 添加阈值过滤渲染 actor
+            # 8. 绘制阈值过滤属性场
             # =========================================================
-            actor = self.plotter.add_mesh(
+            threshold_actor = self.plotter.add_mesh(
                 surface,
                 scalars=property_name,
                 cmap=get_bright_jet_cmap(),
@@ -6012,7 +6323,10 @@ class PyVistaRenderer:
                 show_edges=show_edges,
                 edge_color=(0.18, 0.18, 0.18),
                 line_width=0.3,
+
+                # 禁止默认横向颜色条
                 show_scalar_bar=False,
+
                 lighting=False,
                 smooth_shading=False,
                 ambient=1.0,
@@ -6023,7 +6337,7 @@ class PyVistaRenderer:
             )
 
             # =========================================================
-            # 7. 添加颜色条
+            # 9. 创建颜色条
             # =========================================================
             scalar_bar = self._replace_scalar_bar(
                 "threshold_scalar_bar",
@@ -6039,38 +6353,156 @@ class PyVistaRenderer:
                 render=False,
             )
 
-            self.cache["threshold_actor"] = actor
+            self.cache["threshold_actor"] = threshold_actor
             self.cache["threshold_scalar_bar"] = scalar_bar
 
             # =========================================================
-            # 8. 可选：叠加裂缝和井
+            # 10. 创建阈值筛选后的网格线
+            # =========================================================
+            threshold_edges = grid.extract_all_edges()
+
+            if threshold_edges.n_points > 0:
+
+                threshold_grid_actor = self.plotter.add_mesh(
+                    threshold_edges,
+                    color=(0.5, 0.5, 0.5),
+                    line_width=1.0,
+                    opacity=1.0,
+                    lighting=False,
+                    render_lines_as_tubes=True,
+                    show_scalar_bar=False,
+                    render=False,
+                )
+
+                try:
+                    threshold_grid_actor.visibility = (
+                        threshold_grid_visible
+                    )
+                except Exception:
+                    try:
+                        threshold_grid_actor.SetVisibility(
+                            threshold_grid_visible
+                        )
+                    except Exception:
+                        pass
+
+                self.cache[
+                    "threshold_grid_actor"
+                ] = threshold_grid_actor
+
+            self.cache["threshold_grid_visible"] = (
+                threshold_grid_visible
+            )
+
+            # =========================================================
+            # 11. 可选叠加裂缝和井
             # =========================================================
             if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(sim_data)
+                self.render_corner_fractures(
+                    sim_data
+                )
 
             if getattr(sim_data, "wells", None):
-                self.render_corner_wells(sim_data)
+                self.render_corner_wells(
+                    sim_data
+                )
+
+            print(
+                f"[Threshold] "
+                f"property={property_name}, "
+                f"selected={selected_rows.shape[0]}, "
+                f"total={cell_data.shape[0]}, "
+                f"range=[{value_min:.6f}, "
+                f"{value_max:.6f}], "
+                f"grid_visible={threshold_grid_visible}"
+            )
 
             self._render()
 
         except Exception as exc:
             print("\n")
             print("=" * 60)
-            print("ERROR IN render_threshold_property_field")
-            print(exc)
+            print(
+                "ERROR IN "
+                "render_threshold_property_field"
+            )
+            print(type(exc).__name__, exc)
             print("=" * 60)
             print("\n")
 
 
-    def hide_threshold_property_field(self):
-        """隐藏/清除属性阈值过滤结果。"""
+    # =====================================================================
+    # 阈值过滤网格线显示 / 隐藏
+    # =====================================================================
+    def set_threshold_grid_visibility(
+        self,
+        visible: bool,
+    ):
+        """
+        控制阈值筛选后的网格线显示或隐藏。
 
-        self._remove_actor(self.cache.get("threshold_actor"))
+        visible=True：
+            显示筛选后的网格线。
+
+        visible=False：
+            隐藏筛选后的网格线。
+        """
+
+        visible = bool(visible)
+
+        self.cache["threshold_grid_visible"] = visible
+
+        threshold_grid_actor = self.cache.get(
+            "threshold_grid_actor"
+        )
+
+        if threshold_grid_actor is None:
+            self._render()
+            return
+
+        try:
+            threshold_grid_actor.visibility = visible
+        except Exception:
+            try:
+                threshold_grid_actor.SetVisibility(
+                    visible
+                )
+            except Exception:
+                pass
+
+        self._render()
+
+
+    # =====================================================================
+    # 隐藏 / 清除阈值过滤结果
+    # =====================================================================
+
+    def hide_threshold_property_field(self):
+        """
+        删除当前阈值过滤属性场、竖直颜色条和筛选后的网格线。
+
+        清除后，下一次阈值过滤会默认显示网格线。
+        """
+
+        self._remove_actor(
+            self.cache.get("threshold_actor")
+        )
+
+        self._remove_actor(
+            self.cache.get("threshold_grid_actor")
+        )
+
         self.cache["threshold_actor"] = None
+        self.cache["threshold_grid_actor"] = None
+
+        # 下一次阈值筛选默认显示网格线。
+        self.cache["threshold_grid_visible"] = True
 
         if self.cache.get("threshold_scalar_bar") is not None:
             try:
-                self.plotter.remove_scalar_bar(render=False)
+                self.plotter.remove_scalar_bar(
+                    render=False
+                )
             except Exception:
                 pass
 
@@ -8060,7 +8492,7 @@ class PyVistaRenderer:
 
         try:
             if hasattr(self.view, "show_measure_info"):
-                self.view.show_measure_info(info_text, dynamic=dynamic)
+                self.view.show_measure_info(info_text)
             elif hasattr(self.view, "set_status_message"):
                 self.view.set_status_message(info_text)
         except Exception:
@@ -8101,11 +8533,6 @@ class PyVistaRenderer:
             self.cache["measure_last_info"] = None
 
             print("\nMeasure start point selected. Move mouse to preview.")
-            try:
-                if hasattr(self.view, "set_status_message"):
-                    self.view.set_status_message("[测距] 已选择起点，移动鼠标预览，左键点击终点")
-            except Exception:
-                pass
 
             return
 

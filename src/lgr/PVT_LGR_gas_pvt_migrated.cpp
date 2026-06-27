@@ -1104,6 +1104,12 @@ struct FluidProps {
 
 static FluidProps g_props;
 
+struct AdsorptionProps {
+    double VL{0.0};   // Langmuir 体积 (std m³/kg), 0=关闭
+    double PL{1.0};   // Langmuir 压力 (bar)
+};
+static AdsorptionProps g_ads;
+
 // =============================================================================
 // 7 组分混合气 PVT 辅助结构与函数
 // 组分固定临界性质写死在代码中；摩尔分数从 g_props 读取。
@@ -1199,22 +1205,39 @@ static void calcWaterPVT(const T& P, T& Bw) {
     calcWaterPVT(P, Bw, dBw_dP);
 }
 
+struct RelPermParams {
+    double Swi = 0.05;   // 束缚水饱和度
+    double Sgc = 0.05;   // 残余气饱和度
+    double nw  = 2.0;    // 水相 Corey 指数
+    double ng  = 2.0;    // 气相 Corey 指数
+    bool operator==(const RelPermParams& o) const {
+        return Swi == o.Swi && Sgc == o.Sgc && nw == o.nw && ng == o.ng;
+    }
+};
+
 template <typename T>
-static void calcRelPermGasWater(const T& Sw, T& krw, T& krg) {
+static void calcRelPermCorey(const T& Sw, const RelPermParams& rp, T& krw, T& krg) {
     auto clamp01_T = [](const T& v) -> T {
         T zero(0.0), one(1.0);
         return (v < zero) ? zero : ((v > one) ? one : v);
     };
-
-    const double Swc = g_props.Swi;
-    const double Sgr = g_props.Sgc;
-    T denom = T(std::max(1e-12, 1.0 - Swc - Sgr));
-
-    T Se = (Sw - Swc) / denom;
+    T denom = T(std::max(1e-12, 1.0 - rp.Swi - rp.Sgc));
+    T Se = (Sw - T(rp.Swi)) / denom;
     Se = clamp01_T(Se);
+    // Corey 指数: x^n = exp(n * log(x)), 兼容 double 和 AD 类型
+    if (std::abs(rp.nw - 2.0) < 1e-12) krw = Se * Se;
+    else krw = exp(log(Se) * rp.nw);
+    if (std::abs(rp.ng - 2.0) < 1e-12) krg = (T(1.0) - Se) * (T(1.0) - Se);
+    else krg = exp(log(T(1.0) - Se) * rp.ng);
+}
 
-    krw = Se * Se;
-    krg = (T(1.0) - Se) * (T(1.0) - Se);
+// 保留旧接口（使用 FluidProps 全局参数，向后兼容）
+template <typename T>
+static void calcRelPermGasWater(const T& Sw, T& krw, T& krg) {
+    RelPermParams rp;
+    rp.Swi = g_props.Swi;
+    rp.Sgc = g_props.Sgc;
+    calcRelPermCorey(Sw, rp, krw, krg);
 }
 
 template <typename T>
@@ -1335,6 +1358,11 @@ public:
     // 时间步播放
     std::vector<double> time_steps;
     std::vector<std::vector<double>> pressure_steps;
+    std::vector<std::vector<double>> sw_steps;
+    std::vector<std::vector<double>> porosity_steps;
+    std::vector<std::vector<double>> permeability_x_steps;
+    std::vector<std::vector<double>> permeability_y_steps;
+    std::vector<std::vector<double>> permeability_z_steps;
 
     // --- 可配置参数 (通过 pybind 设置) ---
     std::string coord_file_path{"COORD.csv"};
@@ -1391,6 +1419,20 @@ public:
     double matrix_volume_fraction{0.98};
     double fracture_volume_fraction{0.02};
     double wr_shape_factor{0.12};
+
+    // 基质/裂缝分别相对渗透率参数
+    RelPermParams matrix_relperm;     // Swi=0.05, Sgc=0.05, nw=2, ng=2 (默认)
+    RelPermParams fracture_relperm;   // 默认与 matrix 一致
+
+    // 应力敏感参数
+    double gamma_stress_matrix{0.0};     // 基质应力敏感系数, 0=关闭
+    double gamma_stress_fracture{0.0};   // 裂缝应力敏感系数, 0=关闭
+    double P_ref_stress{100.0};          // 应力敏感参考压力
+
+    // Langmuir 吸附参数
+    double langmuir_VL{0.0};        // Langmuir 体积 (std m³/kg), 0=关闭
+    double langmuir_PL{1.0};        // Langmuir 压力 (bar)
+    double rho_bulk{2500.0};        // 岩石体积密度 (kg/m³)
 
     SimulatorLGR() {
         dx = Lx / Nx;
@@ -1924,6 +1966,32 @@ public:
         wr_shape_factor = wr_shape_factor_val;
     }
 
+    void setMatrixRelPermParams(double Swi, double Sgc, double nw, double ng) {
+        matrix_relperm.Swi = Swi;
+        matrix_relperm.Sgc = Sgc;
+        matrix_relperm.nw  = nw;
+        matrix_relperm.ng  = ng;
+    }
+
+    void setFractureRelPermParams(double Swi, double Sgc, double nw, double ng) {
+        fracture_relperm.Swi = Swi;
+        fracture_relperm.Sgc = Sgc;
+        fracture_relperm.nw  = nw;
+        fracture_relperm.ng  = ng;
+    }
+
+    void setStressSensitivityParams(double gamma_matrix, double gamma_fracture, double Pref) {
+        gamma_stress_matrix   = gamma_matrix;
+        gamma_stress_fracture = gamma_fracture;
+        P_ref_stress          = Pref;
+    }
+
+    void setLangmuirAdsorptionParams(double VL, double PL, double rho) {
+        g_ads.VL    = VL;
+        g_ads.PL    = PL;
+        rho_bulk    = rho;
+    }
+
     void validateDualPorosityParameters() const {
         auto require_positive = [](double v, const char* name) {
             if (!std::isfinite(v) || v <= 0.0) {
@@ -2043,6 +2111,18 @@ public:
             k_fracture_x * vf,
             k_fracture_y * vf,
             k_fracture_z * vf);
+
+        // --- 应力敏感修正（显式，使用初始压力） ---
+        if (gamma_stress_matrix > 0.0) {
+            pc.matrix_rock.K[0] = effectivePerm(pc.matrix_rock.K[0], gamma_stress_matrix, initial_pressure);
+            pc.matrix_rock.K[1] = effectivePerm(pc.matrix_rock.K[1], gamma_stress_matrix, initial_pressure);
+            pc.matrix_rock.K[2] = effectivePerm(pc.matrix_rock.K[2], gamma_stress_matrix, initial_pressure);
+        }
+        if (gamma_stress_fracture > 0.0) {
+            pc.fracture_continuum_rock.K[0] = effectivePerm(pc.fracture_continuum_rock.K[0], gamma_stress_fracture, initial_pressure);
+            pc.fracture_continuum_rock.K[1] = effectivePerm(pc.fracture_continuum_rock.K[1], gamma_stress_fracture, initial_pressure);
+            pc.fracture_continuum_rock.K[2] = effectivePerm(pc.fracture_continuum_rock.K[2], gamma_stress_fracture, initial_pressure);
+        }
     }
 
     void applyDFNContinuumPropertiesToParents() {
@@ -2412,12 +2492,47 @@ public:
 
         calcWaterPVT(s.P, p.Bw);
         calcGasPVT_fromTable(s.P, p.Zg, p.Cg, p.Bg, p.mu_g);
-        calcRelPermGasWater(s.Sw, p.krw, p.krg);
+        // 双孔模式: 裂缝系统用 fracture_relperm; 非双孔: 主系统=基质用 matrix_relperm
+        if (enable_dual_porosity)
+            calcRelPermCorey(s.Sw, fracture_relperm, p.krw, p.krg);
+        else
+            calcRelPermCorey(s.Sw, matrix_relperm, p.krw, p.krg);
 
         p.lw = p.krw / (g_props.mu_w * p.Bw);
         p.lg = p.krg / (p.mu_g * p.Bg);
 
         return p;
+    }
+
+    // 基质系统专用 PVT（使用 matrix_relperm 参数）
+    template <typename T>
+    PropertiesT<T> getPropsMatrix(const StateT<T>& s) const {
+        PropertiesT<T> p;
+        calcWaterPVT(s.P, p.Bw);
+        calcGasPVT_fromTable(s.P, p.Zg, p.Cg, p.Bg, p.mu_g);
+        calcRelPermCorey(s.Sw, matrix_relperm, p.krw, p.krg);
+        p.lw = p.krw / (g_props.mu_w * p.Bw);
+        p.lg = p.krg / (p.mu_g * p.Bg);
+        return p;
+    }
+
+    // 应力敏感: 输出有效渗透率 (不修改 RockProps.K 原值)
+    static double effectivePerm(double k_orig, double gamma, double P) {
+        if (gamma <= 0.0) return k_orig;
+        return k_orig * exp(-gamma * (g_props.P_ref - P));
+    }
+
+    // Langmuir 吸附气量 (std m³ / kg rock)
+    static double calcAdsorbedGas(double P) {
+        if (g_ads.VL <= 0.0) return 0.0;
+        return g_ads.VL * P / (g_ads.PL + P);
+    }
+    template <typename T>
+    T calcAdsorbedGas_T(const T& P) const {
+        using Scalar = typename T::Scalar;
+        T zero(Scalar(0.0));
+        if (g_ads.VL <= 0.0) return zero;
+        return T(g_ads.VL) * P / (T(g_ads.PL) + P);
     }
 
     int getNextFractureId() const {
@@ -4433,6 +4548,18 @@ public:
         return R;
     }
 
+    // 添加 Langmuir 吸附贡献到气相残差 R(1)
+    void addAdsorptionTerm_AD(double dt, double vol, double phi,
+                               const State& s_old_val, const StateAD2& s_new,
+                               Eigen::Matrix<AD2, 2, 1>& R) const {
+        if (g_ads.VL <= 0.0) return;
+        AD2 G_new = calcAdsorbedGas_T(s_new.P);
+        // 旧时刻: 用标量 P 计算吸附量(保守,避免 old AD 变量耦合)
+        double G_old = calcAdsorbedGas(s_old_val.P);
+        AD2 ads_term = vol * phi * rho_bulk / dt * (G_new - AD2(G_old));
+        R(1) = R(1) + ads_term;
+    }
+
     Eigen::Matrix<AD2, 2, 1> computeWell_AD(const Well& w, const StateAD2& s_new,
                                             const PropertiesT<AD2>& pu) const {
         Eigen::Matrix<AD2, 2, 1> R;
@@ -4494,11 +4621,16 @@ public:
         makeStateAD(matrix_state, matrix_ad);
 
         auto props_leaf = getProps(leaf_ad);
-        auto props_matrix = getProps(matrix_ad);
+        auto props_matrix = getPropsMatrix(matrix_ad);
         double matrix_vol = std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
         auto R_acc = computeAccumulation_AD(
             dt, wr_matrix_states_prev[leaf], matrix_ad, props_matrix, matrix_vol,
             leaves[leaf].matrix_rock.phi);
+
+        // 页岩基质吸附: WR 基质系统加入 Langmuir 解吸/吸附项
+        addAdsorptionTerm_AD(dt, matrix_vol, leaves[leaf].matrix_rock.phi,
+                             wr_matrix_states_prev[leaf], matrix_ad, R_acc);
+
         auto F_lm = computeFlux_FastAD(
             wr_transfer_T[leaf], leaf_ad, matrix_ad, props_leaf, props_matrix);
 
@@ -4609,6 +4741,11 @@ public:
                 double vol = nodeVolume(i);
                 double phi = nodePhi(i);
                 auto R_acc = computeAccumulation_AD(dt, states_prev[i], states_ad[i], props_ad[i], vol, phi);
+
+                // 非双孔模式下，主系统即基质系统，需加吸附项
+                if (!enable_dual_porosity) {
+                    addAdsorptionTerm_AD(dt, vol, phi, states_prev[i], states_ad[i], R_acc);
+                }
 
                 auto it = well_map.find(i);
                 if (it != well_map.end()) {
@@ -5274,6 +5411,61 @@ public:
         return result;
     }
 
+    py::array_t<double> getSwSteps() const {
+        if (sw_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)sw_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < sw_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = sw_steps[t][i];
+        return result;
+    }
+
+    py::array_t<double> getPorositySteps() const {
+        if (porosity_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)porosity_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < porosity_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = porosity_steps[t][i];
+        return result;
+    }
+
+    py::array_t<double> getPermeabilityXSteps() const {
+        if (permeability_x_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_x_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_x_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_x_steps[t][i];
+        return result;
+    }
+
+    py::array_t<double> getPermeabilityYSteps() const {
+        if (permeability_y_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_y_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_y_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_y_steps[t][i];
+        return result;
+    }
+
+    py::array_t<double> getPermeabilityZSteps() const {
+        if (permeability_z_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_z_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_z_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_z_steps[t][i];
+        return result;
+    }
+
     SimulationResult runSimulation() {
         if (!use_external_corner_point_grid &&
             (coord_file_path.empty() || zcorn_file_path.empty())) {
@@ -5307,6 +5499,11 @@ public:
         file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         time_steps.clear();
         pressure_steps.clear();
+        sw_steps.clear();
+        porosity_steps.clear();
+        permeability_x_steps.clear();
+        permeability_y_steps.clear();
+        permeability_z_steps.clear();
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -5344,11 +5541,38 @@ public:
             states_prev = states;
             if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
 
-            // 记录时间步压力场（动态播放用）
+            // 记录时间步场数据（动态播放用）
             time_steps.push_back(t);
-            std::vector<double> p_snap(n_leaf);
-            for (int i = 0; i < n_leaf; ++i) p_snap[i] = states[i].P;
-            pressure_steps.push_back(std::move(p_snap));
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = states[i].P;
+                pressure_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = states[i].Sw;
+                sw_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).phi;
+                porosity_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[0];
+                permeability_x_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[1];
+                permeability_y_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[2];
+                permeability_z_steps.push_back(std::move(snap));
+            }
             tot_w += sw;
             tot_g += sg;
             double avgP = 0.0;
@@ -5487,6 +5711,17 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("setDFNContinuumProperties", &SimulatorLGR::setDFNContinuumProperties)
         .def("setMatrixContinuumProperties", &SimulatorLGR::setMatrixContinuumProperties)
         .def("setSigmaArray", &SimulatorLGR::setSigmaArray)
+        .def("setMatrixRelPermParams", &SimulatorLGR::setMatrixRelPermParams,
+             py::arg("Swi") = 0.05, py::arg("Sgc") = 0.05,
+             py::arg("nw") = 2.0, py::arg("ng") = 2.0)
+        .def("setFractureRelPermParams", &SimulatorLGR::setFractureRelPermParams,
+             py::arg("Swi") = 0.05, py::arg("Sgc") = 0.05,
+             py::arg("nw") = 2.0, py::arg("ng") = 2.0)
+        .def("setStressSensitivityParams", &SimulatorLGR::setStressSensitivityParams,
+             py::arg("gamma_matrix") = 0.0, py::arg("gamma_fracture") = 0.0,
+             py::arg("P_ref") = 100.0)
+        .def("setLangmuirAdsorptionParams", &SimulatorLGR::setLangmuirAdsorptionParams,
+             py::arg("VL") = 0.0, py::arg("PL") = 1.0, py::arg("rho_bulk") = 2500.0)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
         .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
@@ -5547,5 +5782,10 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("getParentGridGeometry", &SimulatorLGR::getParentGridGeometry)
         .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry)
         .def("getTimeSteps", &SimulatorLGR::getTimeSteps)
-        .def("getPressureSteps", &SimulatorLGR::getPressureSteps);
+        .def("getPressureSteps", &SimulatorLGR::getPressureSteps)
+        .def("getSwSteps", &SimulatorLGR::getSwSteps)
+        .def("getPorositySteps", &SimulatorLGR::getPorositySteps)
+        .def("getPermeabilityXSteps", &SimulatorLGR::getPermeabilityXSteps)
+        .def("getPermeabilityYSteps", &SimulatorLGR::getPermeabilityYSteps)
+        .def("getPermeabilityZSteps", &SimulatorLGR::getPermeabilityZSteps);
 }
