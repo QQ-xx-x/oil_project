@@ -23,8 +23,11 @@ class WorkspaceTabs(QTabWidget):
         self._last_context = (
             "当前结果：三维视图",
             "在结果树中选择结果或图层后，这里显示对应占位视图。",
-            "permeability_field",
+            "pressure_field",
         )
+        self._last_simulation_data = None
+        self._chart_data_by_key = {}
+        self._layer_states = {}
 
         self.two_d_primary = self._create_page("2d")
         self.three_d = self._create_page("3d")
@@ -78,6 +81,7 @@ class WorkspaceTabs(QTabWidget):
             "chart": ChartViewport,
         }[view_type]()
         page = ViewPage(viewport, view_type)
+        page.view_message.connect(self.workspace_message.emit)
         page.new_window_requested.connect(lambda: self._show_new_menu_from_page(page))
         page.clone_window_requested.connect(lambda: self.clone_window(self.indexOf(page)))
         page.close_window_requested.connect(lambda: self.close_window(self.indexOf(page)))
@@ -86,8 +90,8 @@ class WorkspaceTabs(QTabWidget):
     def _add_page(self, page, view_type, title):
         icon_map = {"2d": "window", "3d": "grid", "chart": "chart"}
         icon_kind = semantic_icon_kind(icon_map[view_type], title)
-        index = self.addTab(page, painted_icon(icon_kind, 16), title)
         page.setProperty("viewType", view_type)
+        index = self.addTab(page, painted_icon(icon_kind, 16), title)
         return index
 
     def _show_new_menu_from_page(self, page):
@@ -180,20 +184,32 @@ class WorkspaceTabs(QTabWidget):
             self.setCurrentWidget(target)
 
     def set_layer_state(self, layer_key, enabled):
+        self._layer_states[layer_key] = bool(enabled)
         for page in self._pages_of_type("3d"):
             page.set_layer_state(layer_key, enabled)
 
     def set_simulation_data(self, sim_data):
+        self._last_simulation_data = sim_data
         for page in self._pages_of_type("3d"):
             page.set_simulation_data(sim_data)
 
     def set_chart_data(self, chart_key, data):
+        self._chart_data_by_key[chart_key] = data
         for page in self._pages_of_type("chart"):
             page.set_chart_data(chart_key, data)
 
     def _apply_last_context(self, page):
         title, detail, display_key = self._last_context
         page.set_context(title, detail, display_key)
+        view_type = self._page_view_type(page)
+        if view_type == "3d":
+            if self._last_simulation_data is not None:
+                page.set_simulation_data(self._last_simulation_data)
+            for layer_key, enabled in self._layer_states.items():
+                page.set_layer_state(layer_key, enabled)
+        elif view_type == "chart":
+            for chart_key, data in self._chart_data_by_key.items():
+                page.set_chart_data(chart_key, data)
 
     def _copy_page_context(self, source, target):
         viewport = getattr(source, "viewport", None)
@@ -201,6 +217,22 @@ class WorkspaceTabs(QTabWidget):
         detail = getattr(viewport, "context_detail", self._last_context[1])
         display_key = getattr(viewport, "display_key", self._last_context[2])
         target.set_context(title, detail, display_key)
+        view_type = self._page_view_type(target)
+        if view_type == "3d":
+            sim_data = getattr(viewport, "simulation_data", None) or self._last_simulation_data
+            if sim_data is not None:
+                target.set_simulation_data(sim_data)
+            source_layers = getattr(viewport, "layers", None)
+            layer_states = dict(source_layers or self._layer_states)
+            for layer_key, enabled in layer_states.items():
+                target.set_layer_state(layer_key, enabled)
+        elif view_type == "chart":
+            chart_key = getattr(viewport, "display_key", None)
+            if chart_key in self._chart_data_by_key:
+                target.set_chart_data(chart_key, self._chart_data_by_key[chart_key])
+            else:
+                for key, data in self._chart_data_by_key.items():
+                    target.set_chart_data(key, data)
 
     def _first_page_of_type(self, view_type):
         if view_type == "2d":
@@ -208,6 +240,9 @@ class WorkspaceTabs(QTabWidget):
         for page in self._pages_of_type(view_type):
             return page
         return None
+
+    def _page_view_type(self, page):
+        return getattr(page, "view_type", None) or page.property("viewType")
 
     def _pages_of_type(self, view_type):
         return [

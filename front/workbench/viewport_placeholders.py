@@ -3,9 +3,9 @@
 
 import math
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
-from PyQt5.QtWidgets import QFrame, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFileDialog, QFrame, QVBoxLayout, QWidget
 
 from .view_toolbar import ViewToolbar
 
@@ -13,9 +13,41 @@ from .view_toolbar import ViewToolbar
 THREE_D_RESULT_KEYS = {
     "pressure_field",
     "water_saturation_field",
-    "permeability_field",
     "porosity_field",
+    "permeability_x_field",
+    "permeability_y_field",
+    "permeability_z_field",
+    "permeability_field",  # legacy alias for Kx
     "layer_control",
+}
+
+DISPLAY_KEY_TO_PROPERTY = {
+    "pressure_field": "pressure",
+    "water_saturation_field": "sw",
+    "porosity_field": "porosity",
+    "permeability_x_field": "permeability_x",
+    "permeability_y_field": "permeability_y",
+    "permeability_z_field": "permeability_z",
+    "permeability_field": "permeability_x",
+}
+
+DISPLAY_KEY_LABELS = {
+    "pressure_field": "Pressure",
+    "water_saturation_field": "Sw",
+    "porosity_field": "Phi",
+    "permeability_x_field": "Kx",
+    "permeability_y_field": "Ky",
+    "permeability_z_field": "Kz",
+    "permeability_field": "Kx",
+}
+
+PICK_PROPERTY_LABELS = {
+    "pressure": "Pressure",
+    "sw": "Sw",
+    "porosity": "Phi",
+    "permeability_x": "Kx",
+    "permeability_y": "Ky",
+    "permeability_z": "Kz",
 }
 
 RESULT_STYLES = {
@@ -33,8 +65,29 @@ RESULT_STYLES = {
         "colors": ["#004dff", "#00a8ff", "#00e0c8", "#d7fff1"],
         "surface": QColor("#3ec8d9"),
     },
+    "permeability_x_field": {
+        "legend": "Kx 渗透率",
+        "unit": "mD",
+        "ticks": ("100", "10", "1"),
+        "colors": ["#ff0000", "#ff9a00", "#ffff00", "#3cff00", "#00ddcc"],
+        "surface": QColor("#c5d000"),
+    },
+    "permeability_y_field": {
+        "legend": "Ky 渗透率",
+        "unit": "mD",
+        "ticks": ("100", "10", "1"),
+        "colors": ["#c400ff", "#4b64ff", "#00b7ff", "#00df9a", "#d2f06b"],
+        "surface": QColor("#71c7a8"),
+    },
+    "permeability_z_field": {
+        "legend": "Kz 渗透率",
+        "unit": "mD",
+        "ticks": ("100", "10", "1"),
+        "colors": ["#ff3b3b", "#ffb000", "#ffe55a", "#65c96a", "#3da5d9"],
+        "surface": QColor("#d0be55"),
+    },
     "permeability_field": {
-        "legend": "渗透率",
+        "legend": "Kx 渗透率",
         "unit": "mD",
         "ticks": ("100", "10", "1"),
         "colors": ["#ff0000", "#ff9a00", "#ffff00", "#3cff00", "#00ddcc"],
@@ -79,6 +132,8 @@ CHART_STYLES = {
 
 
 class ThreeDViewport(QWidget):
+    interaction_message = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("threeDViewport")
@@ -89,8 +144,13 @@ class ThreeDViewport(QWidget):
         self.simulation_data = None
         self.context_title = "当前结果：三维视图"
         self.context_detail = "在结果树中选择结果或图层后，这里显示对应占位视图。"
-        self.display_key = "permeability_field"
+        self.display_key = "pressure_field"
         self._rendered_display_key = None
+        self._slice_state = None
+        self.current_render_context = self._make_render_context("pressure_field")
+        self.interaction_mode = "normal"
+        self.coordinate_axes_visible = False
+        self.camera_direction_locked = False
         self.layers = {
             "grid": True,
             "well": True,
@@ -100,13 +160,63 @@ class ThreeDViewport(QWidget):
             "grid_refinement": True,
         }
 
+    def _make_render_context(self, display_key, mode="full", axis=None, layer_index=None):
+        display_key = display_key if display_key in DISPLAY_KEY_TO_PROPERTY else "pressure_field"
+        return {
+            "display_key": display_key,
+            "property_name": DISPLAY_KEY_TO_PROPERTY[display_key],
+            "mode": mode,
+            "axis": axis,
+            "layer_index": layer_index,
+        }
+
+    def _set_full_render_context(self, display_key):
+        if display_key in DISPLAY_KEY_TO_PROPERTY:
+            self.current_render_context = self._make_render_context(display_key)
+
+    def _set_layer_render_context(self, display_key, axis, layer):
+        if display_key in DISPLAY_KEY_TO_PROPERTY:
+            self.current_render_context = self._make_render_context(
+                display_key,
+                mode="layer",
+                axis=str(axis).lower(),
+                layer_index=int(layer),
+            )
+
+    def _set_interaction_mode(self, mode):
+        mode = mode or "normal"
+        if mode != "magnify":
+            self._deactivate_magnify(render=False)
+        if mode != "measure":
+            self._disable_measure(clear_line=False)
+        if mode != "pick":
+            self._disable_cell_picking(clear_highlight=False)
+        self.interaction_mode = mode
+
+    def _current_pick_property(self):
+        property_name = self.current_render_context.get("property_name", "pressure")
+        return PICK_PROPERTY_LABELS.get(property_name, "Pressure")
+
+    def _current_display_label(self):
+        display_key = self.current_render_context.get("display_key", self.display_key)
+        return DISPLAY_KEY_LABELS.get(display_key, display_key)
+
+    def has_simulation_data(self):
+        return self.simulation_data is not None
+
+    def _no_simulation_result_message(self, feature):
+        return f"[{feature}] 当前 3D 窗口没有可用模拟结果，请先运行或加载模拟结果"
+
     def set_context(self, title, detail, display_key=None):
         if display_key and display_key not in THREE_D_RESULT_KEYS:
             return
         self.context_title = title
         self.context_detail = detail
         if display_key:
+            if display_key != self.display_key:
+                self._slice_state = None
             self.display_key = display_key
+            self._set_full_render_context(display_key)
         should_render = (
             self.simulation_data is not None
             and self._rendered_display_key != self.display_key
@@ -128,6 +238,566 @@ class ThreeDViewport(QWidget):
                 self._apply_real_layer_state(layer_key, enabled)
             self.update()
 
+    def render_property_field(self, property_key):
+        if property_key not in DISPLAY_KEY_TO_PROPERTY:
+            return False, f"[属性场] 不支持的属性：{property_key}"
+        self._slice_state = None
+        self.display_key = property_key
+        self._set_full_render_context(property_key)
+        if self.simulation_data is None:
+            self.update()
+            return False, "[属性场] 当前 3D 窗口没有可用模拟结果"
+        if not self._ensure_real_view():
+            return False, f"[属性场] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        self._render_real_result()
+        self.update()
+        return True, f"[属性场] 已显示 {DISPLAY_KEY_LABELS.get(property_key, property_key)}"
+
+    def handle_tool_request(self, command, export_path=None, export_scale=1.0):
+        command = str(command or "").strip()
+        if not command:
+            return False, ""
+        result_required = {
+            "fit_view",
+            "coordinate_axes_toggle",
+            "measure_toggle",
+            "pick_toggle",
+            "magnify_toggle",
+            "camera_lock_toggle",
+            "export_graphic",
+        }
+        if self.simulation_data is None and (
+                command in result_required or command.startswith("view_")):
+            return False, self._no_simulation_result_message(
+                self._tool_message_label(command))
+        if not self._ensure_real_view():
+            return False, f"[工具] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+
+        if command == "fit_view":
+            return self.reset_camera_view()
+        if command == "coordinate_axes_toggle":
+            return self.toggle_coordinate_axes()
+        if command == "measure_toggle":
+            return self.toggle_measure()
+        if command == "pick_toggle":
+            return self.toggle_cell_picking()
+        if command == "magnify_toggle":
+            return self.toggle_2d_magnify()
+        if command == "camera_lock_toggle":
+            return self.toggle_camera_direction_lock()
+        if command == "export_graphic":
+            return self.export_graphic(export_path, export_scale)
+        if command.startswith("view_"):
+            return self.set_camera_view(command.replace("view_", "", 1))
+        return False, f"[工具] 暂不支持的 3D 工具：{command}"
+
+    def _tool_message_label(self, command):
+        if command == "measure_toggle":
+            return "测距"
+        if command == "pick_toggle":
+            return "拾取"
+        if command == "magnify_toggle":
+            return "Magnify"
+        if command == "coordinate_axes_toggle":
+            return "坐标轴"
+        if command == "camera_lock_toggle" or command.startswith("view_"):
+            return "视图"
+        if command == "export_graphic":
+            return "截图"
+        return "工具"
+
+    def toggle_measure(self):
+        renderer = self._real_renderer
+        if self.simulation_data is None:
+            return False, self._no_simulation_result_message("测距")
+        if renderer is None:
+            return False, "[测距] 当前没有可用 3D 渲染器"
+        if self.interaction_mode == "measure":
+            self._disable_measure(clear_line=True)
+            self.interaction_mode = "normal"
+            return True, "[测距] 已关闭并清除当前测距线"
+        if not hasattr(renderer, "enable_petrel_distance_measure"):
+            return False, "[测距] 渲染端缺少 enable_petrel_distance_measure"
+        self._set_interaction_mode("measure")
+        try:
+            renderer.enable_petrel_distance_measure()
+        except Exception as exc:
+            self.interaction_mode = "normal"
+            return False, f"[测距] 开启失败：{exc}"
+        return True, "[测距] 已开启：点击模型选择起点和终点"
+
+    def _disable_measure(self, clear_line=False):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "disable_petrel_distance_measure"):
+            return
+        cache = getattr(renderer, "cache", {}) or {}
+        if not cache.get("measure_enabled") and not cache.get("measure_observer_ids"):
+            return
+        try:
+            renderer.disable_petrel_distance_measure(clear_line=clear_line)
+        except Exception:
+            pass
+
+    def toggle_cell_picking(self):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return False, "[拾取] 当前 3D 窗口没有可用模拟结果"
+        if self.interaction_mode == "pick":
+            self._disable_cell_picking(clear_highlight=True)
+            self.interaction_mode = "normal"
+            return True, "[拾取] 已关闭并清除当前高亮"
+        if not hasattr(renderer, "enable_cell_info_picking"):
+            return False, "[拾取] 渲染端缺少 enable_cell_info_picking"
+        self._set_interaction_mode("pick")
+        axis = self.current_render_context.get("axis")
+        layer_index = self.current_render_context.get("layer_index")
+        if self.current_render_context.get("mode") != "layer":
+            axis = None
+            layer_index = None
+        try:
+            renderer.enable_cell_info_picking(
+                sim_data,
+                property_name=self._current_pick_property(),
+                axis=axis,
+                layer_index=layer_index,
+            )
+        except Exception as exc:
+            self.interaction_mode = "normal"
+            return False, f"[拾取] 开启失败：{exc}"
+        scope = "整体场" if axis is None else f"{str(axis).upper()}={layer_index}"
+        return True, f"[拾取] 已开启：{self._current_pick_property()} / {scope}"
+
+    def _disable_cell_picking(self, clear_highlight=False):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "disable_cell_info_picking"):
+            return
+        cache = getattr(renderer, "cache", {}) or {}
+        if not cache.get("cell_pick_enabled") and cache.get("cell_pick_observer_id") is None:
+            return
+        try:
+            renderer.disable_cell_info_picking(clear_highlight=clear_highlight)
+        except Exception:
+            pass
+
+    def toggle_2d_magnify(self):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return False, "[Magnify] 当前 3D 窗口没有可用模拟结果"
+        if self.interaction_mode == "magnify":
+            self._deactivate_magnify(render=True)
+            self.interaction_mode = "normal"
+            return True, "[Magnify] 已退出"
+        if not hasattr(renderer, "activate_2d_magnify"):
+            return False, "[Magnify] 渲染端缺少 activate_2d_magnify"
+        self._set_interaction_mode("magnify")
+        try:
+            bounds = renderer.activate_2d_magnify(sim_data)
+        except Exception as exc:
+            self._deactivate_magnify(render=False)
+            self.interaction_mode = "normal"
+            return False, f"[Magnify] 开启失败：{exc}"
+        if not bounds:
+            self._deactivate_magnify(render=False)
+            self.interaction_mode = "normal"
+            return False, "[Magnify] 请先切换到俯视图/XY 正交视图，再拖拽框选放大"
+        if self._real_view is not None and hasattr(self._real_view, "install_selection_interaction"):
+            self._real_view.install_selection_interaction(
+                self._begin_magnify_drag,
+                self._update_magnify_drag,
+                self._finish_magnify_drag,
+            )
+            if hasattr(self._real_view, "set_cross_cursor"):
+                self._real_view.set_cross_cursor(True)
+        return True, "[Magnify] 已开启：在 XY 俯视图中左键拖拽框选放大"
+
+    def _deactivate_magnify(self, render=True):
+        if self._real_view is not None:
+            if hasattr(self._real_view, "uninstall_selection_interaction"):
+                self._real_view.uninstall_selection_interaction()
+            if hasattr(self._real_view, "set_cross_cursor"):
+                self._real_view.set_cross_cursor(False)
+        renderer = self._real_renderer
+        if renderer is not None and hasattr(renderer, "deactivate_2d_magnify"):
+            cache = getattr(renderer, "cache", {}) or {}
+            if not cache.get("magnify_2d_active") and not cache.get("magnify_2d_dragging"):
+                return
+            try:
+                renderer.deactivate_2d_magnify(render=render)
+            except Exception:
+                pass
+
+    def _magnify_event_position(self):
+        if self._real_view is None or not hasattr(self._real_view, "get_mouse_event_position"):
+            return None
+        try:
+            return self._real_view.get_mouse_event_position()
+        except Exception:
+            return None
+
+    def _begin_magnify_drag(self):
+        renderer = self._real_renderer
+        pos = self._magnify_event_position()
+        if renderer is None or pos is None or not hasattr(renderer, "begin_2d_magnify_drag"):
+            return
+        renderer.begin_2d_magnify_drag(pos[0], pos[1])
+
+    def _update_magnify_drag(self):
+        renderer = self._real_renderer
+        pos = self._magnify_event_position()
+        if renderer is None or pos is None or not hasattr(renderer, "update_2d_magnify_drag"):
+            return
+        renderer.update_2d_magnify_drag(pos[0], pos[1])
+
+    def _finish_magnify_drag(self):
+        renderer = self._real_renderer
+        pos = self._magnify_event_position()
+        if renderer is None or pos is None or not hasattr(renderer, "finish_2d_magnify_drag"):
+            self._deactivate_magnify(render=True)
+            self.interaction_mode = "normal"
+            return
+        renderer.finish_2d_magnify_drag(pos[0], pos[1])
+        self._deactivate_magnify(render=False)
+        self.interaction_mode = "normal"
+
+    def reset_camera_view(self):
+        renderer = self._real_renderer
+        if renderer is None:
+            return False, "[视图] 当前没有可用 3D 渲染器"
+        try:
+            renderer.plotter.reset_camera(render=False)
+            renderer.plotter.reset_camera_clipping_range()
+            renderer.render_now()
+        except AttributeError:
+            try:
+                renderer.plotter.reset_camera()
+                renderer.render_now()
+            except Exception as exc:
+                return False, f"[视图] 适配全部失败：{exc}"
+        except Exception as exc:
+            return False, f"[视图] 适配全部失败：{exc}"
+        return True, "[视图] 已适配全部"
+
+    def toggle_coordinate_axes(self):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return False, "[坐标轴] 当前 3D 窗口没有可用模拟结果"
+        if self.coordinate_axes_visible:
+            if hasattr(renderer, "hide_coordinate_axes"):
+                renderer.hide_coordinate_axes()
+            elif hasattr(renderer, "disable_camera_aware_coordinate_axes"):
+                renderer.disable_camera_aware_coordinate_axes(clear_axes=False)
+            self.coordinate_axes_visible = False
+            return True, "[坐标轴] 已隐藏动态坐标轴"
+        if not hasattr(renderer, "show_coordinate_axes_for_model"):
+            return False, "[坐标轴] 渲染端缺少 show_coordinate_axes_for_model"
+        ok = bool(renderer.show_coordinate_axes_for_model(sim_data))
+        self.coordinate_axes_visible = ok
+        if ok:
+            return True, "[坐标轴] 已显示动态坐标轴"
+        return False, "[坐标轴] 显示失败，当前模型缺少有效角点网格数据"
+
+    def set_camera_view(self, view_name):
+        renderer = self._real_renderer
+        if renderer is None:
+            return False, "[视图] 当前没有可用 3D 渲染器"
+        method_name = f"view_{view_name}"
+        method = getattr(renderer, method_name, None)
+        if method is None:
+            return False, f"[视图] 渲染端缺少函数：{method_name}"
+        try:
+            method()
+        except Exception as exc:
+            return False, f"[视图] 切换失败：{exc}"
+        names = {
+            "front": "前视图",
+            "back": "后视图",
+            "left": "左视图",
+            "right": "右视图",
+            "top": "俯视图",
+            "bottom": "仰视图",
+        }
+        return True, f"[视图] 已切换到{names.get(view_name, view_name)}"
+
+    def toggle_camera_direction_lock(self):
+        renderer = self._real_renderer
+        if renderer is None:
+            return False, "[视图] 当前没有可用 3D 渲染器"
+        if not hasattr(renderer, "toggle_camera_direction_lock"):
+            return False, "[视图] 渲染端缺少 toggle_camera_direction_lock"
+        try:
+            renderer.toggle_camera_direction_lock()
+            self.camera_direction_locked = bool(
+                getattr(renderer, "camera_direction_locked", not self.camera_direction_locked)
+            )
+        except Exception as exc:
+            return False, f"[视图] 视角方向锁定切换失败：{exc}"
+        state_text = "锁定" if self.camera_direction_locked else "解锁"
+        return True, f"[视图] 已{state_text}视角方向"
+
+    def export_graphic(self, filepath, scale=1.0):
+        renderer = self._real_renderer
+        if self.simulation_data is None:
+            return False, self._no_simulation_result_message("截图")
+        if renderer is None:
+            return False, "[截图] 当前没有可用 3D 渲染器"
+        if not filepath:
+            return False, "[截图] 已取消导出"
+        if not hasattr(renderer, "export_graphic"):
+            return False, "[截图] 渲染端缺少 export_graphic"
+        try:
+            saved_path = renderer.export_graphic(filepath=filepath, scale=scale)
+        except Exception as exc:
+            return False, f"[截图] 导出失败：{exc}"
+        if saved_path:
+            return True, f"[截图] 已导出：{saved_path}"
+        return False, "[截图] 导出失败"
+
+    def apply_threshold_filter(self, min_text="", max_text=""):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None:
+            return False, "[阈值] 当前 3D 窗口没有可用模拟结果"
+        if not hasattr(renderer, "render_threshold_property_field"):
+            return False, "[阈值] 渲染端缺少 render_threshold_property_field"
+        min_value, min_error = self._parse_threshold_value(min_text, "最小值")
+        if min_error:
+            return False, min_error
+        max_value, max_error = self._parse_threshold_value(max_text, "最大值")
+        if max_error:
+            return False, max_error
+        if min_value is None and max_value is None:
+            return False, "[阈值] 请至少填写最小值或最大值"
+        if min_value is not None and max_value is not None and min_value > max_value:
+            return False, "[阈值] 最小值不能大于最大值"
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
+        display_key = self.current_render_context.get("display_key", self.display_key)
+        self._slice_state = None
+        self._set_full_render_context(display_key)
+        self.display_key = display_key
+        property_name = self._current_pick_property()
+        try:
+            renderer.clear_cache()
+            renderer.render_threshold_property_field(
+                sim_data,
+                property_name=property_name,
+                min_value=min_value,
+                max_value=max_value,
+            )
+        except Exception as exc:
+            self._render_real_result()
+            return False, f"[阈值] 应用失败：{exc}"
+        self._rendered_display_key = (
+            f"threshold:{self.current_render_context.get('display_key')}:"
+            f"{min_value}:{max_value}"
+        )
+        return True, (
+            f"[阈值] 已过滤 {self._current_display_label()} "
+            f"min={self._format_threshold_value(min_value)} "
+            f"max={self._format_threshold_value(max_value)}"
+        )
+
+    def clear_threshold_filter(self):
+        renderer = self._real_renderer
+        if renderer is None:
+            return False, "[阈值] 当前没有可用 3D 渲染器"
+        if hasattr(renderer, "hide_threshold_property_field"):
+            try:
+                renderer.hide_threshold_property_field()
+            except Exception as exc:
+                return False, f"[阈值] 清除失败：{exc}"
+        if self.simulation_data is not None:
+            self._render_real_result()
+        return True, "[阈值] 已清除阈值过滤"
+
+    def _parse_threshold_value(self, text, label):
+        text = str(text or "").strip()
+        if not text:
+            return None, ""
+        try:
+            value = float(text)
+        except ValueError:
+            return None, f"[阈值] {label}必须是数字"
+        if not math.isfinite(value):
+            return None, f"[阈值] {label}必须是有限数字"
+        return value, ""
+
+    def _format_threshold_value(self, value):
+        if value is None:
+            return "不限"
+        return f"{value:.6g}"
+
+    def prepare_time_playback(self, step_index=0):
+        sim_data = self.simulation_data
+        if sim_data is None:
+            return False, self._no_simulation_result_message("时间步")
+        property_name = self.current_render_context.get("property_name", "pressure")
+        if getattr(sim_data, "time_steps", None) is None:
+            return False, "[时间步] 当前结果缺少 time_steps，无法播放动态结果"
+        steps_attr = self._time_playback_steps_attr(property_name)
+        if not steps_attr or getattr(sim_data, steps_attr, None) is None:
+            return False, f"[时间步] 当前结果缺少 {self._current_display_label()} 的时间步数据"
+        if not self._ensure_real_view():
+            return False, f"[时间步] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        renderer = self._real_renderer
+        if not hasattr(renderer, "prepare_corner_time_playback"):
+            return False, "[时间步] 渲染端缺少 prepare_corner_time_playback"
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
+        mode = self.current_render_context.get("mode", "full")
+        axis = self.current_render_context.get("axis")
+        layer_index = self.current_render_context.get("layer_index")
+        try:
+            if mode == "layer" and axis is not None and layer_index is not None:
+                info = renderer.prepare_corner_time_playback_by_layer(
+                    sim_data,
+                    property_name=property_name,
+                    axis=axis,
+                    layer_index=int(layer_index),
+                    start_index=int(step_index),
+                    show_edges=False,
+                )
+            else:
+                info = renderer.prepare_corner_time_playback(
+                    sim_data,
+                    property_name=property_name,
+                    start_index=int(step_index),
+                    show_edges=False,
+                )
+        except Exception as exc:
+            return False, f"[时间步] 准备失败：{exc}"
+        if not info or not info.get("ready"):
+            return False, "[时间步] 准备失败，渲染端未返回可用播放状态"
+        self._rendered_display_key = (
+            f"time:{self.current_render_context.get('display_key')}:"
+            f"{info.get('current_index', 0)}"
+        )
+        return True, self._format_time_playback_info("[时间步] 已准备", info)
+
+    def show_time_step(self, step_index):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "show_corner_time_step"):
+            return False, "[时间步] 当前没有可用时间步渲染器"
+        try:
+            info = renderer.show_corner_time_step(int(step_index))
+        except Exception as exc:
+            return False, f"[时间步] 切换失败：{exc}"
+        if not info:
+            return False, "[时间步] 尚未准备播放，请先点击准备"
+        self._rendered_display_key = (
+            f"time:{self.current_render_context.get('display_key')}:"
+            f"{info.get('index', 0)}"
+        )
+        return True, self._format_time_step_info("[时间步] 已显示", info)
+
+    def show_next_time_step(self):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "show_next_corner_time_step"):
+            return False, "[时间步] 当前没有可用时间步渲染器"
+        try:
+            info = renderer.show_next_corner_time_step(loop=True)
+        except Exception as exc:
+            return False, f"[时间步] 下一帧失败：{exc}"
+        if not info:
+            return False, "[时间步] 尚未准备播放，请先点击准备"
+        self._rendered_display_key = (
+            f"time:{self.current_render_context.get('display_key')}:"
+            f"{info.get('index', 0)}"
+        )
+        return True, self._format_time_step_info("[时间步] 已显示", info)
+
+    def show_previous_time_step(self):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "show_previous_corner_time_step"):
+            return False, "[时间步] 当前没有可用时间步渲染器"
+        try:
+            info = renderer.show_previous_corner_time_step(loop=True)
+        except Exception as exc:
+            return False, f"[时间步] 上一帧失败：{exc}"
+        if not info:
+            return False, "[时间步] 尚未准备播放，请先点击准备"
+        self._rendered_display_key = (
+            f"time:{self.current_render_context.get('display_key')}:"
+            f"{info.get('index', 0)}"
+        )
+        return True, self._format_time_step_info("[时间步] 已显示", info)
+
+    def stop_time_playback(self):
+        renderer = self._real_renderer
+        if renderer is None:
+            return False, "[时间步] 当前没有可用 3D 渲染器"
+        if not hasattr(renderer, "clear_corner_time_playback"):
+            return False, "[时间步] 渲染端缺少 clear_corner_time_playback"
+        try:
+            renderer.clear_corner_time_playback(
+                sim_data=self.simulation_data,
+                restore_final_field=False,
+            )
+        except Exception as exc:
+            return False, f"[时间步] 停止失败：{exc}"
+        if self.simulation_data is not None:
+            self._render_real_result()
+        return True, "[时间步] 已停止并恢复静态场"
+
+    def time_playback_info(self):
+        renderer = self._real_renderer
+        if renderer is None or not hasattr(renderer, "get_time_playback_info"):
+            return {}
+        try:
+            return renderer.get_time_playback_info() or {}
+        except Exception:
+            return {}
+
+    def _time_playback_steps_attr(self, property_name):
+        return {
+            "pressure": "pressure_steps",
+            "sw": "sw_steps",
+            "porosity": "porosity_steps",
+            "permeability_x": "permeability_x_steps",
+            "permeability_y": "permeability_y_steps",
+            "permeability_z": "permeability_z_steps",
+        }.get(str(property_name or "").strip())
+
+    def _format_time_playback_info(self, prefix, info):
+        step_count = int(info.get("step_count") or 0)
+        current_index = int(info.get("current_index") or 0)
+        current_time = self._format_time_value(info.get("current_time"))
+        scope = self._format_time_scope(info)
+        return (
+            f"{prefix} {self._current_display_label()} {scope} "
+            f"step={current_index}/{max(step_count - 1, 0)} "
+            f"time={current_time}，单元={int(info.get('visible_cell_count') or 0)}"
+        )
+
+    def _format_time_step_info(self, prefix, info):
+        index = int(info.get("index") or 0)
+        current_time = self._format_time_value(info.get("time"))
+        value_min = self._format_threshold_value(info.get("value_min"))
+        value_max = self._format_threshold_value(info.get("value_max"))
+        return (
+            f"{prefix} {self._current_display_label()} "
+            f"step={index} time={current_time} "
+            f"value=[{value_min}, {value_max}]"
+        )
+
+    def _format_time_scope(self, info):
+        if info.get("mode") == "layer":
+            axis = str(info.get("axis") or "").upper()
+            layer_index = info.get("layer_index")
+            return f"{axis}={layer_index}"
+        return "整体场"
+
+    def _format_time_value(self, value):
+        if value is None:
+            return "未知"
+        try:
+            return f"{float(value):.6g}"
+        except (TypeError, ValueError):
+            return str(value)
+
     def _ensure_real_view(self):
         if self._real_renderer is not None:
             return True
@@ -145,6 +815,8 @@ class ThreeDViewport(QWidget):
         self._real_view = PyVistaView(self)
         layout.addWidget(self._real_view)
         self._real_renderer = PyVistaRenderer(self._real_view)
+        if hasattr(self._real_view, "interaction_message"):
+            self._real_view.interaction_message.connect(self.interaction_message.emit)
         self._real_view.show()
         return True
 
@@ -153,13 +825,16 @@ class ThreeDViewport(QWidget):
         sim_data = self.simulation_data
         if renderer is None or sim_data is None:
             return
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
         renderer.clear_cache()
         self._rendered_display_key = self.display_key
         if getattr(sim_data, "corner_point_grid", None) is not None:
             renderer.render_corner_point_grid(sim_data)
+        rendered_field = False
         if getattr(sim_data, "cell_geometry_with_pressure", None) is not None:
-            renderer.render_corner_pressure_field(sim_data)
-        elif getattr(sim_data, "pressure_field", None):
+            rendered_field = self._render_corner_property_field(renderer, sim_data)
+        if not rendered_field and getattr(sim_data, "pressure_field", None):
             renderer.render_mode3_smooth_pressure(sim_data)
         if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None or (
                 getattr(sim_data, "corner_lgr_refined_grid_geometry", None) is not None):
@@ -173,6 +848,125 @@ class ThreeDViewport(QWidget):
             renderer.render_wells(sim_data)
         for layer_key, enabled in self.layers.items():
             self._apply_real_layer_state(layer_key, enabled)
+        if self.coordinate_axes_visible and hasattr(renderer, "show_coordinate_axes_for_model"):
+            self.coordinate_axes_visible = bool(renderer.show_coordinate_axes_for_model(sim_data))
+
+    def render_property_slice(self, property_key, axis, layer):
+        self._slice_state = (property_key, axis, int(layer))
+        self.display_key = property_key
+        if not self._ensure_real_view():
+            return False, f"[切片] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        ok, message = self._render_slice_result()
+        if ok:
+            self._set_layer_render_context(property_key, axis, layer)
+        self.update()
+        return ok, message
+
+    def reset_property_slice(self):
+        self._slice_state = None
+        self._set_full_render_context(self.display_key)
+        if not self._ensure_real_view():
+            return False, f"[切片] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        self._render_real_result()
+        self.update()
+        return True, "[切片] 已恢复整体场显示"
+
+    def _render_slice_result(self):
+        renderer = self._real_renderer
+        sim_data = self.simulation_data
+        if renderer is None or sim_data is None or self._slice_state is None:
+            return False, "[切片] 当前 3D 窗口没有可用模拟结果"
+        property_key, axis, layer = self._slice_state
+        valid, reason = self._validate_slice_request(sim_data, property_key, axis, layer)
+        if not valid:
+            return False, reason
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
+        renderer.clear_cache()
+        method_name = self._slice_method_name(property_key, axis)
+        method = getattr(renderer, method_name, None)
+        if method is None:
+            self._render_real_result()
+            return False, f"[切片] 渲染端缺少函数：{method_name}"
+        arg_name = f"{axis}_layer"
+        try:
+            method(sim_data, **{arg_name: int(layer)})
+        except TypeError as exc:
+            try:
+                method(sim_data, int(layer))
+            except Exception as fallback_exc:
+                self._render_real_result()
+                return False, f"[切片] 渲染失败：{fallback_exc}"
+        except Exception as exc:
+            self._render_real_result()
+            return False, f"[切片] 渲染失败：{exc}"
+        self._rendered_display_key = f"{property_key}:{axis}:{int(layer)}"
+        for layer_key, enabled in self.layers.items():
+            if layer_key in {"grid", "grid_refinement"}:
+                continue
+            self._apply_real_layer_state(layer_key, enabled)
+        if self.coordinate_axes_visible and hasattr(renderer, "show_coordinate_axes_for_model"):
+            self.coordinate_axes_visible = bool(renderer.show_coordinate_axes_for_model(sim_data))
+        return True, f"[切片] 已显示 {self._slice_property_label(property_key)} {axis.upper()}={int(layer)}"
+
+    def _validate_slice_request(self, sim_data, property_key, axis, layer):
+        if axis not in {"i", "j", "k"}:
+            return False, f"[切片] 不支持的方向：{axis}"
+        grid_info = getattr(sim_data, "grid_info", None) or {}
+        dimension_key = {"i": "nx", "j": "ny", "k": "nz"}[axis]
+        max_count = int(grid_info.get(dimension_key) or 0)
+        if max_count <= 0:
+            return False, f"[切片] 缺少网格维度 {dimension_key}，无法切片"
+        if layer < 0 or layer >= max_count:
+            return False, f"[切片] 层号越界：{axis.upper()}={layer}，有效范围 0-{max_count - 1}"
+        if getattr(sim_data, "corner_point_grid", None) is None:
+            return False, "[切片] 缺少 Corner Point Grid 数据"
+        if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
+            return False, "[切片] 缺少 cell_geometry_with_pressure 数据，无法显示属性切片"
+        return True, ""
+
+    def _slice_property_label(self, property_key):
+        return {
+            "pressure_field": "Pressure",
+            "water_saturation_field": "Sw",
+            "porosity_field": "Phi",
+            "permeability_x_field": "Kx",
+            "permeability_y_field": "Ky",
+            "permeability_z_field": "Kz",
+            "permeability_field": "Kx",
+        }.get(property_key, property_key)
+
+    def _slice_method_name(self, property_key, axis):
+        property_prefix = {
+            "pressure_field": "render_corner_grid_by_layer",
+            "water_saturation_field": "render_corner_sw_by_layer",
+            "porosity_field": "render_corner_phi_by_layer",
+            "permeability_x_field": "render_corner_kx_by_layer",
+            "permeability_y_field": "render_corner_ky_by_layer",
+            "permeability_z_field": "render_corner_kz_by_layer",
+            "permeability_field": "render_corner_kx_by_layer",
+        }.get(property_key, "render_corner_grid_by_layer")
+        return f"{property_prefix}_{axis}"
+
+    def _render_corner_property_field(self, renderer, sim_data):
+        method_name = {
+            "pressure_field": "render_corner_pressure_field",
+            "water_saturation_field": "render_corner_sw_field",
+            "porosity_field": "render_corner_phi_field",
+            "permeability_x_field": "render_corner_kx_field",
+            "permeability_y_field": "render_corner_ky_field",
+            "permeability_z_field": "render_corner_kz_field",
+            "permeability_field": "render_corner_kx_field",
+        }.get(self.display_key, "render_corner_pressure_field")
+        method = getattr(renderer, method_name, None)
+        if method is None:
+            fallback = getattr(renderer, "render_corner_pressure_field", None)
+            if fallback is None:
+                return False
+            fallback(sim_data)
+            return True
+        method(sim_data)
+        return True
 
     def _apply_real_layer_state(self, layer_key, enabled):
         renderer = self._real_renderer
@@ -218,7 +1012,7 @@ class ThreeDViewport(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#050505"))
 
-        style = RESULT_STYLES.get(self.display_key, RESULT_STYLES["permeability_field"])
+        style = RESULT_STYLES.get(self.display_key, RESULT_STYLES["pressure_field"])
         w, h = self.width(), self.height()
         origin = QPointF(w * 0.16, h * 0.72)
         x_vec = QPointF(w * 0.60, -h * 0.20)
@@ -793,6 +1587,7 @@ class ViewPage(QFrame):
     new_window_requested = pyqtSignal()
     clone_window_requested = pyqtSignal()
     close_window_requested = pyqtSignal()
+    view_message = pyqtSignal(str)
 
     def __init__(self, viewport, view_type="3d", parent=None):
         super().__init__(parent)
@@ -806,10 +1601,151 @@ class ViewPage(QFrame):
         self.toolbar.new_window_requested.connect(self.new_window_requested)
         self.toolbar.clone_window_requested.connect(self.clone_window_requested)
         self.toolbar.close_window_requested.connect(self.close_window_requested)
+        self._time_playback_timer = None
+        if view_type == "3d":
+            self._time_playback_timer = QTimer(self)
+            self._time_playback_timer.setInterval(800)
+            self._time_playback_timer.timeout.connect(self._advance_time_playback)
+            self.toolbar.tool_requested.connect(self._handle_tool_requested)
+            self.toolbar.property_selected.connect(self._handle_property_selected)
+            self.toolbar.slice_requested.connect(self._handle_slice_requested)
+            self.toolbar.slice_reset_requested.connect(self._handle_slice_reset_requested)
+            self.toolbar.threshold_requested.connect(self._handle_threshold_requested)
+            self.toolbar.threshold_clear_requested.connect(self._handle_threshold_clear_requested)
+            self.toolbar.time_playback_requested.connect(self._handle_time_playback_requested)
+            if hasattr(self.viewport, "interaction_message"):
+                self.viewport.interaction_message.connect(self.view_message.emit)
         layout.addWidget(self.toolbar)
         layout.addWidget(viewport, 1)
 
+    def _handle_tool_requested(self, command):
+        export_path = None
+        if command == "export_graphic":
+            if hasattr(self.viewport, "has_simulation_data") and not self.viewport.has_simulation_data():
+                self.view_message.emit("[截图] 当前 3D 窗口没有可用模拟结果，请先运行或加载模拟结果")
+                return
+            export_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出当前 3D 视图",
+                "",
+                "PNG 图像 (*.png);;JPEG 图像 (*.jpg *.jpeg);;所有文件 (*.*)",
+            )
+            if not export_path:
+                self.view_message.emit("[截图] 已取消导出")
+                return
+        if hasattr(self.viewport, "handle_tool_request"):
+            scale = self.toolbar.export_scale() if hasattr(self.toolbar, "export_scale") else 1.0
+            ok, message = self.viewport.handle_tool_request(
+                command,
+                export_path=export_path,
+                export_scale=scale,
+            )
+            self.view_message.emit(message)
+
+    def _handle_property_selected(self, property_key):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "render_property_field"):
+            ok, message = self.viewport.render_property_field(property_key)
+            self.view_message.emit(message)
+
+    def _handle_slice_requested(self, property_key, axis, layer):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "render_property_slice"):
+            ok, message = self.viewport.render_property_slice(property_key, axis, layer)
+            self.view_message.emit(message)
+
+    def _handle_slice_reset_requested(self):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "reset_property_slice"):
+            ok, message = self.viewport.reset_property_slice()
+            self.view_message.emit(message)
+
+    def _handle_threshold_requested(self, min_text, max_text):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "apply_threshold_filter"):
+            ok, message = self.viewport.apply_threshold_filter(min_text, max_text)
+            self.view_message.emit(message)
+
+    def _handle_threshold_clear_requested(self):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "clear_threshold_filter"):
+            ok, message = self.viewport.clear_threshold_filter()
+            self.view_message.emit(message)
+
+    def _handle_time_playback_requested(self, action, step_index):
+        action = str(action or "").strip()
+        if action == "prepare":
+            self._stop_time_playback_timer()
+            ok, message = self.viewport.prepare_time_playback(step_index)
+            self._sync_time_step_control()
+            self.view_message.emit(message)
+            return
+        if action == "play":
+            if self._time_playback_timer is not None and self._time_playback_timer.isActive():
+                self._time_playback_timer.stop()
+                self.view_message.emit("[时间步] 已暂停自动播放")
+                return
+            info = self._current_time_playback_info()
+            if not info.get("ready"):
+                ok, message = self.viewport.prepare_time_playback(step_index)
+                if not ok:
+                    self.view_message.emit(message)
+                    return
+            self._sync_time_step_control()
+            if self._time_playback_timer is not None:
+                self._time_playback_timer.start()
+            self.view_message.emit("[时间步] 已开始自动播放")
+            return
+        if action == "previous":
+            self._stop_time_playback_timer()
+            ok, message = self.viewport.show_previous_time_step()
+            self._sync_time_step_control()
+            self.view_message.emit(message)
+            return
+        if action == "next":
+            self._stop_time_playback_timer()
+            ok, message = self.viewport.show_next_time_step()
+            self._sync_time_step_control()
+            self.view_message.emit(message)
+            return
+        if action == "stop":
+            self._stop_time_playback_timer()
+            ok, message = self.viewport.stop_time_playback()
+            self._sync_time_step_control()
+            self.view_message.emit(message)
+
+    def _advance_time_playback(self):
+        if not hasattr(self.viewport, "show_next_time_step"):
+            self._stop_time_playback_timer()
+            return
+        ok, message = self.viewport.show_next_time_step()
+        if not ok:
+            self._stop_time_playback_timer()
+            self.view_message.emit(message)
+            return
+        self._sync_time_step_control()
+
+    def _stop_time_playback_timer(self):
+        if self._time_playback_timer is not None and self._time_playback_timer.isActive():
+            self._time_playback_timer.stop()
+
+    def _current_time_playback_info(self):
+        if hasattr(self.viewport, "time_playback_info"):
+            return self.viewport.time_playback_info() or {}
+        return {}
+
+    def _sync_time_step_control(self):
+        info = self._current_time_playback_info()
+        if not info.get("ready"):
+            return
+        if hasattr(self.toolbar, "set_time_step_index"):
+            self.toolbar.set_time_step_index(
+                info.get("current_index", 0),
+                info.get("step_count", None),
+            )
+
     def set_context(self, title, detail, display_key=None):
+        self._stop_time_playback_timer()
         if hasattr(self.viewport, "set_context"):
             self.viewport.set_context(title, detail, display_key)
 

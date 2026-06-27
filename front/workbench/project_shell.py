@@ -10,6 +10,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ..data_models import SimulationData
+from ..simulation_runner import _corner_point_grid_from_dataset
+from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
@@ -28,8 +30,11 @@ from .workflow_runner import WorkbenchWorkflowRunner
 LAZY_SIMULATION_DATA_KEYS = {
     "pressure_field",
     "water_saturation_field",
-    "permeability_field",
     "porosity_field",
+    "permeability_x_field",
+    "permeability_y_field",
+    "permeability_z_field",
+    "permeability_field",  # legacy alias for Kx
     "layer_control",
 }
 
@@ -494,6 +499,7 @@ class ProjectShell(QWidget):
         except Exception as exc:
             self.message_log.append_message(f"[结果] 按需加载模拟结果失败：{exc}")
             return None
+        self._ensure_corner_point_grid_for_slice(sim_data)
         self.result_store.simulation_data = sim_data
         self.workspace.set_simulation_data(sim_data)
         self._log_simulation_summary(sim_data)
@@ -512,16 +518,25 @@ class ProjectShell(QWidget):
         contexts = {
             "pressure_field": (
                 "当前结果：压力场",
-                "三维窗口显示压力场占位结果，后续接入真实压力数据。"),
+                "三维窗口显示压力场结果。"),
             "water_saturation_field": (
                 "当前结果：含水饱和度场",
-                "三维窗口显示含水饱和度场占位结果。"),
-            "permeability_field": (
-                "当前结果：渗透率场",
-                "三维窗口显示渗透率属性场占位结果。"),
+                "三维窗口显示含水饱和度场结果。"),
             "porosity_field": (
                 "当前结果：孔隙度场",
-                "三维窗口显示孔隙度属性场占位结果。"),
+                "三维窗口显示孔隙度属性场结果。"),
+            "permeability_x_field": (
+                "当前结果：Kx 渗透率场",
+                "三维窗口显示 X 方向渗透率属性场结果。"),
+            "permeability_y_field": (
+                "当前结果：Ky 渗透率场",
+                "三维窗口显示 Y 方向渗透率属性场结果。"),
+            "permeability_z_field": (
+                "当前结果：Kz 渗透率场",
+                "三维窗口显示 Z 方向渗透率属性场结果。"),
+            "permeability_field": (
+                "当前结果：Kx 渗透率场",
+                "三维窗口显示 X 方向渗透率属性场结果。"),
             "production_curve": (
                 "当前图表：生产曲线",
                 "图表窗口显示生产曲线结果或占位曲线。"),
@@ -568,6 +583,7 @@ class ProjectShell(QWidget):
         self._show_status("Corner Grid LGR 模拟运行中")
 
     def _handle_simulation_finished(self, sim_data, result_path):
+        self._ensure_corner_point_grid_for_slice(sim_data)
         self._augment_corner_visual_layers(sim_data)
         self.result_store.run_status = "done"
         self.result_store.simulation_data = sim_data
@@ -584,6 +600,27 @@ class ProjectShell(QWidget):
         self._log_simulation_summary(sim_data)
         self.message_log.append_message(f"[结果] 已加载模拟结果 JSON：{result_path}")
         self._show_status("Corner Grid LGR 模拟完成")
+
+    def _ensure_corner_point_grid_for_slice(self, sim_data):
+        if getattr(sim_data, "corner_point_grid", None) is not None:
+            return
+        dataset_path = getattr(self.project_state, "case_dataset_path", "") or ""
+        if not dataset_path or not os.path.isdir(dataset_path):
+            return
+        try:
+            dataset = load_case_dataset(dataset_path, strict=False)
+            corner_grid = _corner_point_grid_from_dataset(dataset.grid)
+        except (CaseDatasetReadError, ValueError, OSError) as exc:
+            self.message_log.append_message(f"[切片] 从 Dataset 重建 Corner Point Grid 失败：{exc}")
+            return
+        if corner_grid is None:
+            self.message_log.append_message("[切片] Dataset 网格数据不足，无法重建 Corner Point Grid")
+            return
+        sim_data.corner_point_grid = corner_grid
+        self.message_log.append_message(
+            f"[切片] 已从 Dataset 补齐 Corner Point Grid："
+            f"{corner_grid.nx} x {corner_grid.ny} x {corner_grid.nz}"
+        )
 
     def _handle_simulation_failed(self, message):
         self.result_store.run_status = "failed"

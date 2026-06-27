@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """视图窗口使用的紧凑工具栏。"""
 
-from PyQt5.QtCore import QSize, pyqtSignal
-from PyQt5.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QToolButton
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QToolButton
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
@@ -12,12 +12,29 @@ class ViewToolbar(QFrame):
     new_window_requested = pyqtSignal()
     clone_window_requested = pyqtSignal()
     close_window_requested = pyqtSignal()
+    tool_requested = pyqtSignal(str)
+    property_selected = pyqtSignal(str)
+    slice_requested = pyqtSignal(str, str, int)
+    slice_reset_requested = pyqtSignal()
+    threshold_requested = pyqtSignal(str, str)
+    threshold_clear_requested = pyqtSignal()
+    time_playback_requested = pyqtSignal(str, int)
 
     TOOLSETS = {
         "3d": [
-            ("选择对象", "select"), ("旋转视图", "undo"), ("平移视图", "pan"),
-            ("缩放视图", "search"), ("适配全部", "fit_view"), ("显示图例", "chart"),
-            ("切换背景", "background"), ("截图", "camera"),
+            ("适配全部", "fit_view", "fit_view"),
+            ("坐标轴", "grid", "coordinate_axes_toggle"),
+            ("拾取单元", "select", "pick_toggle"),
+            ("测距", "measure", "measure_toggle"),
+            ("2D Magnify", "search", "magnify_toggle"),
+            ("前视图", "fit_view", "view_front"),
+            ("后视图", "fit_view", "view_back"),
+            ("左视图", "fit_view", "view_left"),
+            ("右视图", "fit_view", "view_right"),
+            ("俯视图", "fit_view", "view_top"),
+            ("仰视图", "fit_view", "view_bottom"),
+            ("锁定视角方向", "restrict", "camera_lock_toggle"),
+            ("截图", "camera", "export_graphic"),
         ],
         "2d": [
             ("选择对象", "select"), ("平移视图", "pan"), ("缩放视图", "search"),
@@ -54,8 +71,17 @@ class ViewToolbar(QFrame):
         divider.setFrameShape(QFrame.VLine)
         layout.addWidget(divider)
 
-        for tooltip, kind in self.TOOLSETS.get(view_type, self.TOOLSETS["3d"]):
-            layout.addWidget(self._button(tooltip, kind))
+        for item in self.TOOLSETS.get(view_type, self.TOOLSETS["3d"]):
+            if len(item) == 3:
+                tooltip, kind, command = item
+            else:
+                tooltip, kind = item
+                command = ""
+            button = self._button(tooltip, kind)
+            if command:
+                button.clicked.connect(
+                    lambda checked=False, cmd=command: self.tool_requested.emit(cmd))
+            layout.addWidget(button)
 
         selector = QComboBox()
         if view_type == "chart":
@@ -63,8 +89,18 @@ class ViewToolbar(QFrame):
         elif view_type == "2d":
             selector.addItems(["图层", "井位", "网格", "裂缝"])
         else:
-            selector.addItems(["属性", "压力", "孔隙度", "渗透率"])
+            for text, key in [
+                ("Pressure", "pressure_field"),
+                ("Sw", "water_saturation_field"),
+                ("Phi", "porosity_field"),
+                ("Kx", "permeability_x_field"),
+                ("Ky", "permeability_y_field"),
+                ("Kz", "permeability_z_field"),
+            ]:
+                selector.addItem(text, key)
+            selector.currentIndexChanged.connect(self._emit_property_selected)
         selector.setObjectName("viewSelector")
+        self.view_selector = selector
         layout.addWidget(selector)
 
         if view_type != "chart":
@@ -73,8 +109,146 @@ class ViewToolbar(QFrame):
             scale.addItems(["1", "0.5", "0.2"])
             scale.setCurrentText("1")
             scale.setObjectName("scaleSelector")
+            self.scale_selector = scale
             layout.addWidget(scale)
+        if view_type == "3d":
+            self._add_slice_controls(layout)
+            self._add_threshold_controls(layout)
+            self._add_time_controls(layout)
         layout.addStretch()
+
+    def _add_slice_controls(self, layout):
+        layout.addWidget(QLabel("切片"))
+        self.slice_property = QComboBox()
+        self.slice_property.setObjectName("slicePropertySelector")
+        for text, key in [
+            ("Pressure", "pressure_field"),
+            ("Sw", "water_saturation_field"),
+            ("Phi", "porosity_field"),
+            ("Kx", "permeability_x_field"),
+            ("Ky", "permeability_y_field"),
+            ("Kz", "permeability_z_field"),
+        ]:
+            self.slice_property.addItem(text, key)
+        layout.addWidget(self.slice_property)
+
+        self.slice_axis = QComboBox()
+        self.slice_axis.setObjectName("sliceAxisSelector")
+        self.slice_axis.addItems(["I", "J", "K"])
+        layout.addWidget(self.slice_axis)
+
+        self.slice_layer = QSpinBox()
+        self.slice_layer.setObjectName("sliceLayerSpinBox")
+        self.slice_layer.setRange(0, 999999)
+        self.slice_layer.setValue(0)
+        self.slice_layer.setFixedWidth(58)
+        self.slice_layer.setToolTip("切片层号，当前按 0 开始计数")
+        layout.addWidget(self.slice_layer)
+
+        apply_button = self._button("显示切片", "grid")
+        apply_button.setText("显示")
+        apply_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        apply_button.setFixedSize(64, 23)
+        apply_button.clicked.connect(self._emit_slice_request)
+        layout.addWidget(apply_button)
+
+        reset_button = self._button("恢复整体场", "refresh")
+        reset_button.setText("恢复")
+        reset_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        reset_button.setFixedSize(64, 23)
+        reset_button.clicked.connect(self.slice_reset_requested.emit)
+        layout.addWidget(reset_button)
+
+    def _add_threshold_controls(self, layout):
+        layout.addWidget(QLabel("阈值"))
+
+        self.threshold_min = QLineEdit()
+        self.threshold_min.setObjectName("thresholdMinEdit")
+        self.threshold_min.setPlaceholderText("min")
+        self.threshold_min.setFixedWidth(58)
+        self.threshold_min.setToolTip("当前属性最小阈值，留空表示不限制")
+        layout.addWidget(self.threshold_min)
+
+        self.threshold_max = QLineEdit()
+        self.threshold_max.setObjectName("thresholdMaxEdit")
+        self.threshold_max.setPlaceholderText("max")
+        self.threshold_max.setFixedWidth(58)
+        self.threshold_max.setToolTip("当前属性最大阈值，留空表示不限制")
+        layout.addWidget(self.threshold_max)
+
+        apply_button = self._button("应用当前属性阈值", "restrict")
+        apply_button.setText("过滤")
+        apply_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        apply_button.setFixedSize(64, 23)
+        apply_button.clicked.connect(self._emit_threshold_request)
+        layout.addWidget(apply_button)
+
+        clear_button = self._button("清除阈值过滤", "clear")
+        clear_button.setText("清除")
+        clear_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        clear_button.setFixedSize(64, 23)
+        clear_button.clicked.connect(self.threshold_clear_requested.emit)
+        layout.addWidget(clear_button)
+
+    def _add_time_controls(self, layout):
+        layout.addWidget(QLabel("时间步"))
+
+        self.time_step_index = QSpinBox()
+        self.time_step_index.setObjectName("timeStepIndexSpinBox")
+        self.time_step_index.setRange(0, 999999)
+        self.time_step_index.setValue(0)
+        self.time_step_index.setFixedWidth(58)
+        self.time_step_index.setToolTip("时间步帧号，当前按 0 开始计数")
+        layout.addWidget(self.time_step_index)
+
+        for text, tooltip, kind, action, width in [
+            ("准备", "准备当前属性的时间步播放", "refresh", "prepare", 54),
+            ("播放", "播放/暂停时间步", "refresh", "play", 54),
+            ("上", "上一时间步", "undo", "previous", 42),
+            ("下", "下一时间步", "refresh", "next", 42),
+            ("停止", "停止时间步播放并恢复静态场", "clear", "stop", 54),
+        ]:
+            button = self._button(tooltip, kind)
+            button.setText(text)
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setFixedSize(width, 23)
+            button.clicked.connect(
+                lambda checked=False, name=action: self._emit_time_playback_request(name))
+            layout.addWidget(button)
+
+    def _emit_slice_request(self):
+        property_key = self.slice_property.currentData() or "pressure_field"
+        axis = self.slice_axis.currentText().lower()
+        layer = int(self.slice_layer.value())
+        self.slice_requested.emit(property_key, axis, layer)
+
+    def _emit_property_selected(self, *args):
+        property_key = self.view_selector.currentData()
+        if property_key:
+            self.property_selected.emit(property_key)
+
+    def _emit_threshold_request(self):
+        self.threshold_requested.emit(
+            self.threshold_min.text().strip(),
+            self.threshold_max.text().strip(),
+        )
+
+    def _emit_time_playback_request(self, action):
+        self.time_playback_requested.emit(action, int(self.time_step_index.value()))
+
+    def set_time_step_index(self, index, step_count=None):
+        try:
+            if step_count is not None and int(step_count) > 0:
+                self.time_step_index.setRange(0, int(step_count) - 1)
+            self.time_step_index.setValue(max(0, int(index)))
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    def export_scale(self):
+        try:
+            return float(self.scale_selector.currentText())
+        except (AttributeError, TypeError, ValueError):
+            return 1.0
 
     def _button(self, tooltip, kind):
         button = QToolButton()

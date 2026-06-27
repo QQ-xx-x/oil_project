@@ -12,7 +12,7 @@ import sys
 
 import numpy as np
 
-from .data_models import SimulationData
+from .data_models import CornerPointCell, CornerPointGridData, SimulationData
 from .workbench.case_dataset_reader import load_case_dataset
 
 
@@ -345,7 +345,9 @@ def run_case_dataset_simulation(params):
 
     result = sim.runSimulation()
     result_params = _case_dataset_result_params(params, dataset)
-    return _collect_case_data_simulation_result(sim, result, result_params)
+    sim_data = _collect_case_data_simulation_result(sim, result, result_params)
+    sim_data.corner_point_grid = _corner_point_grid_from_dataset(dataset.grid)
+    return sim_data
 
 
 def _apply_case_dataset_grid(sim, dataset):
@@ -470,6 +472,92 @@ def _case_dataset_result_params(params, dataset):
         'lz': lz,
     })
     return result_params
+
+
+def _corner_point_grid_from_dataset(grid):
+    """Build the renderer-facing coarse corner grid from case_dataset arrays."""
+    nx = int(getattr(grid, 'nx', 0) or 0)
+    ny = int(getattr(grid, 'ny', 0) or 0)
+    nz = int(getattr(grid, 'nz', 0) or 0)
+    if nx <= 0 or ny <= 0 or nz <= 0:
+        return None
+
+    coord = _array_float64(getattr(grid, 'coord', []))
+    zcorn = _array_float64(getattr(grid, 'zcorn', []))
+    expected_pillars = (nx + 1) * (ny + 1)
+    expected_zcorn = nx * ny * nz * 8
+    if coord.size < expected_pillars * 6 or zcorn.size < expected_zcorn:
+        print(
+            "WARNING: case_dataset grid arrays are incomplete; "
+            "corner_point_grid not attached to result",
+            flush=True,
+        )
+        return None
+
+    coord = coord[:expected_pillars * 6].reshape(expected_pillars, 6)
+    zcorn = zcorn[:expected_zcorn].reshape(nx * ny * nz, 8)
+
+    corner_grid = CornerPointGridData()
+    corner_grid.nx = nx
+    corner_grid.ny = ny
+    corner_grid.nz = nz
+
+    xs = np.concatenate([coord[:, 0], coord[:, 3]])
+    ys = np.concatenate([coord[:, 1], coord[:, 4]])
+    zs = zcorn.reshape(-1)
+    corner_grid.origin_x = float(np.nanmin(xs)) if xs.size else 0.0
+    corner_grid.origin_y = float(np.nanmin(ys)) if ys.size else 0.0
+    corner_grid.origin_z = float(np.nanmin(zs)) if zs.size else 0.0
+    corner_grid.lx = float(np.nanmax(xs) - np.nanmin(xs)) if xs.size else 0.0
+    corner_grid.ly = float(np.nanmax(ys) - np.nanmin(ys)) if ys.size else 0.0
+    corner_grid.lz = float(np.nanmax(zs) - np.nanmin(zs)) if zs.size else 0.0
+
+    def pillar(i, j):
+        return coord[j * (nx + 1) + i]
+
+    def top_xy(i, j):
+        p = pillar(i, j)
+        return float(p[0]), float(p[1])
+
+    def bottom_xy(i, j):
+        p = pillar(i, j)
+        return float(p[3]), float(p[4])
+
+    cells = []
+    cell_id = 0
+    for iz in range(nz):
+        for iy in range(ny):
+            for ix in range(nx):
+                values = zcorn[cell_id]
+                cell = CornerPointCell(cell_id)
+                cell.ix = ix
+                cell.iy = iy
+                cell.iz = iz
+
+                b0 = bottom_xy(ix, iy)
+                b1 = bottom_xy(ix + 1, iy)
+                b2 = bottom_xy(ix + 1, iy + 1)
+                b3 = bottom_xy(ix, iy + 1)
+                t0 = top_xy(ix, iy)
+                t1 = top_xy(ix + 1, iy)
+                t2 = top_xy(ix + 1, iy + 1)
+                t3 = top_xy(ix, iy + 1)
+
+                cell.corners = [
+                    (b0[0], b0[1], float(values[4])),
+                    (b1[0], b1[1], float(values[5])),
+                    (b2[0], b2[1], float(values[6])),
+                    (b3[0], b3[1], float(values[7])),
+                    (t0[0], t0[1], float(values[0])),
+                    (t1[0], t1[1], float(values[1])),
+                    (t2[0], t2[1], float(values[2])),
+                    (t3[0], t3[1], float(values[3])),
+                ]
+                cells.append(cell)
+                cell_id += 1
+
+    corner_grid.cells = cells
+    return corner_grid
 
 
 def _grid_extents(coord):
@@ -698,6 +786,31 @@ def _collect_case_data_simulation_result(sim, result, params):
             sim_data.pressure_steps = _array_float64(sim.getPressureSteps()).tolist()
         except Exception as exc:
             print(f"WARNING: getPressureSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getSwSteps'):
+        try:
+            sim_data.sw_steps = _array_float64(sim.getSwSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getSwSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPorositySteps'):
+        try:
+            sim_data.porosity_steps = _array_float64(sim.getPorositySteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPorositySteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityXSteps'):
+        try:
+            sim_data.permeability_x_steps = _array_float64(sim.getPermeabilityXSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityXSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityYSteps'):
+        try:
+            sim_data.permeability_y_steps = _array_float64(sim.getPermeabilityYSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityYSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityZSteps'):
+        try:
+            sim_data.permeability_z_steps = _array_float64(sim.getPermeabilityZSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityZSteps failed: {exc}", flush=True)
     sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
     return sim_data
 
@@ -807,6 +920,49 @@ def run_corner_edfm_simulation(params):
     sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
 
     result = sim.runSimulation()
+
+    time_steps = None
+    pressure_steps = None
+    sw_steps = None
+    porosity_steps = None
+    permeability_x_steps = None
+    permeability_y_steps = None
+    permeability_z_steps = None
+    if hasattr(sim, 'getTimeSteps'):
+        try:
+            time_steps = _array_float64(sim.getTimeSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getTimeSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPressureSteps'):
+        try:
+            pressure_steps = _array_float64(sim.getPressureSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPressureSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getSwSteps'):
+        try:
+            sw_steps = _array_float64(sim.getSwSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getSwSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPorositySteps'):
+        try:
+            porosity_steps = _array_float64(sim.getPorositySteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPorositySteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityXSteps'):
+        try:
+            permeability_x_steps = _array_float64(sim.getPermeabilityXSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityXSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityYSteps'):
+        try:
+            permeability_y_steps = _array_float64(sim.getPermeabilityYSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityYSteps failed: {exc}", flush=True)
+    if hasattr(sim, 'getPermeabilityZSteps'):
+        try:
+            permeability_z_steps = _array_float64(sim.getPermeabilityZSteps()).tolist()
+        except Exception as exc:
+            print(f"WARNING: getPermeabilityZSteps failed: {exc}", flush=True)
     
     print("Getting cell geometry with pressure...")
     cell_geometry = sim.getCellGeometryWithPressure()
@@ -837,6 +993,13 @@ def run_corner_edfm_simulation(params):
     sim_data.corner_lgr_grid_geometry = corner_lgr_grid_geometry
     sim_data.corner_lgr_parent_grid_geometry = corner_lgr_parent_grid_geometry
     sim_data.corner_lgr_refined_grid_geometry = corner_lgr_refined_grid_geometry
+    sim_data.time_steps = time_steps
+    sim_data.pressure_steps = pressure_steps
+    sim_data.sw_steps = sw_steps
+    sim_data.porosity_steps = porosity_steps
+    sim_data.permeability_x_steps = permeability_x_steps
+    sim_data.permeability_y_steps = permeability_y_steps
+    sim_data.permeability_z_steps = permeability_z_steps
 
     dual_porosity_pressure = None
     if use_lgr_module and hasattr(sim, 'getDualPorosityPressureData'):

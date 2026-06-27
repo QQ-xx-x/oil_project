@@ -78,14 +78,18 @@ class ResultsTree(QTreeWidget):
         result_icons = {
             "pressure_field": "pressure",
             "water_saturation_field": "saturation",
-            "permeability_field": "permeability",
             "porosity_field": "porosity",
+            "permeability_x_field": "permeability",
+            "permeability_y_field": "permeability",
+            "permeability_z_field": "permeability",
         }
         for text, key in [
             ("压力场", "pressure_field"),
             ("含水饱和度场", "water_saturation_field"),
-            ("渗透率场", "permeability_field"),
             ("孔隙度场", "porosity_field"),
+            ("Kx 渗透率场", "permeability_x_field"),
+            ("Ky 渗透率场", "permeability_y_field"),
+            ("Kz 渗透率场", "permeability_z_field"),
         ]:
             simulation.addChild(self._item(
                 text, key, "result", "3d", checked=(key == "pressure_field"),

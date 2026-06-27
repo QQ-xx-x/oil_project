@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent, pyqtSignal
 
 
 def _ensure_local_pyvista_site() -> None:
@@ -34,6 +34,8 @@ class PyVistaView(QWidget):
     这里保留了一些兼容属性，便于迁移阶段继续兼容现有主窗口和旧渲染器的调用方式。
     """
 
+    interaction_message = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -56,6 +58,7 @@ class PyVistaView(QWidget):
         self._selection_release_cb = None
         self._selection_event_filter_installed = False
         self._last_mouse_pos_display = (0, 0)
+        self._last_interaction_message = ""
 
     def reset_camera(self):
         self.plotter.reset_camera()
@@ -65,9 +68,29 @@ class PyVistaView(QWidget):
         """立即触发一次渲染刷新。"""
         self.plotter.render()
 
+    def set_status_message(self, message: str) -> None:
+        """Forward renderer interaction status to the workbench message log."""
+        text = str(message or "").strip()
+        if not text:
+            return
+        if text == self._last_interaction_message:
+            return
+        self._last_interaction_message = text
+        self.interaction_message.emit(text)
+
+    def show_pick_info(self, message: str) -> None:
+        self.set_status_message(f"[拾取] {message}")
+
+    def show_measure_info(self, message: str, dynamic: bool = False) -> None:
+        if dynamic:
+            return
+        self.set_status_message(f"[测距] {message}")
+
     def set_cross_cursor(self, enabled: bool) -> None:
         """设置十字光标（用于框选模式）。"""
-        self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        cursor = Qt.CrossCursor if enabled else Qt.ArrowCursor
+        self.setCursor(cursor)
+        self.plotter.setCursor(cursor)
 
     def get_view_size(self) -> tuple[int, int]:
         """获取视图区域像素大小。"""

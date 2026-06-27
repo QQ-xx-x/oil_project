@@ -87,6 +87,9 @@ _ensure_local_pyvista_site()
 
 import numpy as np
 import pyvista as pv
+# 固定三面坐标系网格密度。
+COORDINATE_APPROX_DIVISIONS = 6
+COORDINATE_LABEL_FONT_SIZE = 12
 
 class PyVistaRenderer:
     """基于 PyVista 的渲染器，并保留对旧 VTK 渲染器接口的兼容面。"""
@@ -176,6 +179,1213 @@ class PyVistaRenderer:
             color="#39d353"
         )
 
+
+    # =====================================================================
+    # 动态三面三维坐标系
+    # =====================================================================
+
+    def _clear_fixed_coordinate_axes(self):
+        """
+        删除当前坐标系的网格、刻度线、边框和文字。
+        不移除动态相机监听器。
+        """
+
+        self._remove_actor_list(
+            self.cache.get("fixed_coordinate_axis_actors", [])
+        )
+
+        self._remove_actor(
+            self.cache.get("fixed_coordinate_label_actor")
+        )
+
+        self.cache["fixed_coordinate_axis_actors"] = []
+        self.cache["fixed_coordinate_label_actor"] = None
+        self.cache["fixed_coordinate_bounds"] = None
+        self.cache["fixed_coordinate_visible"] = False
+
+
+    @staticmethod
+    def _nice_grid_step(value):
+        """
+        将普通数值转为适合显示的坐标刻度步长。
+        """
+
+        value = float(value)
+
+        if value <= 0.0:
+            return 1.0
+
+        exponent = np.floor(np.log10(value))
+        fraction = value / (10.0 ** exponent)
+
+        if fraction < 1.5:
+            nice_fraction = 1.0
+        elif fraction < 3.0:
+            nice_fraction = 2.0
+        elif fraction < 7.0:
+            nice_fraction = 5.0
+        else:
+            nice_fraction = 10.0
+
+        return float(
+            nice_fraction * (10.0 ** exponent)
+        )
+
+
+    def _get_fixed_grid_step(
+        self,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        zmin,
+        zmax,
+        approx_divisions=COORDINATE_APPROX_DIVISIONS,
+    ):
+        """
+        计算统一网格步长。
+        X、Y、Z 三个方向共用同一套间隔。
+        """
+
+        x_span = abs(float(xmax) - float(xmin))
+        y_span = abs(float(ymax) - float(ymin))
+        z_span = abs(float(zmax) - float(zmin))
+
+        max_span = max(
+            x_span,
+            y_span,
+            z_span,
+        )
+
+        if max_span <= 1e-12:
+            return 1.0
+
+        raw_step = max_span / max(
+            int(approx_divisions),
+            2,
+        )
+
+        return self._nice_grid_step(raw_step)
+
+
+    @staticmethod
+    def _make_fixed_axis_ticks(
+        vmin,
+        vmax,
+        step,
+    ):
+        """
+        根据真实模型坐标范围生成刻度。
+        最小值和最大值一定保留。
+        """
+
+        vmin = float(vmin)
+        vmax = float(vmax)
+        step = float(step)
+
+        if vmax < vmin:
+            vmin, vmax = vmax, vmin
+
+        if step <= 1e-12:
+            return np.array(
+                [vmin, vmax],
+                dtype=np.float64,
+            )
+
+        ticks = [vmin]
+        current = vmin + step
+
+        while current < vmax - 1e-8:
+            ticks.append(current)
+            current += step
+
+        if abs(ticks[-1] - vmax) > 1e-8:
+            ticks.append(vmax)
+
+        return np.asarray(
+            ticks,
+            dtype=np.float64,
+        )
+
+
+    @staticmethod
+    def _format_fixed_coordinate_value(value):
+        """
+        以真实工程坐标显示。
+        不显示科学计数法。
+        """
+
+        value = float(value)
+
+        if abs(value) >= 1.0:
+            return f"{value:.0f}"
+
+        return f"{value:.3f}"
+
+
+    def _add_fixed_coordinate_line(
+        self,
+        start_point,
+        end_point,
+        color=(0.58, 0.58, 0.58),
+        line_width=1.0,
+        opacity=0.65,
+    ):
+        """
+        添加坐标轴线、边框线、网格线或刻度短线。
+        """
+
+        start = np.asarray(
+            start_point,
+            dtype=np.float64,
+        )
+
+        end = np.asarray(
+            end_point,
+            dtype=np.float64,
+        )
+
+        if np.linalg.norm(end - start) < 1e-12:
+            return None
+
+        line = pv.Line(
+            start,
+            end,
+        )
+
+        actor = self.plotter.add_mesh(
+            line,
+            color=color,
+            line_width=float(line_width),
+            opacity=float(opacity),
+            lighting=False,
+            render=False,
+        )
+
+        self.cache[
+            "fixed_coordinate_axis_actors"
+        ].append(actor)
+
+        return actor
+
+
+    def _create_fixed_coordinate_labels(
+        self,
+        label_points,
+        label_texts,
+    ):
+        """
+        创建刻度数字和坐标轴标题。
+        """
+
+        self._remove_actor(
+            self.cache.get("fixed_coordinate_label_actor")
+        )
+
+        self.cache["fixed_coordinate_label_actor"] = None
+
+        if not label_points or not label_texts:
+            return
+
+        try:
+            points = np.asarray(
+                label_points,
+                dtype=np.float64,
+            )
+
+            labels = [
+                str(text)
+                for text in label_texts
+            ]
+
+            actor = self.plotter.add_point_labels(
+                points=points,
+                labels=labels,
+                font_size=COORDINATE_LABEL_FONT_SIZE,
+                text_color=(0.0, 0.0, 0.0),
+                show_points=False,
+                fill_shape=False,
+                shape_opacity=0.0,
+                always_visible=True,
+                render=False,
+            )
+
+            self.cache[
+                "fixed_coordinate_label_actor"
+            ] = actor
+
+        except Exception as exc:
+            print("=" * 60)
+            print("创建动态坐标文字失败：")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+
+
+    def get_corner_model_bounds(self, sim_data):
+        """
+        从 cell_geometry_with_pressure 中获取模型真实坐标范围。
+        """
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            return None
+
+        if len(cell_data) == 0:
+            return None
+
+        try:
+            # 第 4 ~ 27 列为每个单元 8 个顶点的 XYZ 坐标
+            raw_points = cell_data[:, 4:28].reshape(
+                -1,
+                3,
+            )
+
+            return (
+                float(np.min(raw_points[:, 0])),
+                float(np.max(raw_points[:, 0])),
+
+                float(np.min(raw_points[:, 1])),
+                float(np.max(raw_points[:, 1])),
+
+                float(np.min(raw_points[:, 2])),
+                float(np.max(raw_points[:, 2])),
+            )
+
+        except Exception as exc:
+            print("=" * 60)
+            print("获取当前模型坐标范围失败：")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+            return None
+
+
+    def _get_camera_aware_coordinate_signature(
+        self,
+        bounds,
+    ):
+        """
+        判断相机在模型哪个方向。
+        """
+
+        if bounds is None or len(bounds) != 6:
+            return None
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        center_x = (xmin + xmax) * 0.5
+        center_y = (ymin + ymax) * 0.5
+        center_z = (zmin + zmax) * 0.5
+
+        try:
+            camera_position = np.asarray(
+                self.plotter.camera_position[0],
+                dtype=np.float64,
+            )
+
+        except Exception:
+            try:
+                camera_position = np.asarray(
+                    self.plotter.camera.position,
+                    dtype=np.float64,
+                )
+            except Exception:
+                return None
+
+        # 相机在 +X 侧，看向模型时，坐标面放到 xmin
+        x_side = (
+            "xmin"
+            if camera_position[0] >= center_x
+            else "xmax"
+        )
+
+        # 相机在 +Y 侧，看向模型时，坐标面放到 ymin
+        y_side = (
+            "ymin"
+            if camera_position[1] >= center_y
+            else "ymax"
+        )
+
+        # 相机在 +Z 上方，看向模型时，坐标面放到 zmin
+        z_side = (
+            "zmin"
+            if camera_position[2] >= center_z
+            else "zmax"
+        )
+
+        return (
+            x_side,
+            y_side,
+            z_side,
+        )
+
+
+    def create_fixed_3d_coordinate_axes(
+        self,
+        bounds,
+        approx_divisions=COORDINATE_APPROX_DIVISIONS,
+        signature=None,
+    ):
+        """
+        根据当前相机方向创建动态三面坐标系。
+        """
+
+        if bounds is None or len(bounds) != 6:
+            print("动态坐标系创建失败：bounds 无效")
+            return
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        x_span = xmax - xmin
+        y_span = ymax - ymin
+        z_span = zmax - zmin
+
+        if (
+            abs(x_span) < 1e-12
+            or abs(y_span) < 1e-12
+            or abs(z_span) < 1e-12
+        ):
+            print("动态坐标系创建失败：模型范围无效")
+            return
+
+        if signature is None:
+            signature = self._get_camera_aware_coordinate_signature(
+                bounds
+            )
+
+        if signature is None:
+            signature = (
+                "xmin",
+                "ymin",
+                "zmin",
+            )
+
+        x_side, y_side, z_side = signature
+
+        # 三个“背面”
+        x_plane = xmin if x_side == "xmin" else xmax
+        y_plane = ymin if y_side == "ymin" else ymax
+        z_plane = zmin if z_side == "zmin" else zmax
+
+        # 对应的另一侧边界
+        x_outer = xmax if x_side == "xmin" else xmin
+        y_outer = ymax if y_side == "ymin" else ymin
+        z_outer = zmax if z_side == "zmin" else zmin
+
+        # 从坐标面向外偏移的方向
+        sign_x_plane = -1.0 if x_side == "xmin" else 1.0
+        sign_y_plane = -1.0 if y_side == "ymin" else 1.0
+        sign_z_plane = -1.0 if z_side == "zmin" else 1.0
+
+        # 从外侧边向外偏移的方向
+        sign_x_outer = 1.0 if x_outer == xmax else -1.0
+        sign_y_outer = 1.0 if y_outer == ymax else -1.0
+        sign_z_outer = 1.0 if z_outer == zmax else -1.0
+
+        self._clear_fixed_coordinate_axes()
+
+        # ---------------------------------------------------------
+        # 统一网格步长和真实刻度
+        # ---------------------------------------------------------
+        grid_step = self._get_fixed_grid_step(
+            xmin=xmin,
+            xmax=xmax,
+            ymin=ymin,
+            ymax=ymax,
+            zmin=zmin,
+            zmax=zmax,
+            approx_divisions=approx_divisions,
+        )
+
+        x_ticks = self._make_fixed_axis_ticks(
+            xmin,
+            xmax,
+            grid_step,
+        )
+
+        y_ticks = self._make_fixed_axis_ticks(
+            ymin,
+            ymax,
+            grid_step,
+        )
+
+        z_ticks = self._make_fixed_axis_ticks(
+            zmin,
+            zmax,
+            grid_step,
+        )
+
+        # ---------------------------------------------------------
+        # 标签和刻度向外偏移距离
+        # ---------------------------------------------------------
+        offset_x = max(
+            abs(x_span) * 0.035,
+            grid_step * 0.40,
+        )
+
+        offset_y = max(
+            abs(y_span) * 0.035,
+            grid_step * 0.40,
+        )
+
+        offset_z = max(
+            abs(z_span) * 0.035,
+            grid_step * 0.40,
+        )
+
+        tick_x = max(
+            abs(x_span) * 0.012,
+            grid_step * 0.10,
+        )
+
+        tick_y = max(
+            abs(y_span) * 0.012,
+            grid_step * 0.10,
+        )
+
+        # =========================================================
+        # 统一 X / Y / Z 标题到各自刻度数字之间的真实距离
+        # =========================================================
+        axis_title_to_tick_gap = (
+            offset_y * (3.0 - 1.35)
+        )
+
+        # Y 轴刻度数字到 Y 边框的距离
+        y_axis_tick_label_offset = (
+            offset_x * 1.35
+        )
+
+        # Z 轴刻度数字到 Z 边框的距离
+        z_axis_tick_label_offset = (
+            offset_x * 1.35
+        )
+
+        # Y-axis 到 Y 轴边框的最终距离
+        y_axis_title_offset = (
+            y_axis_tick_label_offset
+            + axis_title_to_tick_gap
+        )
+
+        # Z-axis 到 Z 轴边框的最终距离
+        z_axis_title_offset = (
+            z_axis_tick_label_offset
+            + axis_title_to_tick_gap
+        )
+
+        # 带刻度的边：黑色加粗
+        axis_color = (0.12, 0.12, 0.12)
+        axis_line_width = 1.8
+
+        # 普通边框
+        edge_color = (0.58, 0.58, 0.58)
+        edge_line_width = 1.0
+
+        # 内部网格
+        grid_color = (0.62, 0.62, 0.62)
+        grid_line_width = 0.7
+
+        label_points = []
+        label_texts = []
+
+        # =========================================================
+        # 1. XY 平面
+        # z = z_plane
+        # =========================================================
+
+        # 前方 X 刻度边
+        self._add_fixed_coordinate_line(
+            (xmin, y_outer, z_plane),
+            (xmax, y_outer, z_plane),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # 前方 Y 刻度边
+        self._add_fixed_coordinate_line(
+            (x_outer, ymin, z_plane),
+            (x_outer, ymax, z_plane),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # XY 面另外两条普通边
+        self._add_fixed_coordinate_line(
+            (xmin, y_plane, z_plane),
+            (xmax, y_plane, z_plane),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        self._add_fixed_coordinate_line(
+            (x_plane, ymin, z_plane),
+            (x_plane, ymax, z_plane),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        # XY 面 X 向网格
+        for x in x_ticks:
+            self._add_fixed_coordinate_line(
+                (x, ymin, z_plane),
+                (x, ymax, z_plane),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # XY 面 Y 向网格
+        for y in y_ticks:
+            self._add_fixed_coordinate_line(
+                (xmin, y, z_plane),
+                (xmax, y, z_plane),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # =========================================================
+        # 2. YZ 平面
+        # x = x_plane
+        # =========================================================
+
+        # 左侧 Z 刻度边
+        self._add_fixed_coordinate_line(
+            (x_plane, y_outer, zmin),
+            (x_plane, y_outer, zmax),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # 顶部 Y 刻度边
+        self._add_fixed_coordinate_line(
+            (x_plane, ymin, z_outer),
+            (x_plane, ymax, z_outer),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # YZ 面另一条竖边
+        self._add_fixed_coordinate_line(
+            (x_plane, y_plane, zmin),
+            (x_plane, y_plane, zmax),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        # YZ 面底边
+        self._add_fixed_coordinate_line(
+            (x_plane, ymin, z_plane),
+            (x_plane, ymax, z_plane),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        # YZ 面 Y 向网格
+        for y in y_ticks:
+            self._add_fixed_coordinate_line(
+                (x_plane, y, zmin),
+                (x_plane, y, zmax),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # YZ 面 Z 向网格
+        for z in z_ticks:
+            self._add_fixed_coordinate_line(
+                (x_plane, ymin, z),
+                (x_plane, ymax, z),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # =========================================================
+        # 3. XZ 平面
+        # y = y_plane
+        # =========================================================
+
+        # 右侧 Z 刻度边
+        self._add_fixed_coordinate_line(
+            (x_outer, y_plane, zmin),
+            (x_outer, y_plane, zmax),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # 顶部 X 刻度边
+        self._add_fixed_coordinate_line(
+            (xmin, y_plane, z_outer),
+            (xmax, y_plane, z_outer),
+            color=axis_color,
+            line_width=axis_line_width,
+            opacity=1.0,
+        )
+
+        # XZ 面另一条竖边
+        self._add_fixed_coordinate_line(
+            (x_plane, y_plane, zmin),
+            (x_plane, y_plane, zmax),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        # XZ 面底边
+        self._add_fixed_coordinate_line(
+            (xmin, y_plane, z_plane),
+            (xmax, y_plane, z_plane),
+            color=edge_color,
+            line_width=edge_line_width,
+            opacity=0.75,
+        )
+
+        # XZ 面 X 向网格
+        for x in x_ticks:
+            self._add_fixed_coordinate_line(
+                (x, y_plane, zmin),
+                (x, y_plane, zmax),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # XZ 面 Z 向网格
+        for z in z_ticks:
+            self._add_fixed_coordinate_line(
+                (xmin, y_plane, z),
+                (xmax, y_plane, z),
+                color=grid_color,
+                line_width=grid_line_width,
+                opacity=0.45,
+            )
+
+        # =========================================================
+        # 上方 X 轴刻度
+        # =========================================================
+        for x in x_ticks:
+            self._add_fixed_coordinate_line(
+                (x, y_plane, z_outer),
+                (
+                    x,
+                    y_plane + sign_y_plane * tick_y,
+                    z_outer,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x,
+                    y_plane + sign_y_plane * offset_y * 1.35,
+                    z_outer + sign_z_outer * offset_z * 0.08,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(x)
+            )
+
+        # =========================================================
+        # 上方 Y 轴刻度
+        # =========================================================
+        for y in y_ticks:
+            self._add_fixed_coordinate_line(
+                (x_plane, y, z_outer),
+                (
+                    x_plane + sign_x_plane * tick_x,
+                    y,
+                    z_outer,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x_plane + sign_x_plane * offset_x * 1.35,
+                    y,
+                    z_outer + sign_z_outer * offset_z * 0.08,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(y)
+            )
+
+        # =========================================================
+        # 前方 X 轴刻度
+        # =========================================================
+        for x in x_ticks:
+            self._add_fixed_coordinate_line(
+                (x, y_outer, z_plane),
+                (
+                    x,
+                    y_outer + sign_y_outer * tick_y,
+                    z_plane,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x,
+                    y_outer + sign_y_outer * offset_y * 1.35,
+                    z_plane + sign_z_plane * offset_z * 0.10,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(x)
+            )
+
+        # =========================================================
+        # 前方 Y 轴刻度
+        # =========================================================
+        for y in y_ticks:
+            self._add_fixed_coordinate_line(
+                (x_outer, y, z_plane),
+                (
+                    x_outer + sign_x_outer * tick_x,
+                    y,
+                    z_plane,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x_outer + sign_x_outer * offset_x * 1.35,
+                    y,
+                    z_plane + sign_z_plane * offset_z * 0.10,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(y)
+            )
+
+        # =========================================================
+        # 左右两侧 Z 轴刻度
+        # =========================================================
+        for z in z_ticks:
+
+            # YZ 面外侧 Z 边
+            self._add_fixed_coordinate_line(
+                (x_plane, y_outer, z),
+                (
+                    x_plane + sign_x_plane * tick_x,
+                    y_outer,
+                    z,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x_plane + sign_x_plane * offset_x * 1.35,
+                    y_outer,
+                    z,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(z)
+            )
+
+            # XZ 面外侧 Z 边
+            self._add_fixed_coordinate_line(
+                (x_outer, y_plane, z),
+                (
+                    x_outer + sign_x_outer * tick_x,
+                    y_plane,
+                    z,
+                ),
+                color=axis_color,
+                line_width=1.2,
+                opacity=1.0,
+            )
+
+            label_points.append(
+                (
+                    x_outer + sign_x_outer * offset_x * 1.35,
+                    y_plane,
+                    z,
+                )
+            )
+
+            label_texts.append(
+                self._format_fixed_coordinate_value(z)
+            )
+
+        # =========================================================
+        # 坐标轴标题
+        #
+        # X-axis 保持原位置。
+        #
+        # Y-axis、Z-axis 到各自刻度数字的真实三维距离，
+        # 均与 X-axis 到 X 轴刻度数字的距离一致。
+        # =========================================================
+        label_points.extend([
+            # X-axis
+            (
+                (xmin + xmax) * 0.5,
+                y_outer + sign_y_outer * offset_y * 3.0,
+                z_plane + sign_z_plane * offset_z * 0.10,
+            ),
+
+            # Y-axis
+            (
+                x_outer + sign_x_outer * y_axis_title_offset,
+                (ymin + ymax) * 0.5,
+                z_plane + sign_z_plane * offset_z * 0.10,
+            ),
+
+            # Z-axis
+            (
+                x_plane + sign_x_plane * z_axis_title_offset,
+                y_outer,
+                (zmin + zmax) * 0.5,
+            ),
+        ])
+
+        label_texts.extend([
+            "X-axis",
+            "Y-axis",
+            "Z-axis",
+        ])
+
+        self._create_fixed_coordinate_labels(
+            label_points=label_points,
+            label_texts=label_texts,
+        )
+
+        self.cache["fixed_coordinate_bounds"] = (
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            zmin,
+            zmax,
+        )
+
+        self.cache["fixed_coordinate_visible"] = True
+        self.cache["camera_aware_coordinate_signature"] = signature
+
+
+    # =====================================================================
+    # 相机旋转监听
+    # =====================================================================
+
+    def _get_render_interactor_for_coordinate_axes(self):
+        """
+        获取 PyVistaQt / PyVista 的交互器。
+        """
+
+        candidates = [
+            getattr(self.plotter, "iren", None),
+            getattr(self.vtk_widget, "iren", None),
+            getattr(self.plotter, "interactor", None),
+            getattr(self.vtk_widget, "interactor", None),
+        ]
+
+        for candidate in candidates:
+            if candidate is None:
+                continue
+
+            if (
+                hasattr(candidate, "add_observer")
+                or hasattr(candidate, "AddObserver")
+            ):
+                return candidate
+
+            inner_interactor = getattr(
+                candidate,
+                "interactor",
+                None,
+            )
+
+            if inner_interactor is not None and (
+                hasattr(inner_interactor, "add_observer")
+                or hasattr(inner_interactor, "AddObserver")
+            ):
+                return inner_interactor
+
+        return None
+
+
+    def _remove_camera_aware_coordinate_observers(self):
+        """
+        取消动态坐标系的相机监听器。
+        """
+
+        observers = self.cache.get(
+            "camera_aware_coordinate_observers",
+            [],
+        ) or []
+
+        for interactor, observer_id in observers:
+            if interactor is None or observer_id is None:
+                continue
+
+            try:
+                if hasattr(interactor, "remove_observer"):
+                    interactor.remove_observer(observer_id)
+
+                elif hasattr(interactor, "RemoveObserver"):
+                    interactor.RemoveObserver(observer_id)
+
+            except Exception:
+                pass
+
+        self.cache[
+            "camera_aware_coordinate_observers"
+        ] = []
+
+
+    def _add_camera_aware_coordinate_observer(
+        self,
+        event_name,
+    ):
+        """
+        监听旋转、平移、缩放过程中的相机变化。
+        """
+
+        interactor = self._get_render_interactor_for_coordinate_axes()
+
+        if interactor is None:
+            print("动态坐标系监听失败：未获取到 interactor")
+            return None
+
+        def _callback(*args):
+            self._update_camera_aware_coordinate_axes()
+
+        try:
+            if hasattr(interactor, "add_observer"):
+                observer_id = interactor.add_observer(
+                    event_name,
+                    _callback,
+                )
+            else:
+                observer_id = interactor.AddObserver(
+                    event_name,
+                    _callback,
+                )
+
+            self.cache[
+                "camera_aware_coordinate_observers"
+            ].append(
+                (
+                    interactor,
+                    observer_id,
+                )
+            )
+
+            return observer_id
+
+        except Exception as exc:
+            print("=" * 60)
+            print("动态坐标系监听器注册失败：")
+            print(event_name)
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+            return None
+
+
+    def _update_camera_aware_coordinate_axes(self):
+        """
+        拖动旋转过程中自动执行。
+        """
+
+        if not self.cache.get(
+            "camera_aware_coordinate_enabled",
+            False,
+        ):
+            return
+
+        bounds = self.cache.get(
+            "fixed_coordinate_bounds"
+        )
+
+        if bounds is None:
+            return
+
+        new_signature = self._get_camera_aware_coordinate_signature(
+            bounds
+        )
+
+        if new_signature is None:
+            return
+
+        old_signature = self.cache.get(
+            "camera_aware_coordinate_signature"
+        )
+
+        if new_signature == old_signature:
+            return
+
+        self.create_fixed_3d_coordinate_axes(
+            bounds=bounds,
+            approx_divisions=COORDINATE_APPROX_DIVISIONS,
+            signature=new_signature,
+        )
+
+        self._render()
+
+
+    # =====================================================================
+    # UI 调用接口
+    # =====================================================================
+
+    def show_coordinate_axes_for_model(self, sim_data):
+        """
+        根据当前模型显示动态坐标系。
+        """
+
+        model_bounds = self.get_corner_model_bounds(
+            sim_data
+        )
+
+        if model_bounds is None:
+            print("=" * 60)
+            print("显示坐标系失败：当前模型没有有效角点网格。")
+            print("需要 cell_geometry_with_pressure 数据。")
+            print("=" * 60)
+            return False
+
+        try:
+            self.cache[
+                "camera_aware_coordinate_enabled"
+            ] = True
+
+            signature = self._get_camera_aware_coordinate_signature(
+                model_bounds
+            )
+
+            self.create_fixed_3d_coordinate_axes(
+                bounds=model_bounds,
+                approx_divisions=COORDINATE_APPROX_DIVISIONS,
+                signature=signature,
+            )
+
+            # 防止重复点击“显示坐标系”后注册多个监听器
+            self._remove_camera_aware_coordinate_observers()
+
+            self._add_camera_aware_coordinate_observer(
+                "InteractionEvent"
+            )
+
+            self._render()
+
+            return True
+
+        except Exception as exc:
+            print("=" * 60)
+            print("显示动态坐标系失败：")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+            return False
+
+
+    def hide_coordinate_axes(self):
+        """
+        隐藏坐标系并停止监听相机。
+        不影响压力场、井、裂缝。
+        """
+
+        self.cache[
+            "camera_aware_coordinate_enabled"
+        ] = False
+
+        self._remove_camera_aware_coordinate_observers()
+
+        for actor in self.cache.get(
+            "fixed_coordinate_axis_actors",
+            [],
+        ) or []:
+            if actor is None:
+                continue
+
+            try:
+                actor.visibility = False
+            except Exception:
+                try:
+                    actor.SetVisibility(False)
+                except Exception:
+                    pass
+
+        label_actor = self.cache.get(
+            "fixed_coordinate_label_actor"
+        )
+
+        if label_actor is not None:
+            try:
+                label_actor.visibility = False
+            except Exception:
+                try:
+                    label_actor.SetVisibility(False)
+                except Exception:
+                    pass
+
+        self.cache["fixed_coordinate_visible"] = False
+
+        self._render()
+
+
+    def disable_camera_aware_coordinate_axes(
+        self,
+        clear_axes=True,
+    ):
+        """
+        完全关闭动态坐标系。
+
+        clear_axes=True：
+            删除坐标系 actor。
+
+        clear_axes=False：
+            只停止监听，保留当前显示结果。
+        """
+
+        self.cache[
+            "camera_aware_coordinate_enabled"
+        ] = False
+
+        self._remove_camera_aware_coordinate_observers()
+
+        if clear_axes:
+            self._clear_fixed_coordinate_axes()
+
+        self._render()
+
+
     def _new_cache(self):
         return {
             "pressure_actor": None,
@@ -246,6 +1456,43 @@ class PyVistaRenderer:
             "measure_observer_ids": [],
             "measure_is_previewing": False,
             "measure_last_info": None,
+
+            # 时间步播放
+            "time_playback_actor": None,
+            "time_playback_scalar_bar": None,
+            "time_playback_surface": None,
+            "time_playback_source_cell_ids": None,
+
+            "time_playback_steps": None,
+            "time_playback_values": None,
+
+            "time_playback_property": None,
+            "time_playback_scalar_name": None,
+            "time_playback_scalar_bar_title": None,
+
+            "time_playback_mode": None,
+            "time_playback_axis": None,
+            "time_playback_layer_index": None,
+
+            "time_playback_current_index": -1,
+            "time_playback_clim": None,
+            "time_playback_selected_cell_ids": None,
+
+            #动态三面坐标系
+            "fixed_coordinate_axis_actors": [],
+            "fixed_coordinate_label_actor": None,
+            "fixed_coordinate_bounds": None,
+            "fixed_coordinate_visible": False,
+
+            "camera_aware_coordinate_enabled": False,
+            "camera_aware_coordinate_signature": None,
+            "camera_aware_coordinate_observers": [],
+
+            # 2D Magnify
+            "magnify_2d_active": False,
+            "magnify_2d_dragging": False,
+            "magnify_2d_world_bounds": None,
+            "magnify_2d_start_xy": None,
         }
 
     def _render(self):
@@ -563,6 +1810,14 @@ class PyVistaRenderer:
 
         self._remove_actor(self.cache.get("measure_line_actor"))
 
+        self._remove_actor(self.cache.get("time_playback_actor"))
+
+        self.disable_camera_aware_coordinate_axes(clear_axes=True)
+        
+        self.deactivate_2d_magnify(
+            render=False,
+        )
+
         try:
             self.plotter.remove_scalar_bar(render=False)
         except Exception:
@@ -862,39 +2117,248 @@ class PyVistaRenderer:
         self.setup_camera(sim_data)
         self._render()
 
+    def _get_active_parent_cells_from_leaf_data(self, sim_data):
+        """
+        根据 cell_geometry_with_pressure 中的 parent_id，
+        获取所有参与计算的 active 父网格。
+        """
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        cpg = getattr(
+            sim_data,
+            "corner_point_grid",
+            None,
+        )
+
+        if cell_data is None or cell_data.shape[0] == 0:
+            return []
+
+        if cpg is None or not getattr(cpg, "cells", None):
+            return []
+
+        nx = int(sim_data.grid_info["nx"])
+        ny = int(sim_data.grid_info["ny"])
+
+        active_parent_ids = set(
+            np.rint(
+                cell_data[:, 1]
+            ).astype(np.int64).tolist()
+        )
+
+        active_parent_cells = []
+
+        for cell in cpg.cells:
+
+            parent_id = (
+                int(cell.ix)
+                + int(cell.iy) * nx
+                + int(cell.iz) * nx * ny
+            )
+
+            if parent_id in active_parent_ids:
+                active_parent_cells.append(cell)
+
+        print(
+            f"[Parent Grid] total={len(cpg.cells)}, "
+            f"active={len(active_parent_cells)}, "
+            f"inactive={len(cpg.cells) - len(active_parent_cells)}"
+        )
+
+        return active_parent_cells
+
     def render_corner_point_grid(self, sim_data):
-        if not sim_data.corner_point_grid or not sim_data.corner_point_grid.cells:
+        """
+        渲染父网格 / 粗网格。
+        """
+        cpg = getattr(
+            sim_data,
+            "corner_point_grid",
+            None,
+        )
+
+        if cpg is None or not getattr(cpg, "cells", None):
             return
 
-        cpg = sim_data.corner_point_grid
+        all_parent_cells = cpg.cells
 
-        data_hash = hash(str(len(cpg.cells)) + str(cpg.cells[0].corners[0]) if cpg.cells else 0)
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
 
-        if self.cache.get('corner_grid_hash') == data_hash and self.cache.get('corner_actor') is not None:
-            self.cache['corner_actor'].visibility = True
-            self.cache['corner_surface_actor'].visibility = True
+        has_leaf_data = (
+            cell_data is not None
+            and getattr(cell_data, "ndim", 0) == 2
+            and cell_data.shape[0] > 0
+            and cell_data.shape[1] > 1
+        )
+
+        if has_leaf_data:
+            parent_cells_to_render = (
+                self._get_active_parent_cells_from_leaf_data(
+                    sim_data
+                )
+            )
+
+            if not parent_cells_to_render:
+                print(
+                    "[Parent Grid] 检测到 leaf 数据，"
+                    "但没有匹配到 active parent，取消父网格渲染。"
+                )
+                return
+
+            render_mode = "active_only"
+
+        else:
+
+            parent_cells_to_render = all_parent_cells
+            render_mode = "all_parents"
+
+            print(
+                "[Parent Grid] 当前没有 leaf 数据，"
+                "暂时渲染全部 parent 网格。"
+            )
+
+        first_cell = parent_cells_to_render[0]
+
+        first_corner = np.asarray(
+            first_cell.corners[0],
+            dtype=np.float64,
+        )
+
+        parent_id_sum = 0
+
+        for cell in parent_cells_to_render:
+            try:
+                parent_id_sum += int(
+                    getattr(cell, "id")
+                )
+            except Exception:
+
+                parent_id_sum += (
+                    int(getattr(cell, "ix", 0)) * 1_000_000
+                    + int(getattr(cell, "iy", 0)) * 1_000
+                    + int(getattr(cell, "iz", 0))
+                )
+
+        data_hash = hash(
+            (
+                render_mode,
+                len(parent_cells_to_render),
+                parent_id_sum,
+                tuple(
+                    np.round(
+                        first_corner,
+                        6,
+                    )
+                ),
+            )
+        )
+
+        if (
+            self.cache.get("corner_grid_hash") == data_hash
+            and self.cache.get("corner_actor") is not None
+        ):
+            self.cache["corner_actor"].visibility = True
+
+            surface_actor = self.cache.get(
+                "corner_surface_actor"
+            )
+
+            if surface_actor is not None:
+                surface_actor.visibility = True
+
             self.setup_camera_for_corner_grid(cpg)
+
             self.plotter.render()
             return
 
-        self._remove_actor(self.cache.get('corner_actor'))
-        self._remove_actor(self.cache.get('corner_surface_actor'))
+        self._remove_actor(
+            self.cache.get("corner_actor")
+        )
+
+        self._remove_actor(
+            self.cache.get("corner_surface_actor")
+        )
+
+        self.cache["corner_actor"] = None
+        self.cache["corner_surface_actor"] = None
 
         all_points = []
-        cells = []
+        vtk_cells = []
         offset = 0
+        valid_parent_count = 0
 
-        for cell in cpg.cells:
-            pts = np.array(cell.corners)
+        for cell in parent_cells_to_render:
+
+            try:
+                pts = np.asarray(
+                    cell.corners,
+                    dtype=np.float64,
+                )
+            except Exception:
+                continue
+
+            if pts.shape != (8, 3):
+                print(
+                    "[Parent Grid] 跳过异常 parent，"
+                    f"corners shape={pts.shape}"
+                )
+                continue
+
+            if not np.all(np.isfinite(pts)):
+                print(
+                    "[Parent Grid] 跳过包含 NaN/Inf 的 parent。"
+                )
+                continue
+
             all_points.append(pts)
-            cells.append([8, offset, offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7])
+
+            vtk_cells.append([
+                8,
+                offset + 0,
+                offset + 1,
+                offset + 2,
+                offset + 3,
+                offset + 4,
+                offset + 5,
+                offset + 6,
+                offset + 7,
+            ])
+
             offset += 8
+            valid_parent_count += 1
 
-        all_points = np.vstack(all_points)
-        cells = np.hstack(cells)
-        cell_types = np.full(len(cpg.cells), pv.CellType.HEXAHEDRON, dtype=np.uint8)
+        if valid_parent_count == 0:
+            print(
+                "[Parent Grid] 没有可用于渲染的有效 parent 网格。"
+            )
+            return
 
-        grid = pv.UnstructuredGrid(cells, cell_types, all_points)
+        points = np.vstack(
+            all_points
+        ).astype(np.float32)
+
+        cells = np.hstack(
+            vtk_cells
+        ).astype(np.int64)
+
+        cell_types = np.full(
+            valid_parent_count,
+            pv.CellType.HEXAHEDRON,
+            dtype=np.uint8,
+        )
+
+        grid = pv.UnstructuredGrid(
+            cells,
+            cell_types,
+            points,
+        )
 
         edges = grid.extract_all_edges()
 
@@ -902,25 +2366,41 @@ class PyVistaRenderer:
             edges,
             color=(0.5, 0.5, 0.5),
             line_width=1.0,
-            render=False
+            render=False,
         )
 
-        
         surface = grid.extract_surface()
+
         surface_actor = self.plotter.add_mesh(
             surface,
             color=(1.0, 1.0, 1.0),
             opacity=0.2,
             show_edges=False,
-            render=False
+            render=False,
         )
-        
 
-        self.cache['corner_grid_hash'] = data_hash
-        self.cache['corner_actor'] = actor
-        self.cache['corner_surface_actor'] = surface_actor
+        self.cache["corner_grid_hash"] = data_hash
+        self.cache["corner_actor"] = actor
+        self.cache["corner_surface_actor"] = surface_actor
+
+        self.cache["corner_grid_render_mode"] = render_mode
+        self.cache["corner_grid_parent_count"] = valid_parent_count
+
+        inactive_count = (
+            len(all_parent_cells)
+            - valid_parent_count
+        )
+
+        print(
+            "[Parent Grid] Render finished | "
+            f"mode={render_mode} | "
+            f"total_parent={len(all_parent_cells)} | "
+            f"rendered_parent={valid_parent_count} | "
+            f"hidden_parent={inactive_count}"
+        )
 
         self.setup_camera_for_corner_grid(cpg)
+
         self.plotter.render()
 
     def setup_camera_for_corner_grid(self, cpg):
@@ -1363,7 +2843,7 @@ class PyVistaRenderer:
 
             if getattr(sim_data, "wells", None):
                 self.render_corner_wells(sim_data)
-
+            
             self._render()
 
         except Exception as exc:
@@ -1787,6 +3267,79 @@ class PyVistaRenderer:
 
         self._render()
 
+
+    def _get_layer_row_indices_by_parent_id(
+        self,
+        sim_data,
+        axis,
+        layer_index,
+        cell_data=None,
+    ):
+        """
+        根据 leaf 网格的 parent_id，
+        筛选指定逻辑 I / J / K 层。
+
+        不使用粗网格的 AABB 包围盒，
+        可用于不规则角点网格。
+        """
+
+        if cell_data is None:
+            cell_data = getattr(
+                sim_data,
+                "cell_geometry_with_pressure",
+                None,
+            )
+
+        if cell_data is None or cell_data.shape[0] == 0:
+            return np.empty(0, dtype=np.int64)
+
+        axis = str(axis).lower().strip()
+        layer_index = int(layer_index)
+
+        if axis not in ("i", "j", "k"):
+            raise ValueError(
+                f"axis 必须是 i / j / k，当前为：{axis}"
+            )
+
+        nx = int(sim_data.grid_info["nx"])
+        ny = int(sim_data.grid_info["ny"])
+        nz = int(sim_data.grid_info["nz"])
+
+        max_index = {
+            "i": nx - 1,
+            "j": ny - 1,
+            "k": nz - 1,
+        }[axis]
+
+        if layer_index < 0 or layer_index > max_index:
+            raise ValueError(
+                f"{axis.upper()} 层索引无效：{layer_index}，"
+                f"合法范围为 0 ~ {max_index}"
+            )
+
+        # 第 1 列是 leaf 对应的 parent_id
+        parent_ids = np.rint(
+            cell_data[:, 1]
+        ).astype(np.int64)
+
+        # C++ 的 parent_id 规则：
+        # parent_id = i + j * nx + k * nx * ny
+        parent_i = parent_ids % nx
+        parent_j = (parent_ids // nx) % ny
+        parent_k = parent_ids // (nx * ny)
+
+        if axis == "i":
+            mask = parent_i == layer_index
+
+        elif axis == "j":
+            mask = parent_j == layer_index
+
+        else:
+            mask = parent_k == layer_index
+
+        return np.flatnonzero(mask).astype(np.int64)
+
+
     def clear_layer_render(self):
         """Remove layer-render actors so full-field rendering can take over cleanly."""
         self._remove_actor(self.cache.get("layer_pressure_actor"))
@@ -1951,26 +3504,25 @@ class PyVistaRenderer:
                     self.cache["layer_coarse_grid_actor"] = coarse_actor
 
         all_data = sim_data.cell_geometry_with_pressure
-        selected_rows = []
 
-        for row in all_data:
-            pts = row[4:28].reshape(8, 3)
-            cx, cy, cz = pts.mean(axis=0)
-            inside = any(
-                box["xmin"] <= cx <= box["xmax"] and
-                box["ymin"] <= cy <= box["ymax"] and
-                box["zmin"] <= cz <= box["zmax"]
-                for box in coarse_boxes
+        try:
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis="k",
+                layer_index=k_layer,
+                cell_data=all_data,
             )
-            if inside:
-                selected_rows.append(row)
-
-        if not selected_rows:
-            print(f"No refined cells found for k layer = {k_layer}")
+        except ValueError as exc:
+            print(exc)
             self._render()
             return
 
-        selected_rows = np.array(selected_rows)
+        if selected_indices.size == 0:
+            print(f"No leaf cells found for k layer = {k_layer}")
+            self._render()
+            return
+
+        selected_rows = all_data[selected_indices]
 
         all_points = []
         cell_corner_ids = []
@@ -2253,38 +3805,26 @@ class PyVistaRenderer:
 
                     self.cache["layer_coarse_grid_actor"] = coarse_actor
 
-        # -------------------------------------------------
-        # 提取 refined cells
-        # -------------------------------------------------
         all_data = sim_data.cell_geometry_with_pressure
 
-        selected_rows = []
-
-        for row in all_data:
-
-            pts = row[4:28].reshape(8, 3)
-
-            cx, cy, cz = pts.mean(axis=0)
-
-            inside = any(
-                box["xmin"] <= cx <= box["xmax"] and
-                box["ymin"] <= cy <= box["ymax"] and
-                box["zmin"] <= cz <= box["zmax"]
-                for box in coarse_boxes
+        try:
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis="i",
+                layer_index=i_layer,
+                cell_data=all_data,
             )
-
-            if inside:
-                selected_rows.append(row)
-
-        if not selected_rows:
-
-            print(f"No refined cells found for i layer = {i_layer}")
-
+        except ValueError as exc:
+            print(exc)
             self._render()
-
             return
 
-        selected_rows = np.array(selected_rows)
+        if selected_indices.size == 0:
+            print(f"No leaf cells found for i layer = {i_layer}")
+            self._render()
+            return
+
+        selected_rows = all_data[selected_indices]
 
         all_points = []
 
@@ -2624,33 +4164,24 @@ class PyVistaRenderer:
 
         all_data = sim_data.cell_geometry_with_pressure
 
-        selected_rows = []
-
-        for row in all_data:
-
-            pts = row[4:28].reshape(8, 3)
-
-            cx, cy, cz = pts.mean(axis=0)
-
-            inside = any(
-                box["xmin"] <= cx <= box["xmax"] and
-                box["ymin"] <= cy <= box["ymax"] and
-                box["zmin"] <= cz <= box["zmax"]
-                for box in coarse_boxes
+        try:
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis="j",
+                layer_index=j_layer,
+                cell_data=all_data,
             )
-
-            if inside:
-                selected_rows.append(row)
-
-        if not selected_rows:
-
-            print(f"No refined cells found for j layer = {j_layer}")
-
+        except ValueError as exc:
+            print(exc)
             self._render()
-
             return
 
-        selected_rows = np.array(selected_rows)
+        if selected_indices.size == 0:
+            print(f"No leaf cells found for j layer = {j_layer}")
+            self._render()
+            return
+
+        selected_rows = all_data[selected_indices]
 
         all_points = []
 
@@ -3044,7 +4575,8 @@ class PyVistaRenderer:
     def _render_corner_sw_layer(
         self,
         sim_data,
-        coarse_boxes
+        axis,
+        layer_index,
     ):
 
         self._remove_actor(self.cache.get("layer_sw_actor"))
@@ -3070,31 +4602,23 @@ class PyVistaRenderer:
 
         all_data = sim_data.cell_geometry_with_pressure
 
-        selected_rows = []
-
-        for row in all_data:
-
-            pts = row[4:28].reshape(8, 3)
-
-            cx, cy, cz = pts.mean(axis=0)
-
-            inside = any(
-                box["xmin"] <= cx <= box["xmax"] and
-                box["ymin"] <= cy <= box["ymax"] and
-                box["zmin"] <= cz <= box["zmax"]
-                for box in coarse_boxes
+        try:
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis=axis,
+                layer_index=layer_index,
+                cell_data=all_data,
             )
-
-            if inside:
-                selected_rows.append(row)
-
-        if not selected_rows:
-
+        except ValueError as exc:
+            print(exc)
             self._render()
-
             return
 
-        selected_rows = np.array(selected_rows)
+        if selected_indices.size == 0:
+            self._render()
+            return
+
+        selected_rows = all_data[selected_indices]
 
         all_points = []
 
@@ -3381,8 +4905,9 @@ class PyVistaRenderer:
         self.cache["layer_coarse_grid_actor"] = actor
 
         self._render_corner_sw_layer(
-            sim_data,
-            coarse_boxes
+            sim_data=sim_data,
+            axis="k",
+            layer_index=k_layer,
         )
 
     # i方向水饱和度渲染
@@ -3485,8 +5010,9 @@ class PyVistaRenderer:
         self.cache["layer_coarse_grid_actor"] = actor
 
         self._render_corner_sw_layer(
-            sim_data,
-            coarse_boxes
+            sim_data=sim_data,
+            axis="i",
+            layer_index=i_layer,
         )
 
     # j方向水饱和度渲染
@@ -3589,8 +5115,9 @@ class PyVistaRenderer:
         self.cache["layer_coarse_grid_actor"] = actor
 
         self._render_corner_sw_layer(
-            sim_data,
-            coarse_boxes
+            sim_data=sim_data,
+            axis="j",
+            layer_index=j_layer,
         )
 
 
@@ -3898,31 +5425,22 @@ class PyVistaRenderer:
             # =========================================================
             # 4. 从 cell_geometry_with_pressure 里筛当前层 refined cells
             # =========================================================
-            selected_rows = []
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis=axis,
+                layer_index=layer_index,
+                cell_data=cell_data,
+            )
 
-            for row in cell_data:
-                pts = row[4:28].reshape(8, 3)
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if inside:
-                    selected_rows.append(row)
-
-            if not selected_rows:
+            if selected_indices.size == 0:
                 print(
-                    f"No refined cells found for Phi, "
+                    f"No leaf cells found for Phi, "
                     f"axis={axis}, layer={layer_index}"
                 )
                 self._render()
                 return
 
-            selected_rows = np.array(selected_rows)
+            selected_rows = cell_data[selected_indices]
 
             # =========================================================
             # 5. 构建当前层孔隙度 UnstructuredGrid
@@ -4275,32 +5793,6 @@ class PyVistaRenderer:
             axis="k",
             layer_index=k_layer
         )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -4739,10 +6231,6 @@ class PyVistaRenderer:
     def view_bottom(self):
         """仰视图"""
         self.set_camera_by_direction("bottom")
-
-
-
-
 
 
     # 渗透率场渲染：Kx / Ky / Kz
@@ -5214,31 +6702,22 @@ class PyVistaRenderer:
             # =========================================================
             # 5. 从 cell_geometry_with_pressure 里筛当前层 refined cells
             # =========================================================
-            selected_rows = []
+            selected_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis=axis,
+                layer_index=layer_index,
+                cell_data=cell_data,
+            )
 
-            for row in cell_data:
-                pts = row[4:28].reshape(8, 3)
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if inside:
-                    selected_rows.append(row)
-
-            if not selected_rows:
+            if selected_indices.size == 0:
                 print(
-                    f"No refined cells found for {scalar_name}, "
+                    f"No leaf cells found for {scalar_name}, "
                     f"axis={axis}, layer={layer_index}"
                 )
                 self._render()
                 return
 
-            selected_rows = np.array(selected_rows)
+            selected_rows = cell_data[selected_indices]
 
             # =========================================================
             # 6. 构建当前层渗透率 UnstructuredGrid
@@ -5619,14 +7098,8 @@ class PyVistaRenderer:
         self._render()
 
 
-
-
-
-
-
-
     # =========================================================
-    # Cell Picking：Petrel 风格单元拾取信息显示
+    # Cell Picking：单元拾取信息显示
     # =========================================================
 
     def _get_pick_property_config(self, property_name):
@@ -5709,15 +7182,24 @@ class PyVistaRenderer:
         self.cache["cell_pick_property"] = str(property_name).strip()
 
 
-    def _build_cell_pick_grid(self, sim_data, axis=None, layer_index=None):
+    def _build_cell_pick_grid(
+        self,
+        sim_data,
+        axis=None,
+        layer_index=None,
+    ):
         """
         构建用于 cell picking 的 UnstructuredGrid。
 
-        axis=None:
+        axis=None：
             构建全场拾取网格。
 
-        axis="i"/"j"/"k":
-            只构建当前 I/J/K 层拾取网格。
+        axis="i" / "j" / "k"：
+            只构建当前逻辑 I/J/K 层的拾取网格。
+
+        分层筛选规则：
+            根据 leaf 对应的 parent_id 推导逻辑 I/J/K，
+            不再通过粗网格的 AABB 包围盒筛选。
         """
 
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
@@ -5735,114 +7217,57 @@ class PyVistaRenderer:
             )
             return None
 
-        selected_rows = []
-        selected_original_indices = []
-
         # =========================================================
-        # 1. 整体场：直接使用全场 cell
+        # 1. 整体场：直接使用全部 leaf cell
         # =========================================================
         if axis is None or layer_index is None:
-            selected_rows = list(cell_data)
-            selected_original_indices = list(range(cell_data.shape[0]))
+
+            selected_original_indices = np.arange(
+                cell_data.shape[0],
+                dtype=np.int64,
+            )
 
         # =========================================================
-        # 2. 分层场：只筛选当前 I/J/K 层 cell
+        # 2. 分层场：根据 parent_id 推导 I/J/K 后筛选 leaf cell
         # =========================================================
         else:
-            axis = str(axis).lower()
+
+            axis = str(axis).lower().strip()
 
             if axis not in ("i", "j", "k"):
-                print(f"Invalid picking axis = {axis}, use 'i', 'j', or 'k'")
+                print(
+                    f"Invalid picking axis = {axis}, "
+                    "use 'i', 'j', or 'k'"
+                )
                 return None
 
-            if not sim_data.corner_point_grid:
-                return None
-
-            cpg = sim_data.corner_point_grid
-
-            nx = int(sim_data.grid_info["nx"])
-            ny = int(sim_data.grid_info["ny"])
-            nz = int(sim_data.grid_info["nz"])
-
-            if axis == "i":
-                if layer_index < 0 or layer_index >= nx:
-                    print(f"Invalid i layer = {layer_index}")
-                    return None
-
-                coarse_cells = []
-                for k in range(nz):
-                    for j in range(ny):
-                        idx = layer_index + j * nx + k * nx * ny
-                        if idx < len(cpg.cells):
-                            coarse_cells.append(cpg.cells[idx])
-
-            elif axis == "j":
-                if layer_index < 0 or layer_index >= ny:
-                    print(f"Invalid j layer = {layer_index}")
-                    return None
-
-                coarse_cells = []
-                for k in range(nz):
-                    for i in range(nx):
-                        idx = i + layer_index * nx + k * nx * ny
-                        if idx < len(cpg.cells):
-                            coarse_cells.append(cpg.cells[idx])
-
-            else:
-                if layer_index < 0 or layer_index >= nz:
-                    print(f"Invalid k layer = {layer_index}")
-                    return None
-
-                start = layer_index * nx * ny
-                end = (layer_index + 1) * nx * ny
-                coarse_cells = cpg.cells[start:end]
-
-            coarse_boxes = []
-
-            for cell in coarse_cells:
-                pts = np.array(cell.corners, dtype=np.float64)
-
-                if pts.shape != (8, 3):
-                    continue
-
-                xs = pts[:, 0]
-                ys = pts[:, 1]
-                zs = pts[:, 2]
-
-                coarse_boxes.append({
-                    "xmin": float(xs.min()),
-                    "xmax": float(xs.max()),
-                    "ymin": float(ys.min()),
-                    "ymax": float(ys.max()),
-                    "zmin": float(zs.min()),
-                    "zmax": float(zs.max()),
-                })
-
-            if not coarse_boxes:
-                print(f"No valid coarse boxes for picking axis={axis}, layer={layer_index}")
-                return None
-
-            for row_index, row in enumerate(cell_data):
-                pts = row[4:28].reshape(8, 3)
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
+            try:
+                selected_original_indices = (
+                    self._get_layer_row_indices_by_parent_id(
+                        sim_data=sim_data,
+                        axis=axis,
+                        layer_index=layer_index,
+                        cell_data=cell_data,
+                    )
                 )
 
-                if inside:
-                    selected_rows.append(row)
-                    selected_original_indices.append(row_index)
+            except ValueError as exc:
+                print(exc)
+                return None
 
-        if not selected_rows:
-            print("No cells selected for picking grid.")
+        if selected_original_indices.size == 0:
+            print(
+                "No cells selected for picking grid. "
+                f"axis={axis}, layer={layer_index}"
+            )
             return None
 
-        selected_rows = np.array(selected_rows)
-        selected_original_indices = np.array(selected_original_indices, dtype=np.int32)
+        selected_original_indices = np.asarray(
+            selected_original_indices,
+            dtype=np.int64,
+        )
+
+        selected_rows = cell_data[selected_original_indices]
 
         n_cells = selected_rows.shape[0]
 
@@ -5856,7 +7281,10 @@ class PyVistaRenderer:
 
         for i in range(n_cells):
 
-            pts = selected_rows[i, 4:28].reshape(8, 3).astype(np.float32)
+            pts = selected_rows[
+                i,
+                4:28,
+            ].reshape(8, 3).astype(np.float32)
 
             all_points.append(pts)
 
@@ -5874,70 +7302,156 @@ class PyVistaRenderer:
 
             offset += 8
 
-            centers.append(pts.mean(axis=0))
+            centers.append(
+                pts.mean(axis=0)
+            )
 
         points = np.vstack(all_points).astype(np.float32)
+
         cells = np.hstack(cells).astype(np.int64)
 
         cell_types = np.full(
             n_cells,
             pv.CellType.HEXAHEDRON,
-            dtype=np.uint8
+            dtype=np.uint8,
         )
 
         grid = pv.UnstructuredGrid(
             cells,
             cell_types,
-            points
+            points,
         )
 
-        centers = np.array(centers, dtype=np.float32)
+        centers = np.asarray(
+            centers,
+            dtype=np.float32,
+        )
 
         # =========================================================
         # 4. 保存 cell 信息
         # =========================================================
-        grid.cell_data["PickCellId"] = np.arange(n_cells, dtype=np.int32)
-        grid.cell_data["OriginalRowIndex"] = selected_original_indices
 
-        grid.cell_data["CellInfo0"] = selected_rows[:, 0].astype(np.float64)
-        grid.cell_data["CellInfo1"] = selected_rows[:, 1].astype(np.float64)
-        grid.cell_data["CellInfo2"] = selected_rows[:, 2].astype(np.float64)
-        grid.cell_data["CellInfo3"] = selected_rows[:, 3].astype(np.float64)
+        # 当前 picking 网格中的本地编号
+        grid.cell_data["PickCellId"] = np.arange(
+            n_cells,
+            dtype=np.int32,
+        )
 
-        grid.cell_data["Pressure"] = selected_rows[:, 28].astype(np.float32)
-        grid.cell_data["Kx"] = selected_rows[:, 29].astype(np.float32)
-        grid.cell_data["Ky"] = selected_rows[:, 30].astype(np.float32)
-        grid.cell_data["Kz"] = selected_rows[:, 31].astype(np.float32)
-        grid.cell_data["Phi"] = selected_rows[:, 32].astype(np.float32)
-        grid.cell_data["Sw"] = selected_rows[:, 33].astype(np.float32)
+        # 对应 cell_geometry_with_pressure 中的原始行号
+        grid.cell_data["OriginalRowIndex"] = (
+            selected_original_indices.astype(np.int64)
+        )
+
+        grid.cell_data["CellInfo0"] = selected_rows[
+            :,
+            0,
+        ].astype(np.float64)
+
+        grid.cell_data["CellInfo1"] = selected_rows[
+            :,
+            1,
+        ].astype(np.float64)
+
+        grid.cell_data["CellInfo2"] = selected_rows[
+            :,
+            2,
+        ].astype(np.float64)
+
+        grid.cell_data["CellInfo3"] = selected_rows[
+            :,
+            3,
+        ].astype(np.float64)
+
+        grid.cell_data["Pressure"] = selected_rows[
+            :,
+            28,
+        ].astype(np.float32)
+
+        grid.cell_data["Kx"] = selected_rows[
+            :,
+            29,
+        ].astype(np.float32)
+
+        grid.cell_data["Ky"] = selected_rows[
+            :,
+            30,
+        ].astype(np.float32)
+
+        grid.cell_data["Kz"] = selected_rows[
+            :,
+            31,
+        ].astype(np.float32)
+
+        grid.cell_data["Phi"] = selected_rows[
+            :,
+            32,
+        ].astype(np.float32)
+
+        grid.cell_data["Sw"] = selected_rows[
+            :,
+            33,
+        ].astype(np.float32)
 
         grid.cell_data["CenterX"] = centers[:, 0]
         grid.cell_data["CenterY"] = centers[:, 1]
         grid.cell_data["CenterZ"] = centers[:, 2]
 
+        # =========================================================
+        # 5. 计算单元体积
+        # =========================================================
         try:
             size_grid = grid.compute_cell_sizes(
                 length=False,
                 area=False,
-                volume=True
+                volume=True,
             )
 
             if "Volume" in size_grid.cell_data:
-                grid.cell_data["Volume"] = size_grid.cell_data["Volume"].astype(np.float64)
+                grid.cell_data["Volume"] = (
+                    size_grid.cell_data["Volume"]
+                    .astype(np.float64)
+                )
             else:
-                grid.cell_data["Volume"] = np.zeros(n_cells, dtype=np.float64)
+                grid.cell_data["Volume"] = np.zeros(
+                    n_cells,
+                    dtype=np.float64,
+                )
 
         except Exception:
+
+            # 失败时使用 AABB 近似体积，作为兜底。
             volumes = []
 
             for i in range(n_cells):
-                pts = selected_rows[i, 4:28].reshape(8, 3).astype(np.float64)
-                dx = float(pts[:, 0].max() - pts[:, 0].min())
-                dy = float(pts[:, 1].max() - pts[:, 1].min())
-                dz = float(pts[:, 2].max() - pts[:, 2].min())
-                volumes.append(abs(dx * dy * dz))
 
-            grid.cell_data["Volume"] = np.array(volumes, dtype=np.float64)
+                pts = selected_rows[
+                    i,
+                    4:28,
+                ].reshape(8, 3).astype(np.float64)
+
+                dx = float(
+                    pts[:, 0].max()
+                    - pts[:, 0].min()
+                )
+
+                dy = float(
+                    pts[:, 1].max()
+                    - pts[:, 1].min()
+                )
+
+                dz = float(
+                    pts[:, 2].max()
+                    - pts[:, 2].min()
+                )
+
+                volumes.append(
+                    abs(dx * dy * dz)
+                )
+
+            grid.cell_data["Volume"] = np.asarray(
+                volumes,
+                dtype=np.float64,
+            )
 
         return grid
 
@@ -5950,7 +7464,7 @@ class PyVistaRenderer:
         layer_index=None
     ):
         """
-        开启 Petrel 风格 cell picking。
+        开启 cell picking。
 
         整体场：
             axis=None, layer_index=None
@@ -6022,7 +7536,6 @@ class PyVistaRenderer:
         关闭 cell picking。
         """
 
-        # 移除鼠标事件监听
         observer_id = self.cache.get("cell_pick_observer_id")
 
         if observer_id is not None:
@@ -6094,7 +7607,7 @@ class PyVistaRenderer:
 
     def _format_picked_cell_info(self, grid, cell_id, property_name):
         """
-        生成类似 Petrel 状态栏的拾取信息。
+        生成状态栏的拾取信息。
         """
 
         config = self._get_pick_property_config(property_name)
@@ -6111,7 +7624,6 @@ class PyVistaRenderer:
         col_title = config["title"]
         prop_key = None
 
-        # title 和 grid.cell_data key 的对应关系
         if property_name in ("Pressure", "P"):
             prop_key = "Pressure"
         elif property_name == "Kx":
@@ -6140,15 +7652,21 @@ class PyVistaRenderer:
         cz = float(grid.cell_data["CenterZ"][cell_id])
         volume = float(grid.cell_data["Volume"][cell_id])
 
-        # 尽量把 id/index 显示成整数
         try:
             info0_i = int(info0)
             info1_i = int(info1)
             info2_i = int(info2)
             info3_i = int(info3)
-            cell_index_text = f"id={info0_i}, index=({info1_i}, {info2_i}, {info3_i})"
+
+            cell_index_text = (
+                f"id={info0_i}, "
+                f"index=({info1_i}, {info2_i}, {info3_i})"
+            )
+
         except Exception:
-            cell_index_text = f"id/index=({info0}, {info1}, {info2}, {info3})"
+            cell_index_text = (
+                f"id/index=({info0}, {info1}, {info2}, {info3})"
+            )
 
         unit = config.get("unit", "")
 
@@ -6157,7 +7675,6 @@ class PyVistaRenderer:
         else:
             value_text = f"{value:.6g}"
 
-        # Petrel 风格状态信息
         info_text = (
             f"Selected property: {col_title} | "
             f"Grid cell: {cell_index_text} | "
@@ -6218,7 +7735,10 @@ class PyVistaRenderer:
             if cell_id < 0:
                 return
 
-            property_name = self.cache.get("cell_pick_property", "Pressure")
+            property_name = self.cache.get(
+                "cell_pick_property",
+                "Pressure"
+            )
 
             self._highlight_picked_cell(grid, cell_id)
 
@@ -6236,8 +7756,10 @@ class PyVistaRenderer:
                 try:
                     if hasattr(self.view, "show_pick_info"):
                         self.view.show_pick_info(info_text)
+
                     elif hasattr(self.view, "set_status_message"):
                         self.view.set_status_message(info_text)
+
                 except Exception:
                     pass
 
@@ -6247,25 +7769,12 @@ class PyVistaRenderer:
             print("ERROR IN _on_cell_info_pick")
             print(exc)
 
-
-
-
     # =========================================================
-    # Petrel 风格动态尺子工具
+    # 动态尺子工具
     # 第一次点击确定起点，鼠标移动动态画白线并刷新测量信息；
     # 第二次点击确定终点，白线固定，测量信息固定。
     # =========================================================
-
     def enable_petrel_distance_measure(self):
-        """
-        开启 Petrel 风格动态测距工具。
-
-        使用方式：
-            1. 调用 enable_petrel_distance_measure()
-            2. 第一次点击模型：确定起点
-            3. 鼠标移动：显示从起点到鼠标位置的白色动态线，并实时输出测量结果
-            4. 第二次点击模型：确定终点，线和结果固定
-        """
 
         # 如果之前已经开过，先关闭旧事件，保留干净状态
         self.disable_petrel_distance_measure(clear_line=True)
@@ -6303,7 +7812,7 @@ class PyVistaRenderer:
 
     def disable_petrel_distance_measure(self, clear_line=True):
         """
-        关闭 Petrel 风格测距工具。
+        关闭测距工具。
         """
 
         observer_ids = self.cache.get("measure_observer_ids", [])
@@ -6551,7 +8060,7 @@ class PyVistaRenderer:
 
         try:
             if hasattr(self.view, "show_measure_info"):
-                self.view.show_measure_info(info_text)
+                self.view.show_measure_info(info_text, dynamic=dynamic)
             elif hasattr(self.view, "set_status_message"):
                 self.view.set_status_message(info_text)
         except Exception:
@@ -6592,6 +8101,11 @@ class PyVistaRenderer:
             self.cache["measure_last_info"] = None
 
             print("\nMeasure start point selected. Move mouse to preview.")
+            try:
+                if hasattr(self.view, "set_status_message"):
+                    self.view.set_status_message("[测距] 已选择起点，移动鼠标预览，左键点击终点")
+            except Exception:
+                pass
 
             return
 
@@ -6662,7 +8176,6 @@ class PyVistaRenderer:
         self._render()
 
 
-
     def export_graphic(self, filepath, scale=1):
         """
         导出当前 PyVista 渲染窗口为图片
@@ -6704,7 +8217,6 @@ class PyVistaRenderer:
 
 
 
-
     def lock_camera_direction(self, locked: bool):
         """
         视角方向锁定
@@ -6738,3 +8250,1996 @@ class PyVistaRenderer:
         self.lock_camera_direction(not current)
 
 
+    # 时间步播放
+    def _get_time_playback_property_config(
+        self,
+        property_name,
+    ):
+        """
+        根据属性名称返回对应时间步数据、颜色条和静态场恢复配置。
+        """
+
+        property_name = str(
+            property_name
+        ).lower().strip()
+
+        aliases = {
+            "pressure": "pressure",
+            "p": "pressure",
+
+            "sw": "sw",
+            "water_saturation": "sw",
+            "water saturation": "sw",
+
+            "porosity": "porosity",
+            "phi": "porosity",
+
+            "permeability_x": "permeability_x",
+            "kx": "permeability_x",
+            "perm_x": "permeability_x",
+
+            "permeability_y": "permeability_y",
+            "ky": "permeability_y",
+            "perm_y": "permeability_y",
+
+            "permeability_z": "permeability_z",
+            "kz": "permeability_z",
+            "perm_z": "permeability_z",
+        }
+
+        canonical_name = aliases.get(
+            property_name
+        )
+
+        if canonical_name is None:
+            return None
+
+        configs = {
+            "pressure": {
+                "steps_attr": "pressure_steps",
+                "scalar_name": "Pressure",
+                "scalar_bar_title": "Pressure (bar)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": None,
+                "restore_type": "pressure",
+            },
+
+            "sw": {
+                "steps_attr": "sw_steps",
+                "scalar_name": "Water Saturation",
+                "scalar_bar_title": "Water Saturation (-)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": (0.0, 1.0),
+                "restore_type": "sw",
+            },
+
+            "porosity": {
+                "steps_attr": "porosity_steps",
+                "scalar_name": "Porosity",
+                "scalar_bar_title": "Porosity (-)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": None,
+                "restore_type": "porosity",
+            },
+
+            "permeability_x": {
+                "steps_attr": "permeability_x_steps",
+                "scalar_name": "Permeability X",
+                "scalar_bar_title": "Permeability X (mD)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": None,
+                "restore_type": "permeability_x",
+            },
+
+            "permeability_y": {
+                "steps_attr": "permeability_y_steps",
+                "scalar_name": "Permeability Y",
+                "scalar_bar_title": "Permeability Y (mD)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": None,
+                "restore_type": "permeability_y",
+            },
+
+            "permeability_z": {
+                "steps_attr": "permeability_z_steps",
+                "scalar_name": "Permeability Z",
+                "scalar_bar_title": "Permeability Z (mD)",
+                "cmap": get_bright_jet_cmap(),
+                "fixed_clim": None,
+                "restore_type": "permeability_z",
+            },
+        }
+
+        config = dict(
+            configs[canonical_name]
+        )
+
+        config["property_name"] = canonical_name
+
+        return config
+
+
+    def _clear_time_playback_cache(
+        self,
+        render=True,
+    ):
+        """
+        删除通用时间步播放 actor 并清空播放缓存。
+        不恢复静态场。
+        """
+
+        self._remove_actor(
+            self.cache.get("time_playback_actor")
+        )
+
+        self.cache["time_playback_actor"] = None
+
+        if self.cache.get(
+            "time_playback_scalar_bar"
+        ) is not None:
+            try:
+                self.plotter.remove_scalar_bar(
+                    render=False
+                )
+            except Exception:
+                pass
+
+        self.cache["time_playback_scalar_bar"] = None
+        self.cache["time_playback_surface"] = None
+        self.cache["time_playback_source_cell_ids"] = None
+
+        self.cache["time_playback_steps"] = None
+        self.cache["time_playback_values"] = None
+
+        self.cache["time_playback_property"] = None
+        self.cache["time_playback_scalar_name"] = None
+        self.cache["time_playback_scalar_bar_title"] = None
+
+        self.cache["time_playback_mode"] = None
+        self.cache["time_playback_axis"] = None
+        self.cache["time_playback_layer_index"] = None
+
+        self.cache["time_playback_current_index"] = -1
+        self.cache["time_playback_clim"] = None
+        self.cache["time_playback_selected_cell_ids"] = None
+
+        if render:
+            self._render()
+
+
+    def has_time_playback(self):
+
+        return (
+            self.cache.get("time_playback_actor") is not None
+            and self.cache.get(
+                "time_playback_surface"
+            ) is not None
+            and self.cache.get(
+                "time_playback_source_cell_ids"
+            ) is not None
+            and self.cache.get(
+                "time_playback_steps"
+            ) is not None
+            and self.cache.get(
+                "time_playback_values"
+            ) is not None
+            and self.cache.get(
+                "time_playback_property"
+            ) is not None
+        )
+
+
+    def _validate_time_playback_data(
+        self,
+        sim_data,
+        property_name,
+    ):
+
+        config = self._get_time_playback_property_config(
+            property_name
+        )
+
+        if config is None:
+            raise ValueError(
+                f"不支持的时间步属性：{property_name}"
+            )
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        time_steps = getattr(
+            sim_data,
+            "time_steps",
+            None,
+        )
+
+        values = getattr(
+            sim_data,
+            config["steps_attr"],
+            None,
+        )
+
+        if cell_data is None:
+            raise ValueError(
+                "缺少 cell_geometry_with_pressure"
+            )
+
+        if time_steps is None:
+            raise ValueError(
+                "缺少 time_steps"
+            )
+
+        if values is None:
+            raise ValueError(
+                f"缺少 {config['steps_attr']}"
+            )
+
+        cell_data = np.asarray(
+            cell_data,
+            dtype=np.float32,
+        )
+
+        time_steps = np.asarray(
+            time_steps,
+            dtype=np.float64,
+        )
+
+        values = np.asarray(
+            values,
+            dtype=np.float32,
+        )
+
+        if cell_data.ndim != 2:
+            raise ValueError(
+                "cell_geometry_with_pressure 必须是二维数组"
+            )
+
+        if cell_data.shape[1] < 28:
+            raise ValueError(
+                "cell_geometry_with_pressure 列数不足，"
+                "至少需要 0~27 列顶点坐标"
+            )
+
+        if time_steps.ndim != 1:
+            raise ValueError(
+                "time_steps 必须是一维数组"
+            )
+
+        if values.ndim != 2:
+            raise ValueError(
+                f"{config['steps_attr']} 必须是二维数组"
+            )
+
+        n_cells = int(
+            cell_data.shape[0]
+        )
+
+        n_steps = int(
+            time_steps.shape[0]
+        )
+
+        if n_cells <= 0:
+            raise ValueError(
+                "网格单元数量为 0"
+            )
+
+        if n_steps <= 0:
+            raise ValueError(
+                "时间步数量为 0"
+            )
+
+        if values.shape[0] != n_steps:
+            raise ValueError(
+                f"time_steps 与 "
+                f"{config['steps_attr']} 的时间步数量不一致："
+                f"{n_steps} != {values.shape[0]}"
+            )
+
+        if values.shape[1] != n_cells:
+            raise ValueError(
+                f"{config['steps_attr']} 每帧数据数量"
+                "与网格单元数量不一致："
+                f"{values.shape[1]} != {n_cells}"
+            )
+
+        valid_values = values[
+            np.isfinite(values)
+        ]
+
+        if valid_values.size == 0:
+            raise ValueError(
+                f"{config['steps_attr']} 中没有有效数值"
+            )
+
+        return (
+            cell_data,
+            time_steps,
+            values,
+            config,
+        )
+
+
+    def _get_time_playback_layer_cell_ids(
+        self,
+        sim_data,
+        cell_data,
+        axis,
+        layer_index,
+    ):
+        """
+        按 leaf cell 的 parent_id 筛选 I / J / K 分层。
+        """
+
+        axis = str(axis).lower().strip()
+
+        if axis not in ("i", "j", "k"):
+            raise ValueError(
+                f"axis 必须是 i / j / k，当前为：{axis}"
+            )
+
+        grid_info = getattr(
+            sim_data,
+            "grid_info",
+            {},
+        ) or {}
+
+        nx = int(
+            grid_info.get("nx", 0)
+        )
+
+        ny = int(
+            grid_info.get("ny", 0)
+        )
+
+        nz = int(
+            grid_info.get("nz", 0)
+        )
+
+        if nx <= 0 or ny <= 0 or nz <= 0:
+            raise ValueError(
+                "grid_info 中 nx / ny / nz 无效："
+                f"nx={nx}, ny={ny}, nz={nz}"
+            )
+
+        layer_index = int(layer_index)
+
+        if axis == "i":
+            max_index = nx - 1
+
+        elif axis == "j":
+            max_index = ny - 1
+
+        else:
+            max_index = nz - 1
+
+        if layer_index < 0 or layer_index > max_index:
+            raise ValueError(
+                f"{axis.upper()} 层索引无效："
+                f"{layer_index}，"
+                f"有效范围为 0 ~ {max_index}"
+            )
+
+        # 第 1 列为 parent_id。
+        parent_ids = np.rint(
+            cell_data[:, 1]
+        ).astype(np.int64)
+
+        parent_i = parent_ids % nx
+        parent_j = (
+            parent_ids // nx
+        ) % ny
+
+        parent_k = parent_ids // (
+            nx * ny
+        )
+
+        if axis == "i":
+            mask = parent_i == layer_index
+
+        elif axis == "j":
+            mask = parent_j == layer_index
+
+        else:
+            mask = parent_k == layer_index
+
+        selected_cell_ids = np.flatnonzero(
+            mask
+        ).astype(np.int64)
+
+        if selected_cell_ids.size == 0:
+            raise ValueError(
+                f"{axis.upper()}={layer_index} "
+                "没有筛选到任何 leaf cell"
+            )
+
+        return selected_cell_ids
+
+
+    def _build_time_playback_surface(
+        self,
+        cell_data,
+        selected_cell_ids,
+        first_frame_values,
+        scalar_name,
+    ):
+
+        selected_cell_ids = np.asarray(
+            selected_cell_ids,
+            dtype=np.int64,
+        )
+
+        selected_rows = cell_data[
+            selected_cell_ids
+        ]
+
+        n_cells = int(
+            selected_rows.shape[0]
+        )
+
+        if n_cells <= 0:
+            raise ValueError(
+                "没有可构建的播放网格"
+            )
+
+        all_points = []
+        vtk_cells = []
+
+        point_offset = 0
+
+        for row in selected_rows:
+            points = row[4:28].reshape(
+                8,
+                3,
+            ).astype(
+                np.float32,
+                copy=False,
+            )
+
+            all_points.append(points)
+
+            vtk_cells.append([
+                8,
+                point_offset,
+                point_offset + 1,
+                point_offset + 2,
+                point_offset + 3,
+                point_offset + 4,
+                point_offset + 5,
+                point_offset + 6,
+                point_offset + 7,
+            ])
+
+            point_offset += 8
+
+        points_array = np.vstack(
+            all_points
+        ).astype(
+            np.float32,
+            copy=False,
+        )
+
+        cells_array = np.hstack(
+            vtk_cells
+        ).astype(
+            np.int64,
+            copy=False,
+        )
+
+        cell_types = np.full(
+            n_cells,
+            pv.CellType.HEXAHEDRON,
+            dtype=np.uint8,
+        )
+
+        grid = pv.UnstructuredGrid(
+            cells_array,
+            cell_types,
+            points_array,
+        )
+
+        grid.cell_data[
+            "SourceCellId"
+        ] = selected_cell_ids
+
+        grid.cell_data[
+            scalar_name
+        ] = first_frame_values[
+            selected_cell_ids
+        ]
+
+        surface = grid.extract_surface(
+            pass_pointid=False,
+            pass_cellid=False,
+        )
+
+        if "SourceCellId" not in surface.cell_data:
+            raise RuntimeError(
+                "surface 中缺少 SourceCellId，"
+                "无法建立时间步数据映射"
+            )
+
+        source_cell_ids = np.asarray(
+            surface.cell_data["SourceCellId"],
+            dtype=np.int64,
+        )
+
+        surface.cell_data[
+            scalar_name
+        ] = first_frame_values[
+            source_cell_ids
+        ]
+
+        try:
+            surface = surface.compute_normals(
+                consistent_normals=True,
+                auto_orient_normals=True,
+                split_vertices=False,
+            )
+        except Exception:
+            pass
+
+        return surface, source_cell_ids
+
+
+    def _remove_static_field_for_time_playback(
+        self,
+        restore_type,
+    ):
+        """
+        删除当前属性对应的静态 actor，
+        防止时间步 actor 与静态场重叠。
+        """
+
+        actor_keys_by_property = {
+            "pressure": [
+                "pressure_field_actor",
+                "layer_pressure_actor",
+            ],
+
+            "sw": [
+                "sw_field_actor",
+                "layer_sw_actor",
+            ],
+
+            "porosity": [
+                "phi_field_actor",
+                "layer_phi_actor",
+            ],
+
+            "permeability_x": [
+                "perm_field_actor",
+                "layer_perm_actor",
+            ],
+
+            "permeability_y": [
+                "perm_field_actor",
+                "layer_perm_actor",
+            ],
+
+            "permeability_z": [
+                "perm_field_actor",
+                "layer_perm_actor",
+            ],
+        }
+
+        scalar_bar_keys_by_property = {
+            "pressure": [
+                "pressure_scalar_bar",
+                "layer_pressure_scalar_bar",
+            ],
+
+            "sw": [
+                "sw_scalar_bar",
+                "layer_sw_scalar_bar",
+            ],
+
+            "porosity": [
+                "phi_scalar_bar",
+                "layer_phi_scalar_bar",
+            ],
+
+            "permeability_x": [
+                "perm_scalar_bar",
+                "layer_perm_scalar_bar",
+            ],
+
+            "permeability_y": [
+                "perm_scalar_bar",
+                "layer_perm_scalar_bar",
+            ],
+
+            "permeability_z": [
+                "perm_scalar_bar",
+                "layer_perm_scalar_bar",
+            ],
+        }
+
+        for actor_key in actor_keys_by_property.get(
+            restore_type,
+            [],
+        ):
+            self._remove_actor(
+                self.cache.get(actor_key)
+            )
+
+            self.cache[actor_key] = None
+
+        for scalar_bar_key in scalar_bar_keys_by_property.get(
+            restore_type,
+            [],
+        ):
+            if self.cache.get(
+                scalar_bar_key
+            ) is not None:
+                try:
+                    self.plotter.remove_scalar_bar(
+                        render=False
+                    )
+                except Exception:
+                    pass
+
+            self.cache[scalar_bar_key] = None
+
+
+    def _prepare_time_playback(
+        self,
+        sim_data,
+        property_name,
+        mode="full",
+        axis=None,
+        layer_index=None,
+        start_index=0,
+        show_edges=False,
+    ):
+        """
+        时间步播放初始化入口。
+        """
+
+        mode = str(mode).lower().strip()
+
+        if mode not in ("full", "layer"):
+            print(
+                f"时间步播放初始化失败：未知模式 {mode}"
+            )
+            return None
+
+        try:
+            (
+                cell_data,
+                time_steps,
+                values,
+                config,
+            ) = self._validate_time_playback_data(
+                sim_data=sim_data,
+                property_name=property_name,
+            )
+
+            n_steps = int(
+                time_steps.shape[0]
+            )
+
+            start_index = int(start_index)
+
+            start_index = max(
+                0,
+                min(start_index, n_steps - 1),
+            )
+
+            if mode == "full":
+                selected_cell_ids = np.arange(
+                    cell_data.shape[0],
+                    dtype=np.int64,
+                )
+
+            else:
+                selected_cell_ids = (
+                    self._get_time_playback_layer_cell_ids(
+                        sim_data=sim_data,
+                        cell_data=cell_data,
+                        axis=axis,
+                        layer_index=layer_index,
+                    )
+                )
+
+            selected_values = values[
+                :,
+                selected_cell_ids,
+            ]
+
+            valid_values = selected_values[
+                np.isfinite(selected_values)
+            ]
+
+            if valid_values.size == 0:
+                raise ValueError(
+                    "当前播放区域没有有效属性数值"
+                )
+
+            fixed_clim = config.get(
+                "fixed_clim"
+            )
+
+            if fixed_clim is not None:
+                value_min = float(
+                    fixed_clim[0]
+                )
+
+                value_max = float(
+                    fixed_clim[1]
+                )
+
+            else:
+                value_min = float(
+                    np.min(valid_values)
+                )
+
+                value_max = float(
+                    np.max(valid_values)
+                )
+
+                if abs(
+                    value_max - value_min
+                ) < 1e-12:
+                    value_max = value_min + 1.0
+
+            self._clear_time_playback_cache(
+                render=False
+            )
+
+            self._remove_static_field_for_time_playback(
+                config["restore_type"]
+            )
+
+            first_frame = values[
+                start_index
+            ]
+
+            surface, source_cell_ids = (
+                self._build_time_playback_surface(
+                    cell_data=cell_data,
+                    selected_cell_ids=selected_cell_ids,
+                    first_frame_values=first_frame,
+                    scalar_name=config["scalar_name"],
+                )
+            )
+
+            actor = self.plotter.add_mesh(
+                surface,
+                scalars=config["scalar_name"],
+                cmap=config["cmap"],
+                clim=[value_min, value_max],
+                opacity=0.95,
+                show_edges=bool(show_edges),
+                show_scalar_bar=False,
+                lighting=False,
+                smooth_shading=False,
+                ambient=1.0,
+                diffuse=0.0,
+                specular=0.0,
+                interpolate_before_map=False,
+                render=False,
+            )
+
+            scalar_bar = self._replace_scalar_bar(
+                "time_playback_scalar_bar",
+                config["scalar_bar_title"],
+                position_x=0.02,
+                position_y=0.55,
+                width=0.08,
+                height=0.40,
+                label_font_size=14,
+                title_font_size=16,
+                color="#2f3640",
+                vertical=True,
+                render=False,
+            )
+
+            self.cache[
+                "time_playback_actor"
+            ] = actor
+
+            self.cache[
+                "time_playback_scalar_bar"
+            ] = scalar_bar
+
+            self.cache[
+                "time_playback_surface"
+            ] = surface
+
+            self.cache[
+                "time_playback_source_cell_ids"
+            ] = source_cell_ids
+
+            self.cache[
+                "time_playback_steps"
+            ] = time_steps
+
+            self.cache[
+                "time_playback_values"
+            ] = values
+
+            self.cache[
+                "time_playback_property"
+            ] = config["property_name"]
+
+            self.cache[
+                "time_playback_scalar_name"
+            ] = config["scalar_name"]
+
+            self.cache[
+                "time_playback_scalar_bar_title"
+            ] = config["scalar_bar_title"]
+
+            self.cache[
+                "time_playback_mode"
+            ] = mode
+
+            self.cache[
+                "time_playback_axis"
+            ] = axis
+
+            self.cache[
+                "time_playback_layer_index"
+            ] = layer_index
+
+            self.cache[
+                "time_playback_current_index"
+            ] = start_index
+
+            self.cache[
+                "time_playback_clim"
+            ] = (
+                value_min,
+                value_max,
+            )
+
+            self.cache[
+                "time_playback_selected_cell_ids"
+            ] = selected_cell_ids
+
+            self._render()
+
+            return self.get_time_playback_info()
+
+        except Exception as exc:
+            print(
+                f"时间步播放初始化失败：{exc}"
+            )
+
+            self._clear_time_playback_cache(
+                render=True
+            )
+
+            return None
+
+
+    # =====================================================================
+    # 对外入口：整体模型播放
+    # =====================================================================
+
+    def prepare_corner_time_playback(
+        self,
+        sim_data,
+        property_name,
+        start_index=0,
+        show_edges=False,
+    ):
+        """
+        准备整体模型时间步播放。
+
+        property_name:
+            pressure
+            sw
+            porosity
+            permeability_x
+            permeability_y
+            permeability_z
+        """
+
+        return self._prepare_time_playback(
+            sim_data=sim_data,
+            property_name=property_name,
+            mode="full",
+            start_index=start_index,
+            show_edges=show_edges,
+        )
+
+
+    # =====================================================================
+    # 对外入口：I / J / K 分层播放
+    # =====================================================================
+
+    def prepare_corner_time_playback_by_layer(
+        self,
+        sim_data,
+        property_name,
+        axis,
+        layer_index,
+        start_index=0,
+        show_edges=False,
+    ):
+        """
+        准备 I / J / K 分层时间步播放。
+        """
+
+        return self._prepare_time_playback(
+            sim_data=sim_data,
+            property_name=property_name,
+            mode="layer",
+            axis=axis,
+            layer_index=layer_index,
+            start_index=start_index,
+            show_edges=show_edges,
+        )
+
+
+    def prepare_corner_time_playback_by_layer_i(
+        self,
+        sim_data,
+        property_name,
+        i_layer,
+        start_index=0,
+        show_edges=False,
+    ):
+        return self.prepare_corner_time_playback_by_layer(
+            sim_data=sim_data,
+            property_name=property_name,
+            axis="i",
+            layer_index=i_layer,
+            start_index=start_index,
+            show_edges=show_edges,
+        )
+
+
+    def prepare_corner_time_playback_by_layer_j(
+        self,
+        sim_data,
+        property_name,
+        j_layer,
+        start_index=0,
+        show_edges=False,
+    ):
+        return self.prepare_corner_time_playback_by_layer(
+            sim_data=sim_data,
+            property_name=property_name,
+            axis="j",
+            layer_index=j_layer,
+            start_index=start_index,
+            show_edges=show_edges,
+        )
+
+
+    def prepare_corner_time_playback_by_layer_k(
+        self,
+        sim_data,
+        property_name,
+        k_layer,
+        start_index=0,
+        show_edges=False,
+    ):
+        return self.prepare_corner_time_playback_by_layer(
+            sim_data=sim_data,
+            property_name=property_name,
+            axis="k",
+            layer_index=k_layer,
+            start_index=start_index,
+            show_edges=show_edges,
+        )
+
+
+    # =====================================================================
+    # 切换时间步
+    # =====================================================================
+
+    def show_corner_time_step(
+        self,
+        step_index,
+    ):
+        """
+        显示指定帧。
+        """
+
+        if not self.has_time_playback():
+            print(
+                "时间步播放尚未初始化，"
+                "请先调用 prepare_corner_time_playback()"
+            )
+            return None
+
+        values = self.cache.get(
+            "time_playback_values"
+        )
+
+        time_steps = self.cache.get(
+            "time_playback_steps"
+        )
+
+        surface = self.cache.get(
+            "time_playback_surface"
+        )
+
+        source_cell_ids = self.cache.get(
+            "time_playback_source_cell_ids"
+        )
+
+        scalar_name = self.cache.get(
+            "time_playback_scalar_name"
+        )
+
+        if (
+            values is None
+            or time_steps is None
+            or surface is None
+            or source_cell_ids is None
+            or scalar_name is None
+        ):
+            print(
+                "时间步播放缓存不完整"
+            )
+            return None
+
+        step_count = int(
+            values.shape[0]
+        )
+
+        try:
+            step_index = int(step_index)
+        except Exception:
+            print(
+                f"时间步索引无效：{step_index}"
+            )
+            return None
+
+        step_index = max(
+            0,
+            min(step_index, step_count - 1),
+        )
+
+        current_frame = values[
+            step_index
+        ]
+
+        surface.cell_data[
+            scalar_name
+        ] = current_frame[
+            source_cell_ids
+        ]
+
+        try:
+            surface.modified()
+        except Exception:
+            try:
+                surface.Modified()
+            except Exception:
+                pass
+
+        self.cache[
+            "time_playback_current_index"
+        ] = step_index
+
+        self._render()
+
+        selected_cell_ids = self.cache.get(
+            "time_playback_selected_cell_ids"
+        )
+
+        current_values = current_frame[
+            selected_cell_ids
+        ]
+
+        current_values = current_values[
+            np.isfinite(current_values)
+        ]
+
+        if current_values.size > 0:
+            current_min = float(
+                np.min(current_values)
+            )
+
+            current_max = float(
+                np.max(current_values)
+            )
+        else:
+            current_min = None
+            current_max = None
+
+        return {
+            "index": step_index,
+            "time": float(
+                time_steps[step_index]
+            ),
+            "property": self.cache.get(
+                "time_playback_property"
+            ),
+            "value_min": current_min,
+            "value_max": current_max,
+            "mode": self.cache.get(
+                "time_playback_mode"
+            ),
+            "axis": self.cache.get(
+                "time_playback_axis"
+            ),
+            "layer_index": self.cache.get(
+                "time_playback_layer_index"
+            ),
+        }
+
+
+    def show_next_corner_time_step(
+        self,
+        loop=True,
+    ):
+        """
+        显示下一帧。
+        """
+
+        if not self.has_time_playback():
+            return None
+
+        values = self.cache.get(
+            "time_playback_values"
+        )
+
+        if values is None:
+            return None
+
+        step_count = int(
+            values.shape[0]
+        )
+
+        if step_count <= 0:
+            return None
+
+        current_index = int(
+            self.cache.get(
+                "time_playback_current_index",
+                -1,
+            )
+        )
+
+        next_index = current_index + 1
+
+        if next_index >= step_count:
+            next_index = (
+                0
+                if loop
+                else step_count - 1
+            )
+
+        return self.show_corner_time_step(
+            next_index
+        )
+
+
+    def show_previous_corner_time_step(
+        self,
+        loop=True,
+    ):
+        """
+        显示上一帧。
+        """
+
+        if not self.has_time_playback():
+            return None
+
+        values = self.cache.get(
+            "time_playback_values"
+        )
+
+        if values is None:
+            return None
+
+        step_count = int(
+            values.shape[0]
+        )
+
+        if step_count <= 0:
+            return None
+
+        current_index = int(
+            self.cache.get(
+                "time_playback_current_index",
+                0,
+            )
+        )
+
+        previous_index = current_index - 1
+
+        if previous_index < 0:
+            previous_index = (
+                step_count - 1
+                if loop
+                else 0
+            )
+
+        return self.show_corner_time_step(
+            previous_index
+        )
+
+
+    # =====================================================================
+    # 播放状态信息
+    # =====================================================================
+
+    def get_time_playback_info(self):
+        """
+        获取当前通用时间步播放状态。
+        """
+
+        if not self.has_time_playback():
+            return {
+                "ready": False,
+                "property": None,
+                "step_count": 0,
+                "current_index": -1,
+                "current_time": None,
+                "first_time": None,
+                "last_time": None,
+                "value_min": None,
+                "value_max": None,
+                "mode": None,
+                "axis": None,
+                "layer_index": None,
+                "visible_cell_count": 0,
+            }
+
+        time_steps = self.cache[
+            "time_playback_steps"
+        ]
+
+        selected_cell_ids = self.cache[
+            "time_playback_selected_cell_ids"
+        ]
+
+        current_index = int(
+            self.cache.get(
+                "time_playback_current_index",
+                0,
+            )
+        )
+
+        value_min, value_max = self.cache[
+            "time_playback_clim"
+        ]
+
+        current_time = None
+
+        if 0 <= current_index < len(time_steps):
+            current_time = float(
+                time_steps[current_index]
+            )
+
+        return {
+            "ready": True,
+            "property": self.cache.get(
+                "time_playback_property"
+            ),
+            "step_count": int(
+                len(time_steps)
+            ),
+            "current_index": current_index,
+            "current_time": current_time,
+            "first_time": float(
+                time_steps[0]
+            ),
+            "last_time": float(
+                time_steps[-1]
+            ),
+            "value_min": float(value_min),
+            "value_max": float(value_max),
+            "mode": self.cache.get(
+                "time_playback_mode"
+            ),
+            "axis": self.cache.get(
+                "time_playback_axis"
+            ),
+            "layer_index": self.cache.get(
+                "time_playback_layer_index"
+            ),
+            "visible_cell_count": int(
+                len(selected_cell_ids)
+            ),
+        }
+
+
+    # =====================================================================
+    # 停止播放
+    # =====================================================================
+
+    def clear_corner_time_playback(
+        self,
+        sim_data=None,
+        restore_final_field=True,
+    ):
+        """
+        停止时间步播放。
+
+        restore_final_field=True：
+            删除时间步 actor 后，
+            恢复当前属性对应的静态最终结果场。
+        """
+
+        property_name = self.cache.get(
+            "time_playback_property"
+        )
+
+        self._clear_time_playback_cache(
+            render=False
+        )
+
+        if (
+            not restore_final_field
+            or sim_data is None
+            or property_name is None
+        ):
+            self._render()
+            return
+
+        if property_name == "pressure":
+            self.render_corner_pressure_field(
+                sim_data
+            )
+
+        elif property_name == "sw":
+            self.render_corner_sw_field(
+                sim_data
+            )
+
+        elif property_name == "porosity":
+            self.render_corner_phi_field(
+                sim_data
+            )
+
+        elif property_name == "permeability_x":
+            self.render_corner_permeability_field(
+                sim_data,
+                direction="x",
+            )
+
+        elif property_name == "permeability_y":
+            self.render_corner_permeability_field(
+                sim_data,
+                direction="y",
+            )
+
+        elif property_name == "permeability_z":
+            self.render_corner_permeability_field(
+                sim_data,
+                direction="z",
+            )
+
+        else:
+            self._render()
+
+
+    # =====================================================================
+    # 2D Magnify
+    # =====================================================================
+    def _is_magnify_2d_view(self):
+        """
+        判断当前是否为 XY 平面正交俯视图。
+        """
+
+        try:
+            camera = self.plotter.camera
+
+            if not bool(
+                getattr(
+                    camera,
+                    "parallel_projection",
+                    False,
+                )
+            ):
+                return False
+
+            position = np.asarray(
+                camera.position,
+                dtype=np.float64,
+            )
+
+            focal_point = np.asarray(
+                camera.focal_point,
+                dtype=np.float64,
+            )
+
+            direction = focal_point - position
+            length = np.linalg.norm(direction)
+
+            if length <= 1e-12:
+                return False
+
+            direction = direction / length
+
+            return abs(float(direction[2])) >= 0.98
+
+        except Exception:
+            return False
+
+
+    def _display_to_magnify_xy(
+        self,
+        display_x,
+        display_y,
+        world_bounds,
+    ):
+        """
+        将鼠标像素坐标转换为 XY 世界坐标。
+        直接复用已有 display_to_world_xy()。
+        """
+
+        if world_bounds is None or len(world_bounds) != 6:
+            return None
+
+        try:
+            point = self.display_to_world_xy(
+                float(display_x),
+                float(display_y),
+                world_bounds,
+            )
+
+            if point is None:
+                return None
+
+            return (
+                float(point[0]),
+                float(point[1]),
+            )
+
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _normalize_magnify_xy_bounds(
+        start_xy,
+        end_xy,
+        world_bounds,
+    ):
+
+        if start_xy is None or end_xy is None:
+            return None
+
+        if world_bounds is None or len(world_bounds) != 6:
+            return None
+
+        world_xmin = float(world_bounds[0])
+        world_xmax = float(world_bounds[1])
+        world_ymin = float(world_bounds[2])
+        world_ymax = float(world_bounds[3])
+
+        selected_xmin = min(
+            float(start_xy[0]),
+            float(end_xy[0]),
+        )
+
+        selected_xmax = max(
+            float(start_xy[0]),
+            float(end_xy[0]),
+        )
+
+        selected_ymin = min(
+            float(start_xy[1]),
+            float(end_xy[1]),
+        )
+
+        selected_ymax = max(
+            float(start_xy[1]),
+            float(end_xy[1]),
+        )
+
+        selected_xmin = max(
+            world_xmin,
+            min(world_xmax, selected_xmin),
+        )
+
+        selected_xmax = max(
+            world_xmin,
+            min(world_xmax, selected_xmax),
+        )
+
+        selected_ymin = max(
+            world_ymin,
+            min(world_ymax, selected_ymin),
+        )
+
+        selected_ymax = max(
+            world_ymin,
+            min(world_ymax, selected_ymax),
+        )
+
+        return (
+            float(selected_xmin),
+            float(selected_xmax),
+            float(selected_ymin),
+            float(selected_ymax),
+        )
+
+
+    @staticmethod
+    def _magnify_xy_bounds_valid(
+        xy_bounds,
+        min_size=1e-8,
+    ):
+        """
+        判断框选范围是否有效。
+        """
+
+        if xy_bounds is None or len(xy_bounds) != 4:
+            return False
+
+        xmin, xmax, ymin, ymax = [
+            float(value)
+            for value in xy_bounds
+        ]
+
+        return (
+            xmax - xmin > float(min_size)
+            and ymax - ymin > float(min_size)
+        )
+
+
+    def _zoom_2d_camera_to_xy_bounds(
+        self,
+        xy_bounds,
+        padding=1.05,
+    ):
+
+        if not self._is_magnify_2d_view():
+            return False
+
+        if not self._magnify_xy_bounds_valid(
+            xy_bounds
+        ):
+            return False
+
+        try:
+            xmin = float(xy_bounds[0])
+            xmax = float(xy_bounds[1])
+            ymin = float(xy_bounds[2])
+            ymax = float(xy_bounds[3])
+
+            width = xmax - xmin
+            height = ymax - ymin
+
+            center_x = (xmin + xmax) * 0.5
+            center_y = (ymin + ymax) * 0.5
+
+            window_size = getattr(
+                self.plotter,
+                "window_size",
+                None,
+            )
+
+            if (
+                window_size is None
+                or len(window_size) < 2
+            ):
+                window_width = 1.0
+                window_height = 1.0
+
+            else:
+                window_width = max(
+                    float(window_size[0]),
+                    1.0,
+                )
+
+                window_height = max(
+                    float(window_size[1]),
+                    1.0,
+                )
+
+            aspect = window_width / window_height
+
+            target_parallel_scale = max(
+                height,
+                width / aspect,
+            )
+
+            target_parallel_scale *= max(
+                float(padding),
+                1.0,
+            )
+
+            camera = self.plotter.camera
+
+            old_position = np.asarray(
+                camera.position,
+                dtype=np.float64,
+            )
+
+            old_focal = np.asarray(
+                camera.focal_point,
+                dtype=np.float64,
+            )
+
+            old_view_up = np.asarray(
+                camera.up,
+                dtype=np.float64,
+            )
+
+            camera_offset = old_position - old_focal
+
+            new_focal = np.asarray(
+                [
+                    center_x,
+                    center_y,
+                    old_focal[2],
+                ],
+                dtype=np.float64,
+            )
+
+            new_position = new_focal + camera_offset
+
+            camera.parallel_projection = True
+
+            camera.parallel_scale = max(
+                float(target_parallel_scale),
+                1e-8,
+            )
+
+            self.plotter.camera_position = (
+                tuple(
+                    float(value)
+                    for value in new_position
+                ),
+                tuple(
+                    float(value)
+                    for value in new_focal
+                ),
+                tuple(
+                    float(value)
+                    for value in old_view_up
+                ),
+            )
+
+            try:
+                self.plotter.reset_camera_clipping_range()
+            except Exception:
+                pass
+
+            self._render()
+
+            return True
+
+        except Exception as exc:
+            print(
+                "2D Magnify zoom error:",
+                exc,
+            )
+            return False
+
+    def activate_2d_magnify(
+        self,
+        sim_data,
+    ):
+        """
+        开启二维 Magnify。
+
+        行为：
+        1. 获取模型真实坐标范围；
+        2. 当前不是 XY 二维俯视图时，自动切换到全模型二维俯视图；
+        3. 当前已经是 XY 二维俯视图时，保留当前放大后的相机状态；
+        4. 清除旧的框选覆盖层；
+        5. 进入待框选状态。
+        """
+
+        world_bounds = self.get_corner_model_bounds(
+            sim_data
+        )
+
+        if world_bounds is None:
+            print(
+                "2D Magnify 开启失败："
+                "当前模型没有有效坐标范围。"
+            )
+            return None
+
+        if not self._is_magnify_2d_view():
+            self.configure_selection_camera(
+                world_bounds
+            )
+
+        if not self._is_magnify_2d_view():
+            print(
+                "2D Magnify 开启失败："
+                "无法切换到 XY 二维正交视图。"
+            )
+            return None
+
+        self.clear_selection_overlay()
+
+        self.cache["magnify_2d_active"] = True
+        self.cache["magnify_2d_dragging"] = False
+
+        self.cache[
+            "magnify_2d_world_bounds"
+        ] = tuple(
+            float(value)
+            for value in world_bounds
+        )
+
+        self.cache[
+            "magnify_2d_start_xy"
+        ] = None
+
+        self._render()
+
+        return self.cache[
+            "magnify_2d_world_bounds"
+        ]
+
+
+    def begin_2d_magnify_drag(
+        self,
+        display_x,
+        display_y,
+    ):
+        """
+        UI 在鼠标左键按下时调用。
+        """
+
+        if not self.cache.get(
+            "magnify_2d_active",
+            False,
+        ):
+            return False
+
+        world_bounds = self.cache.get(
+            "magnify_2d_world_bounds"
+        )
+
+        if world_bounds is None:
+            return False
+
+        start_xy = self._display_to_magnify_xy(
+            display_x,
+            display_y,
+            world_bounds,
+        )
+
+        if start_xy is None:
+            return False
+
+        self.clear_selection_overlay()
+
+        self.cache[
+            "magnify_2d_dragging"
+        ] = True
+
+        self.cache[
+            "magnify_2d_start_xy"
+        ] = start_xy
+
+        self.show_selection_preview(
+            start_xy=start_xy,
+            end_xy=start_xy,
+            world_bounds=world_bounds,
+            finalized=False,
+        )
+
+        return True
+
+
+    def update_2d_magnify_drag(
+        self,
+        display_x,
+        display_y,
+    ):
+
+        if not self.cache.get(
+            "magnify_2d_active",
+            False,
+        ):
+            return False
+
+        if not self.cache.get(
+            "magnify_2d_dragging",
+            False,
+        ):
+            return False
+
+        world_bounds = self.cache.get(
+            "magnify_2d_world_bounds"
+        )
+
+        start_xy = self.cache.get(
+            "magnify_2d_start_xy"
+        )
+
+        if world_bounds is None or start_xy is None:
+            return False
+
+        current_xy = self._display_to_magnify_xy(
+            display_x,
+            display_y,
+            world_bounds,
+        )
+
+        if current_xy is None:
+            return False
+
+        self.show_selection_preview(
+            start_xy=start_xy,
+            end_xy=current_xy,
+            world_bounds=world_bounds,
+            finalized=False,
+        )
+
+        return True
+
+
+    def finish_2d_magnify_drag(
+        self,
+        display_x,
+        display_y,
+        padding=1.05,
+    ):
+
+        if not self.cache.get(
+            "magnify_2d_active",
+            False,
+        ):
+            return False
+
+        if not self.cache.get(
+            "magnify_2d_dragging",
+            False,
+        ):
+            return False
+
+        world_bounds = self.cache.get(
+            "magnify_2d_world_bounds"
+        )
+
+        start_xy = self.cache.get(
+            "magnify_2d_start_xy"
+        )
+
+        self.cache[
+            "magnify_2d_dragging"
+        ] = False
+
+        self.cache[
+            "magnify_2d_start_xy"
+        ] = None
+
+        if world_bounds is None or start_xy is None:
+            self.clear_selection_overlay()
+
+            self.deactivate_2d_magnify(
+                render=False,
+            )
+
+            self._render()
+
+            return False
+
+        end_xy = self._display_to_magnify_xy(
+            display_x,
+            display_y,
+            world_bounds,
+        )
+
+        if end_xy is None:
+            self.clear_selection_overlay()
+
+            self.deactivate_2d_magnify(
+                render=False,
+            )
+
+            self._render()
+
+            return False
+
+        xy_bounds = self._normalize_magnify_xy_bounds(
+            start_xy=start_xy,
+            end_xy=end_xy,
+            world_bounds=world_bounds,
+        )
+
+        if not self._magnify_xy_bounds_valid(
+            xy_bounds
+        ):
+            self.clear_selection_overlay()
+
+            self.deactivate_2d_magnify(
+                render=False,
+            )
+
+            self._render()
+
+            return False
+
+        self.show_selection_preview(
+            start_xy=(
+                xy_bounds[0],
+                xy_bounds[2],
+            ),
+            end_xy=(
+                xy_bounds[1],
+                xy_bounds[3],
+            ),
+            world_bounds=world_bounds,
+            finalized=True,
+        )
+
+        success = self._zoom_2d_camera_to_xy_bounds(
+            xy_bounds=xy_bounds,
+            padding=padding,
+        )
+
+        self.clear_selection_overlay()
+
+        self.deactivate_2d_magnify(
+            render=False,
+        )
+
+        self._render()
+
+        return bool(success)
+
+
+    def cancel_2d_magnify_drag(
+        self,
+        render=True,
+    ):
+        """
+        取消当前正在进行的一次拖拽。
+
+        仅取消当前框选，不退出 Magnify 模式。
+        """
+
+        self.cache[
+            "magnify_2d_dragging"
+        ] = False
+
+        self.cache[
+            "magnify_2d_start_xy"
+        ] = None
+
+        self.clear_selection_overlay()
+
+        if render:
+            self._render()
+
+
+    def deactivate_2d_magnify(
+        self,
+        render=True,
+    ):
+        """
+        退出 Magnify 模式。
+        """
+
+        self.cancel_2d_magnify_drag(
+            render=False,
+        )
+
+        self.cache["magnify_2d_active"] = False
+        self.cache["magnify_2d_dragging"] = False
+
+        self.cache[
+            "magnify_2d_world_bounds"
+        ] = None
+
+        self.cache[
+            "magnify_2d_start_xy"
+        ] = None
+
+        if render:
+            self._render()
+
+
+    def is_2d_magnify_active(self):
+        """
+        查询当前是否在 Magnify 模式。
+        """
+        return bool(
+            self.cache.get(
+                "magnify_2d_active",
+                False,
+            )
+        )

@@ -173,8 +173,13 @@ class SimulationData:
         self.corner_lgr_refined_grid_geometry = None  # 加密后的子网格几何
         self.dual_porosity_pressure_field = None      # WR dual porosity 压力场
         self.has_dual_porosity = False                # 本次模拟是否启用了 WR
-        self.time_steps = []
-        self.pressure_steps = []
+        self.time_steps = None
+        self.pressure_steps = None
+        self.sw_steps = None
+        self.porosity_steps = None
+        self.permeability_x_steps = None
+        self.permeability_y_steps = None
+        self.permeability_z_steps = None
 
     def generate_from_cpp(self, sim_result, nx, ny, nz, lx, ly, lz, grid_lines=None, interpolated_pressure=None):
         """从C++结果生成数据"""
@@ -261,8 +266,61 @@ class SimulationData:
         if self.dual_porosity_pressure_field is not None:
             dual_poro_list = [list(point) for point in self.dual_porosity_pressure_field]
 
-        time_steps_list = list(self.time_steps or [])
-        pressure_steps_list = [list(step) for step in self.pressure_steps or []]
+        time_steps_list = None
+        if self.time_steps is not None:
+            time_steps_list = (
+                self.time_steps.tolist()
+                if hasattr(self.time_steps, "tolist")
+                else list(self.time_steps)
+            )
+
+        pressure_steps_list = None
+        if self.pressure_steps is not None:
+            pressure_steps_list = (
+                self.pressure_steps.tolist()
+                if hasattr(self.pressure_steps, "tolist")
+                else [list(step) for step in self.pressure_steps]
+            )
+
+        sw_steps_list = None
+        if self.sw_steps is not None:
+            sw_steps_list = (
+                self.sw_steps.tolist()
+                if hasattr(self.sw_steps, "tolist")
+                else [list(step) for step in self.sw_steps]
+            )
+
+        porosity_steps_list = None
+        if self.porosity_steps is not None:
+            porosity_steps_list = (
+                self.porosity_steps.tolist()
+                if hasattr(self.porosity_steps, "tolist")
+                else [list(step) for step in self.porosity_steps]
+            )
+
+        permeability_x_steps_list = None
+        if self.permeability_x_steps is not None:
+            permeability_x_steps_list = (
+                self.permeability_x_steps.tolist()
+                if hasattr(self.permeability_x_steps, "tolist")
+                else [list(step) for step in self.permeability_x_steps]
+            )
+
+        permeability_y_steps_list = None
+        if self.permeability_y_steps is not None:
+            permeability_y_steps_list = (
+                self.permeability_y_steps.tolist()
+                if hasattr(self.permeability_y_steps, "tolist")
+                else [list(step) for step in self.permeability_y_steps]
+            )
+
+        permeability_z_steps_list = None
+        if self.permeability_z_steps is not None:
+            permeability_z_steps_list = (
+                self.permeability_z_steps.tolist()
+                if hasattr(self.permeability_z_steps, "tolist")
+                else [list(step) for step in self.permeability_z_steps]
+            )
 
         return {
             'grid_info': dict(self.grid_info),
@@ -288,6 +346,11 @@ class SimulationData:
             'has_dual_porosity': self.has_dual_porosity,
             'time_steps': time_steps_list,
             'pressure_steps': pressure_steps_list,
+            'sw_steps': sw_steps_list,
+            'porosity_steps': porosity_steps_list,
+            'permeability_x_steps': permeability_x_steps_list,
+            'permeability_y_steps': permeability_y_steps_list,
+            'permeability_z_steps': permeability_z_steps_list,
         }
 
     def load_dict(self, payload):
@@ -347,11 +410,48 @@ class SimulationData:
             self.dual_porosity_pressure_field = None
 
         self.has_dual_porosity = bool(payload.get('has_dual_porosity', False))
-        self.time_steps = [float(value) for value in payload.get('time_steps', [])]
-        self.pressure_steps = [
-            [float(value) for value in step]
-            for step in payload.get('pressure_steps', [])
-        ]
+
+        time_steps_list = payload.get('time_steps')
+        if time_steps_list is not None:
+            self.time_steps = np.array(time_steps_list, dtype=np.float64)
+        else:
+            self.time_steps = None
+
+        pressure_steps_list = payload.get('pressure_steps')
+        if pressure_steps_list is not None:
+            self.pressure_steps = np.array(pressure_steps_list, dtype=np.float64)
+        else:
+            self.pressure_steps = None
+
+        sw_steps_list = payload.get('sw_steps')
+        if sw_steps_list is not None:
+            self.sw_steps = np.array(sw_steps_list, dtype=np.float64)
+        else:
+            self.sw_steps = None
+
+        porosity_steps_list = payload.get('porosity_steps')
+        if porosity_steps_list is not None:
+            self.porosity_steps = np.array(porosity_steps_list, dtype=np.float64)
+        else:
+            self.porosity_steps = None
+
+        permeability_x_steps_list = payload.get('permeability_x_steps')
+        if permeability_x_steps_list is not None:
+            self.permeability_x_steps = np.array(permeability_x_steps_list, dtype=np.float64)
+        else:
+            self.permeability_x_steps = None
+
+        permeability_y_steps_list = payload.get('permeability_y_steps')
+        if permeability_y_steps_list is not None:
+            self.permeability_y_steps = np.array(permeability_y_steps_list, dtype=np.float64)
+        else:
+            self.permeability_y_steps = None
+
+        permeability_z_steps_list = payload.get('permeability_z_steps')
+        if permeability_z_steps_list is not None:
+            self.permeability_z_steps = np.array(permeability_z_steps_list, dtype=np.float64)
+        else:
+            self.permeability_z_steps = None
 
     def save_json(self, output_path):
         """将模拟结果写入JSON文件。"""
