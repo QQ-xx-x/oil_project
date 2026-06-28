@@ -553,6 +553,10 @@ QFrame#viewToolbar {
     min-height: 28px;
     max-height: 28px;
 }
+QFrame#viewToolbar[viewType="3d"] {
+    min-height: 54px;
+    max-height: 58px;
+}
 QToolButton#viewToolbarButton {
     border: 1px solid transparent;
     background: transparent;
@@ -603,6 +607,71 @@ QLabel#parameterTitle {
 QLabel#parameterDescription {
     color: #667080;
     font-size: 11px;
+}
+QFrame#modulePreviewPanel {
+    background: #f7f9fc;
+    border-left: 1px solid #ccd3df;
+}
+QLabel#modulePreviewTitle {
+    color: #26364a;
+    font-size: 14px;
+    font-weight: bold;
+}
+QLabel#modulePreviewDescription {
+    color: #667080;
+    font-size: 11px;
+}
+QLabel#modulePreviewSubtitle {
+    color: #26364a;
+    font-size: 12px;
+    font-weight: bold;
+}
+QComboBox#modulePreviewChartSelector {
+    min-width: 138px;
+    min-height: 24px;
+    background: #ffffff;
+    border: 1px solid #bfc8d6;
+    padding: 2px 6px;
+}
+QFrame#modulePreviewChartFrame, QFrame#modulePreviewMessage {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+    border-radius: 2px;
+}
+QFrame#modulePreviewCard {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+    border-radius: 2px;
+}
+QLabel#modulePreviewCardTitle {
+    color: #667080;
+    font-size: 10px;
+}
+QLabel#modulePreviewCardValue {
+    color: #26364a;
+    font-size: 13px;
+    font-weight: bold;
+}
+QTableWidget#modulePreviewTable {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+    gridline-color: #e4e8ef;
+}
+QPushButton#modulePreviewResultButton {
+    min-height: 26px;
+    padding: 3px 8px;
+    text-align: left;
+    color: #23364f;
+    background: #ffffff;
+    border: 1px solid #c8d1df;
+    border-radius: 2px;
+}
+QPushButton#modulePreviewResultButton:hover {
+    background: #edf4ff;
+    border: 1px solid #6f97c7;
+}
+QPushButton#modulePreviewResultButton:pressed {
+    background: #dcecff;
 }
 QGroupBox#parameterSection {
     background: #ffffff;

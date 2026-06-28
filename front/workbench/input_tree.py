@@ -8,7 +8,9 @@ from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
 
 from .case_data_panel import CaseDataPanel, CaseKeywordPanel
+from .functional_input_dialog import FunctionalInputDialog
 from .icons import painted_icon
+from .input_module_schema import INPUT_MODULES, module_by_key
 from .parameter_panels import (
     WorkbenchDualPorosityPanel, WorkbenchGasPvtPanel, WorkbenchGridPanel,
     WorkbenchHydraulicFracturesPanel, WorkbenchInitialStatePanel,
@@ -20,6 +22,7 @@ from .settings_dialog import ObjectSettingsDialog, ParameterSettingsDialog
 
 KEY_ROLE = Qt.UserRole
 TYPE_ROLE = Qt.UserRole + 1
+DATA_ROLE = Qt.UserRole + 2
 
 DEFAULT_CASE_SECTION_NAMES = [
     "GRID", "ROCK", "FRACTURE", "LGR", "FLUID", "GAS",
@@ -32,6 +35,7 @@ class InputTree(QTreeWidget):
     module_checked = pyqtSignal(str, str, bool)
     parameters_saved = pyqtSignal(str, str, dict)
     case_dataset_built = pyqtSignal(str, dict)
+    result_requested = pyqtSignal(str)
 
     def __init__(self, project_state=None, parent=None):
         super().__init__(parent)
@@ -83,44 +87,142 @@ class InputTree(QTreeWidget):
 
     def _populate(self):
         self._building = True
-        module_tree = [
-            ("CaseData 原始输入", "case_data_manifest", "CaseData 文件", "case_root", True, [
-                (section, f"case_data_section:{section}", "CaseData Section",
-                 self._case_section_icon(section), True)
-                for section in self._case_section_names()
-            ]),
-            ("网格与导入", "grid_input", "功能模块", "grid", True, [
-                ("网格数量、尺寸与文件", "grid_basic", "网格参数", "grid", True),
-            ]),
-            ("储层基础属性", "reservoir_properties", "功能模块", "matrix", True, [
-                ("初始状态", "initial_state", "初始状态参数", "initial", True),
-                ("基质属性", "matrix_properties", "岩石参数", "matrix", True),
-                ("双重介质", "dual_porosity", "岩石参数", "dual_porosity", False),
-            ]),
-            ("流体与 PVT", "fluid_pvt", "功能模块", "fluid", True, [
-                ("油水相基础参数", "oil_water_properties", "流体参数", "oil_water", True),
-                ("气相真实气体 PVT", "gas_pvt", "流体参数", "gas", False),
-            ]),
-            ("井参数", "well_system", "功能模块", "well", True, [
-                ("井位置与控制", "well_parameters", "井参数", "well", True),
-            ]),
-            ("裂缝参数", "fracture_system", "功能模块", "fracture", True, [
-                ("天然裂缝", "natural_fractures", "裂缝参数", "fracture", True),
-                ("人工裂缝", "hydraulic_fractures", "裂缝参数", "fracture", True),
-            ]),
-            ("模拟控制", "simulation_system", "功能模块", "solver", True, [
-                ("时间控制", "simulation_control", "模拟参数", "solver", True),
-            ]),
-        ]
-
-        for folder_name, folder_key, folder_type, folder_icon, folder_checked, children in module_tree:
-            folder = self._item(
-                folder_name, folder_key, folder_type, folder_checked, folder_icon)
-            for child_name, child_key, child_type, child_icon, child_checked in children:
-                folder.addChild(self._item(
-                    child_name, child_key, child_type, child_checked, child_icon))
-            self.addTopLevelItem(folder)
+        for module in INPUT_MODULES:
+            module_item = self._item(
+                module.get("title", module.get("key", "")),
+                module.get("key", ""),
+                "功能模块",
+                True,
+                module.get("icon", "generic"),
+                tooltip=self._module_tooltip(module),
+            )
+            module_item.setData(0, DATA_ROLE, {
+                "kind": "module",
+                "module_key": module.get("key", ""),
+            })
+            if module.get("special") != "case_data":
+                self._add_schema_children(module_item, module)
+            self.addTopLevelItem(module_item)
         self._building = False
+
+    def _add_schema_children(self, module_item, module):
+        module_key = module.get("key", "")
+        for child in module.get("children", []) or []:
+            child_key = child.get("key", "")
+            tree_key = f"input_group:{module_key}:{child_key}"
+            child_item = self._item(
+                child.get("title", child_key),
+                tree_key,
+                "参数分组",
+                True,
+                child.get("icon", module.get("icon", "generic")),
+                tooltip=self._child_tooltip(module, child),
+            )
+            child_item.setData(0, DATA_ROLE, {
+                "kind": "group",
+                "module_key": module_key,
+                "child_key": child_key,
+            })
+            for index, field in enumerate(child.get("items", []) or []):
+                field_key = self._field_tree_key(module_key, child_key, field, index)
+                field_item = self._item(
+                    field.get("title", field.get("key", "")),
+                    field_key,
+                    "输入项",
+                    True,
+                    self._field_icon(field, child),
+                    tooltip=self._field_tooltip(field),
+                    foreground=self._field_foreground(field),
+                )
+                field_item.setData(0, DATA_ROLE, {
+                    "kind": "field",
+                    "module_key": module_key,
+                    "child_key": child_key,
+                    "field": field,
+                })
+                child_item.addChild(field_item)
+            module_item.addChild(child_item)
+
+    def _schema_route(self, item):
+        data = item.data(0, DATA_ROLE) or {}
+        kind = data.get("kind")
+        if kind == "module":
+            return data.get("module_key"), None
+        if kind in {"group", "field"}:
+            return data.get("module_key"), data.get("child_key")
+        key = item.data(0, KEY_ROLE)
+        if isinstance(key, str) and module_by_key(key):
+            return key, None
+        return None
+
+    def _field_tree_key(self, module_key, child_key, field, index):
+        source = field.get("source", "field")
+        base = field.get("key") or field.get("title") or str(index)
+        owner = field.get("module") or field.get("section") or field.get("group") or ""
+        return f"input_item:{module_key}:{child_key}:{index}:{source}:{owner}:{base}"
+
+    def _module_tooltip(self, module):
+        count = sum(len(child.get("items", []) or []) for child in module.get("children", []) or [])
+        return f"{module.get('title', '')}\n输入项数量: {count}"
+
+    def _child_tooltip(self, module, child):
+        return (
+            f"{module.get('title', '')} / {child.get('title', '')}\n"
+            f"输入项数量: {len(child.get('items', []) or [])}"
+        )
+
+    def _field_tooltip(self, field):
+        source = field.get("source", "")
+        lines = [
+            f"name: {field.get('title', field.get('key', ''))}",
+            f"source: {source}",
+        ]
+        if source == "ui":
+            lines.append(f"module: {field.get('module', '')}")
+            lines.append(f"key: {field.get('key', '')}")
+        elif source == "case":
+            lines.append(f"section: {field.get('section', '')}")
+            lines.append(f"key: {field.get('key', '')}")
+        elif source == "config":
+            lines.append(f"group: {field.get('group', '')}")
+            lines.append(f"key: {field.get('key', '')}")
+        else:
+            lines.append(f"key: {field.get('key', '')}")
+        if field.get("note"):
+            lines.append(field.get("note"))
+        return "\n".join(lines)
+
+    def _field_icon(self, field, child):
+        source = field.get("source", "")
+        key = str(field.get("key", "") or "").lower()
+        if source == "ui":
+            return child.get("icon", "keyword_param")
+        if source == "case":
+            if key.endswith("_file"):
+                if key == "grid_file":
+                    return "grid_file"
+                if key == "fracture_file":
+                    return "dfn_file"
+                if key == "sigma_file":
+                    return "sigma_file"
+                if key.startswith("matrix_"):
+                    return "matrix_property_file"
+                if key.startswith("fracture_"):
+                    return "fracture_property_file"
+                return "property_file"
+            return "keyword_param"
+        if source == "array":
+            return "property_file"
+        if source == "dfn":
+            return "dfn_file"
+        if source == "validation":
+            return "validate"
+        return child.get("icon", "generic")
+
+    def _field_foreground(self, field):
+        if field.get("source") in {"array", "dfn", "validation"}:
+            return "#475467"
+        return None
 
     def _store_check_state(self, item, column):
         if self._building or column != 0 or self.project_state is None:
@@ -145,6 +247,29 @@ class InputTree(QTreeWidget):
         root = self._find_item("case_data_manifest")
         expanded_keys_before_dialog = self._expanded_keys(root) if root is not None else set()
         object_type = item.data(0, TYPE_ROLE) or "工程对象"
+        schema_route = self._schema_route(item)
+        if schema_route and self.project_state is not None:
+            module_key, child_key = schema_route
+            module = module_by_key(module_key)
+            dialog = FunctionalInputDialog(module, self.project_state, child_key, self)
+            dialog.values_applied.connect(
+                lambda module_key, title, values:
+                    self.parameters_saved.emit(module_key, title, values))
+            dialog.case_data_saved.connect(
+                lambda: self.refresh_case_data_sections(preserve_expanded=True))
+            dialog.case_dataset_built.connect(self.case_dataset_built.emit)
+            dialog.result_requested.connect(self.result_requested.emit)
+            result = dialog.exec_()
+            confirmed = (
+                result == dialog.Accepted
+                or getattr(dialog, "values_were_applied", False)
+            )
+            if confirmed:
+                if self._case_data_signature() != before_signature:
+                    self.refresh_case_data_sections(preserve_expanded=True)
+            else:
+                self._restore_case_data_snapshot(before_case_data)
+            return
         panel_factory = self._panel_factories.get(key)
         if isinstance(key, str) and key.startswith("case_data_section:"):
             section_name = key.split(":", 1)[1]
@@ -286,7 +411,9 @@ class InputTree(QTreeWidget):
             root.addChild(section_item)
         if preserve_expanded:
             self._restore_expanded_keys(root, expanded_keys)
-        root.setExpanded(True)
+            root.setExpanded("case_data_manifest" in expanded_keys)
+        else:
+            root.setExpanded(False)
         self._building = False
         if current_key:
             self.select_key(current_key)
@@ -349,7 +476,7 @@ class InputTree(QTreeWidget):
         if root is None:
             return
         self._restore_expanded_keys(root, keys)
-        root.setExpanded(True)
+        root.setExpanded("case_data_manifest" in keys)
 
     def _case_section_keywords(self, section_name):
         sections = getattr(self.project_state, "case_data_sections", []) or []

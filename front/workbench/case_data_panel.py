@@ -274,6 +274,7 @@ class CaseDataPanel(QWidget):
             if hasattr(self, "dataset_path_edit"):
                 self.dataset_path_edit.setText(output_dir)
         try:
+            self._load_project_snapshot()
             snapshot_path = self._export_dataset_case_data_snapshot()
             result = build_case_dataset(snapshot_path, output_dir)
         except Exception as exc:

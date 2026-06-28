@@ -83,6 +83,32 @@ def _parse_section_value(raw: str) -> Any:
     return raw
 
 
+def _parse_key_value_sections(text: str, section_names: List[str]) -> Dict[str, Dict[str, str]]:
+    sections: Dict[str, Dict[str, str]] = {name: {} for name in section_names}
+    known_sections = set(section_names)
+    current: Optional[str] = None
+    section_pattern = re.compile(r'^\s*\[([A-Z_]+)\]\s*$')
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('BEGIN_RETURN_SCHEMA'):
+            break
+        if not stripped or stripped.startswith('//'):
+            continue
+
+        section_match = section_pattern.match(stripped)
+        if section_match:
+            name = section_match.group(1)
+            current = name if name in known_sections else None
+            continue
+
+        if current and '=' in stripped:
+            key, _, value = stripped.partition('=')
+            sections[current][key.strip()] = value.strip()
+
+    return sections
+
+
 # ============================================================
 # ① parse_config — 读取 uniform_data.txt 的键值参数
 # ============================================================
@@ -97,6 +123,7 @@ def parse_config(path: str) -> Dict[str, Any]:
             'gas':     {temperature_c, mole_CH4, ..., gas_table_pmin_bar, ...},
             'initial': {pressure, sw, sg},
             'well':    {producer_bhp, well_radius},
+            'hydraulic_fractures': {count, spacing_x, length, height, aperture, perm, center_x/y/z},
             'solver':  {total_time, dt_init, dt_min, ...},
         }
     """
@@ -105,24 +132,7 @@ def parse_config(path: str) -> Dict[str, Any]:
     # 解析所有 [SECTION] 块
     section_names = ['GRID', 'ROCK', 'FRACTURE', 'LGR', 'FLUID',
                      'GAS', 'INITIAL', 'WELL', 'SOLVER', 'OUTPUT', 'WR']
-    sections: Dict[str, Dict[str, str]] = {}
-
-    for name in section_names:
-        pattern = re.compile(
-            rf'\[{re.escape(name)}\](.*?)(?=\[|BEGIN_RETURN_SCHEMA|\Z)', re.DOTALL)
-        m = pattern.search(text)
-        if not m:
-            sections[name] = {}
-            continue
-        sec: Dict[str, str] = {}
-        for line in m.group(1).strip().split('\n'):
-            stripped = line.strip()
-            if not stripped or stripped.startswith('//'):
-                continue
-            if '=' in stripped:
-                k, _, v = stripped.partition('=')
-                sec[k.strip()] = v.strip()
-        sections[name] = sec
+    sections = _parse_key_value_sections(text, section_names)
 
     # LGR
     lgr = sections.get('LGR', {})
@@ -184,6 +194,38 @@ def parse_config(path: str) -> Dict[str, Any]:
         'well_radius':  _parse_section_value(wl.get('well_radius', '0.05')),
     }
 
+    # Hydraulic fractures from newer CaseData files. Keep this block optional
+    # so older files without these keys continue to use the adapter fallback.
+    frac = sections.get('FRACTURE', {})
+    hf_keys = {
+        'count': 'hydraulic_fracture_count',
+        'spacing_x': 'hydraulic_fracture_spacing',
+        'length': 'hydraulic_fracture_length',
+        'height': 'hydraulic_fracture_height',
+        'aperture': 'hydraulic_fracture_aperture',
+        'perm': 'hydraulic_fracture_permeability',
+        'center_x': 'hydraulic_fracture_center_x',
+        'center_y': 'hydraulic_fracture_center_y',
+        'center_z': 'hydraulic_fracture_center_z',
+    }
+    hf_defaults = {
+        'count': '20',
+        'spacing_x': '100.0',
+        'length': '120.0',
+        'height': '30.0',
+        'aperture': '0.1',
+        'perm': '1000.0',
+        'center_x': '-1.0',
+        'center_y': '-1.0',
+        'center_z': '-1.0',
+    }
+    result_hf = {}
+    if any(case_key in frac for case_key in hf_keys.values()):
+        result_hf = {
+            out_key: _parse_section_value(frac.get(case_key, hf_defaults[out_key]))
+            for out_key, case_key in hf_keys.items()
+        }
+
     # Solver
     sv = sections.get('SOLVER', {})
     result_solver = {
@@ -200,7 +242,7 @@ def parse_config(path: str) -> Dict[str, Any]:
         'max_timestep_retry': _parse_section_value(sv.get('max_timestep_retry', '20')),
     }
 
-    return {
+    result = {
         'lgr':     result_lgr,
         'fluid':   result_fluid,
         'gas':     result_gas,
@@ -208,6 +250,9 @@ def parse_config(path: str) -> Dict[str, Any]:
         'well':    result_well,
         'solver':  result_solver,
     }
+    if result_hf:
+        result['hydraulic_fractures'] = result_hf
+    return result
 
 
 # ============================================================

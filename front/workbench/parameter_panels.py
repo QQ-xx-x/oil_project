@@ -515,11 +515,11 @@ class WorkbenchHydraulicFracturesPanel(QWidget):
         geometry_group, geometry_grid = _section("裂缝几何")
         self.spin_num_stages = _spinbox(1, 50, 20)
         self.spin_spacing_x = _double_spinbox(0.0, 100000.0, 31.58, decimals=2, step=1.0)
-        self.spin_half_len = _double_spinbox(0.0, 10000.0, 60.0, decimals=2, step=1.0)
+        self.spin_length = _double_spinbox(0.0, 10000.0, 120.0, decimals=2, step=1.0)
         self.spin_height = _double_spinbox(0.0, 1000.0, 30.0, decimals=2, step=1.0)
         _add_row(geometry_grid, 0, "压裂段数", self.spin_num_stages)
         _add_row(geometry_grid, 1, "裂缝间距 Fracture Spacing (m)", self.spin_spacing_x)
-        _add_row(geometry_grid, 2, "半缝长 (m)", self.spin_half_len)
+        _add_row(geometry_grid, 2, "裂缝总长度 Length (m)", self.spin_length)
         _add_row(geometry_grid, 3, "缝高 (m)", self.spin_height)
         layout.addWidget(geometry_group)
 
@@ -538,7 +538,7 @@ class WorkbenchHydraulicFracturesPanel(QWidget):
         return {
             "num_stages": self.spin_num_stages.value(),
             "spacing_x": self.spin_spacing_x.value(),
-            "half_len": self.spin_half_len.value(),
+            "length": self.spin_length.value(),
             "height": self.spin_height.value(),
             "aperture": self.spin_aperture.value(),
             "perm": self.spin_perm.value(),

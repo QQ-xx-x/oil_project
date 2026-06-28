@@ -210,6 +210,7 @@ class ProjectShell(QWidget):
         self.input_tree.module_checked.connect(self._handle_module_checked)
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
         self.input_tree.case_dataset_built.connect(self._handle_case_dataset_built)
+        self.input_tree.result_requested.connect(self._handle_input_related_result_requested)
 
         self.results_tree = ResultsTree()
         self.results_tree.result_selected.connect(self._handle_result_selected)
@@ -254,8 +255,12 @@ class ProjectShell(QWidget):
         left_container.setMinimumWidth(380)
         left_container.setMaximumWidth(570)
 
-        self.workspace = WorkspaceTabs()
+        self.workspace = WorkspaceTabs(
+            project_state=self.project_state,
+            result_store=self.result_store,
+        )
         self.workspace.workspace_message.connect(self._handle_workspace_message)
+        self.workspace.result_property_selected.connect(self._handle_workspace_result_property_selected)
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(left_container)
         main_splitter.addWidget(self.workspace)
@@ -268,6 +273,22 @@ class ProjectShell(QWidget):
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
         self._show_status(message.replace("[窗口] ", ""))
+
+    def _handle_workspace_result_property_selected(self, property_key):
+        if property_key not in LAZY_SIMULATION_DATA_KEYS:
+            return
+        self.results_tree.select_key(property_key)
+
+    def _handle_input_related_result_requested(self, result_key):
+        index = self.lower_tabs.tab_widget.indexOf(self.results_tree)
+        if index >= 0:
+            self.lower_tabs.tab_widget.setCurrentIndex(index)
+        if self.results_tree.select_key(result_key):
+            self.message_log.append_message(f"[输入] 已定位关联结果：{result_key}")
+            self._show_status(f"已定位关联结果：{result_key}")
+        else:
+            self.message_log.append_message(f"[输入] 未找到关联结果：{result_key}")
+            self._show_status(f"未找到关联结果：{result_key}")
 
     def collect_ui_state(self):
         """保存工程前收集当前界面状态。"""
@@ -485,16 +506,16 @@ class ProjectShell(QWidget):
 
     def activate_module(self, module_key):
         routes = {
-            "reservoir_model": ("input", "grid_basic"),
-            "grid_import": ("input", "grid_basic"),
-            "fracture_modeling": ("input", "natural_fractures"),
-            "well_engineering": ("input", "well_parameters"),
-            "fluid_pvt": ("input", "gas_pvt"),
-            "simulation": ("input", "simulation_control"),
+            "reservoir_model": ("input", "rock_properties"),
+            "grid_import": ("input", "input_group:grid_spatial:grid_files"),
+            "fracture_modeling": ("input", "fracture_system_inputs"),
+            "well_engineering": ("input", "well_production"),
+            "fluid_pvt": ("input", "fluid_pvt_inputs"),
+            "simulation": ("input", "solver_output"),
             "results_visualization": ("result", "pressure_field"),
             "relative_perm": ("result", "relative_permeability_curve"),
             "reservoir_analysis": ("result", "production_curve"),
-            "project_management": ("input", "grid_input"),
+            "project_management": ("input", "input_overview"),
         }
         route = routes.get(module_key)
         if route is None:

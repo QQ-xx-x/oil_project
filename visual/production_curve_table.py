@@ -43,10 +43,14 @@ class ProductionCurveTableWidget(QWidget):
         self.normal_text_color = QColor(0, 0, 0)
 
         self.property_display_names = {
+            "CumOil": "累积产油量",
             "CumWater": "累积产水量",
             "CumGas": "累积产气",
+            "Qo": "产油速率",
             "Qw": "产水速率",
             "Qg": "产气速率",
+            "BHP": "井底流压",
+            "AvgPressure": "平均压力",
         }
 
         self.display_name_to_key = {
@@ -55,10 +59,14 @@ class ProductionCurveTableWidget(QWidget):
         }
 
         self.property_order = [
+            "CumOil",
             "CumWater",
             "CumGas",
+            "Qo",
             "Qw",
             "Qg",
+            "BHP",
+            "AvgPressure",
         ]
 
         self.init_ui()
@@ -110,11 +118,7 @@ class ProductionCurveTableWidget(QWidget):
             self.clear_table()
             return
 
-        keys = []
-
-        for key in self.property_order:
-            if key in self.data:
-                keys.append(key)
+        keys = self.get_available_property_keys()
 
         if not keys:
             self.clear_table()
@@ -140,7 +144,7 @@ class ProductionCurveTableWidget(QWidget):
         for name in property_names:
             key = self._normalize_property_name(name)
 
-            if key in self.data and key in self.property_order:
+            if key in self.data and key != "date":
                 keys.append(key)
 
         if not keys:
@@ -188,6 +192,23 @@ class ProductionCurveTableWidget(QWidget):
                 self.table.setItem(row, col, item)
 
         self.table.resizeColumnsToContents()
+
+    def get_available_property_keys(self):
+        """
+        获取当前表格可显示的英文字段 key。
+        """
+        if self.data is None:
+            return []
+
+        ordered = [
+            key for key in self.property_order
+            if key in self.data and key != "date"
+        ]
+        extra = [
+            key for key in self.data.keys()
+            if key not in ordered and key != "date"
+        ]
+        return ordered + extra
 
     def clear_table(self):
         """

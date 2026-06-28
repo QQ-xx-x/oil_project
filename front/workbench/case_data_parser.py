@@ -344,6 +344,7 @@ def save_case_data(case_data, path=None, create_backup=True):
             if 0 <= line_index < len(lines):
                 lines[line_index] = _replace_keyword_line(
                     lines[line_index], keyword.key, keyword.raw_value)
+    _append_unplaced_keywords(lines, case_data)
 
     if create_backup and os.path.exists(target_path):
         backup_path = f"{target_path}.bak"
@@ -384,6 +385,7 @@ def export_case_data_snapshot(case_data, target_path):
             if 0 <= line_index < len(lines):
                 lines[line_index] = _replace_keyword_line(
                     lines[line_index], keyword.key, raw_value)
+    _append_unplaced_keywords(lines, case_data, snapshot=True)
 
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     with open(target_path, "w", encoding="utf-8", newline="") as file:
@@ -402,6 +404,7 @@ def _snapshot_template_lines(case_data):
     for section in case_data.sections:
         lines.append(f"[{section.name}]\n")
         for keyword in section.keywords:
+            keyword.line_number = len(lines) + 1
             lines.append(f"{keyword.key} = {_snapshot_keyword_raw_value(keyword)}\n")
         lines.append("\n")
     return lines
@@ -412,6 +415,30 @@ def _snapshot_keyword_raw_value(keyword):
     if keyword.is_file_ref and keyword.file_path:
         return os.path.abspath(keyword.file_path)
     return keyword.raw_value
+
+
+def _append_unplaced_keywords(lines, case_data, snapshot=False):
+    sections_with_new_keywords = []
+    for section in case_data.sections:
+        keywords = [
+            keyword for keyword in section.keywords
+            if getattr(keyword, "line_number", 0) <= 0
+        ]
+        if keywords:
+            sections_with_new_keywords.append((section, keywords))
+    if not sections_with_new_keywords:
+        return
+
+    if lines and not lines[-1].endswith(("\n", "\r\n")):
+        lines[-1] = f"{lines[-1]}\n"
+    lines.append("\n")
+    for section, keywords in sections_with_new_keywords:
+        lines.append(f"[{section.name}]\n")
+        for keyword in keywords:
+            raw_value = _snapshot_keyword_raw_value(keyword) if snapshot else keyword.raw_value
+            keyword.line_number = len(lines) + 1
+            lines.append(f"{keyword.key} = {raw_value}\n")
+        lines.append("\n")
 
 
 def _replace_keyword_line(raw_line, key, raw_value):

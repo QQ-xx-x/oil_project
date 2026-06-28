@@ -8,6 +8,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from .case_config_sync import apply_module_values_to_case_data
+
 
 class ObjectSettingsDialog(QDialog):
     def __init__(self, object_name, object_type="工程对象", parent=None):
@@ -149,6 +151,8 @@ class ParameterSettingsDialog(QDialog):
         if hasattr(self.panel, "get_values"):
             values = self.panel.get_values()
             self.project_state.set_module_values(self.module_key, values)
+            if apply_module_values_to_case_data(self.project_state, self.module_key, values):
+                self.project_state.mark_case_dataset_stale()
             self.values_were_applied = True
             self.values_applied.emit(dict(values))
 

@@ -6,14 +6,18 @@ from PyQt5.QtWidgets import QAction, QMenu, QTabWidget, QToolButton
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
+from .production_curve_panel import ProductionCurveViewport
 from .viewport_placeholders import ChartViewport, ThreeDViewport, TwoDViewport, ViewPage
 
 
 class WorkspaceTabs(QTabWidget):
     workspace_message = pyqtSignal(str)
+    result_property_selected = pyqtSignal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, project_state=None, result_store=None):
         super().__init__(parent)
+        self.project_state = project_state
+        self.result_store = result_store
         self.setObjectName("workspaceTabs")
         self.setTabsClosable(True)
         self.setMovable(True)
@@ -74,14 +78,18 @@ class WorkspaceTabs(QTabWidget):
             action.triggered.connect(callback)
         return action
 
-    def _create_page(self, view_type):
-        viewport = {
-            "2d": TwoDViewport,
-            "3d": ThreeDViewport,
-            "chart": ChartViewport,
-        }[view_type]()
+    def _create_page(self, view_type, display_key=None):
+        if view_type == "chart" and display_key == "production_curve":
+            viewport = ProductionCurveViewport(self.project_state, self.result_store)
+        else:
+            viewport = {
+                "2d": TwoDViewport,
+                "3d": ThreeDViewport,
+                "chart": ChartViewport,
+            }[view_type]()
         page = ViewPage(viewport, view_type)
         page.view_message.connect(self.workspace_message.emit)
+        page.result_property_selected.connect(self.result_property_selected.emit)
         page.new_window_requested.connect(lambda: self._show_new_menu_from_page(page))
         page.clone_window_requested.connect(lambda: self.clone_window(self.indexOf(page)))
         page.close_window_requested.connect(lambda: self.close_window(self.indexOf(page)))
@@ -118,7 +126,11 @@ class WorkspaceTabs(QTabWidget):
         view_type = source.property("viewType") or "3d"
         self._counters[view_type] += 1
         title = self._title_for(view_type, self._counters[view_type])
-        page = self._create_page(view_type)
+        display_key = None
+        source_viewport = getattr(source, "viewport", None)
+        if view_type == "chart":
+            display_key = getattr(source_viewport, "display_key", None)
+        page = self._create_page(view_type, display_key)
         self._copy_page_context(source, page)
         new_index = self._add_page(page, view_type, title)
         self.setCurrentIndex(new_index)
@@ -176,8 +188,11 @@ class WorkspaceTabs(QTabWidget):
 
     def update_context(self, title, detail, preferred_view="3d", display_key=None):
         self._last_context = (title, detail, display_key)
-        target = self._first_page_of_type(preferred_view)
-        pages = self._pages_of_type(preferred_view) if target is not None else self._pages()
+        target = self._target_page_for_context(preferred_view, display_key)
+        if preferred_view == "chart" and display_key == "production_curve" and target is not None:
+            pages = [target]
+        else:
+            pages = self._pages_of_type(preferred_view) if target is not None else self._pages()
         for page in pages:
             page.set_context(title, detail, display_key)
         if target is not None:
@@ -197,6 +212,16 @@ class WorkspaceTabs(QTabWidget):
         self._chart_data_by_key[chart_key] = data
         for page in self._pages_of_type("chart"):
             page.set_chart_data(chart_key, data)
+
+    def set_project_context(self, project_state=None, result_store=None):
+        if project_state is not None:
+            self.project_state = project_state
+        if result_store is not None:
+            self.result_store = result_store
+        for page in self._pages_of_type("chart"):
+            viewport = getattr(page, "viewport", None)
+            if hasattr(viewport, "set_project_context"):
+                viewport.set_project_context(self.project_state, self.result_store)
 
     def export_ui_state(self):
         pages = []
@@ -244,7 +269,12 @@ class WorkspaceTabs(QTabWidget):
         for page_info in normalized_pages:
             view_type = page_info.get("view_type")
             title = page_info.get("title") or self._title_for(view_type, self._counters.get(view_type, 0) + 1)
-            page = self._create_page(view_type)
+            display_key = None
+            state_payload = page_info.get("state") or {}
+            if view_type == "chart":
+                viewport_state = state_payload.get("viewport") or {}
+                display_key = viewport_state.get("display_key")
+            page = self._create_page(view_type, display_key)
             if hasattr(page, "restore_ui_state"):
                 page.restore_ui_state(page_info.get("state") or {})
             self._add_page(page, view_type, title)
@@ -294,6 +324,24 @@ class WorkspaceTabs(QTabWidget):
             else:
                 for key, data in self._chart_data_by_key.items():
                     target.set_chart_data(key, data)
+
+    def _target_page_for_context(self, preferred_view, display_key):
+        if preferred_view != "chart" or display_key != "production_curve":
+            return self._first_page_of_type(preferred_view)
+        page = self._first_production_curve_page()
+        if page is not None:
+            return page
+        page = self._create_page("chart", "production_curve")
+        index = self._add_page(page, "chart", "生产曲线")
+        self._refresh_primary_references()
+        self.workspace_message.emit("[窗口] 已新建生产曲线窗口")
+        return self.widget(index)
+
+    def _first_production_curve_page(self):
+        for page in self._pages_of_type("chart"):
+            if isinstance(getattr(page, "viewport", None), ProductionCurveViewport):
+                return page
+        return None
 
     def _first_page_of_type(self, view_type):
         if view_type == "2d":

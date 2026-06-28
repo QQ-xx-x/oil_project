@@ -1848,6 +1848,7 @@ class ViewPage(QFrame):
     clone_window_requested = pyqtSignal()
     close_window_requested = pyqtSignal()
     view_message = pyqtSignal(str)
+    result_property_selected = pyqtSignal(str)
 
     def __init__(self, viewport, view_type="3d", parent=None):
         super().__init__(parent)
@@ -1907,6 +1908,7 @@ class ViewPage(QFrame):
         if hasattr(self.viewport, "render_property_field"):
             ok, message = self.viewport.render_property_field(property_key)
             self.view_message.emit(message)
+        self.result_property_selected.emit(property_key)
 
     def _handle_slice_requested(self, property_key, axis, layer):
         self._stop_time_playback_timer()
@@ -2008,6 +2010,15 @@ class ViewPage(QFrame):
         self._stop_time_playback_timer()
         if hasattr(self.viewport, "set_context"):
             self.viewport.set_context(title, detail, display_key)
+        if self.view_type == "3d" and display_key:
+            self.set_property_selection(display_key)
+
+    def set_property_selection(self, property_key):
+        if self.view_type != "3d":
+            return False
+        if hasattr(self.toolbar, "set_property_key"):
+            return self.toolbar.set_property_key(property_key, emit=False)
+        return False
 
     def set_layer_state(self, layer_key, enabled):
         if hasattr(self.viewport, "set_layer_state"):

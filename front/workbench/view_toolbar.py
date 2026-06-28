@@ -2,7 +2,10 @@
 """视图窗口使用的紧凑工具栏。"""
 
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
-from PyQt5.QtWidgets import QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QToolButton
+from PyQt5.QtWidgets import (
+    QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QToolButton,
+    QVBoxLayout,
+)
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
@@ -52,9 +55,23 @@ class ViewToolbar(QFrame):
         super().__init__(parent)
         self.setObjectName("viewToolbar")
         self.setProperty("viewType", view_type)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 5, 2)
-        layout.setSpacing(2)
+        if view_type == "3d":
+            root_layout = QVBoxLayout(self)
+            root_layout.setContentsMargins(4, 2, 5, 2)
+            root_layout.setSpacing(1)
+            layout = QHBoxLayout()
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(2)
+            controls_layout = QHBoxLayout()
+            controls_layout.setContentsMargins(0, 0, 0, 0)
+            controls_layout.setSpacing(2)
+            root_layout.addLayout(layout)
+            root_layout.addLayout(controls_layout)
+        else:
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(4, 2, 5, 2)
+            layout.setSpacing(2)
+            controls_layout = layout
 
         for tooltip, kind, signal in [
             ("新建窗口", "new", self.new_window_requested),
@@ -112,9 +129,10 @@ class ViewToolbar(QFrame):
             self.scale_selector = scale
             layout.addWidget(scale)
         if view_type == "3d":
-            self._add_slice_controls(layout)
-            self._add_threshold_controls(layout)
-            self._add_time_controls(layout)
+            self._add_slice_controls(controls_layout)
+            self._add_threshold_controls(controls_layout)
+            self._add_time_controls(controls_layout)
+            controls_layout.addStretch()
         layout.addStretch()
 
     def _add_slice_controls(self, layout):
@@ -226,6 +244,21 @@ class ViewToolbar(QFrame):
         property_key = self.view_selector.currentData()
         if property_key:
             self.property_selected.emit(property_key)
+
+    def set_property_key(self, property_key, emit=False):
+        if not hasattr(self, "view_selector"):
+            return False
+        found = self.view_selector.findData(property_key)
+        if found < 0:
+            return False
+        previous = self.view_selector.blockSignals(True)
+        try:
+            self.view_selector.setCurrentIndex(found)
+        finally:
+            self.view_selector.blockSignals(previous)
+        if emit:
+            self.property_selected.emit(property_key)
+        return True
 
     def _emit_threshold_request(self):
         self.threshold_requested.emit(

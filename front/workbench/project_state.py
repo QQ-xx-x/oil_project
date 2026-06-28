@@ -5,6 +5,11 @@ import copy
 import os
 from dataclasses import dataclass, field
 
+from .case_config_sync import (
+    sync_project_modules_from_case_data,
+    sync_project_modules_from_dataset,
+)
+
 
 @dataclass
 class ProjectState:
@@ -63,6 +68,7 @@ class ProjectState:
             "missing_file_ref_count": len(missing_refs),
             "error_count": len(case_data.errors),
         }
+        sync_project_modules_from_case_data(self)
 
     def set_case_dataset(self, dataset_path, manifest=None, validation=None):
         """记录 CaseData 生成的标准数据包，供工程保存和模拟入口复用。"""
@@ -81,6 +87,7 @@ class ProjectState:
             "manifest_path": os.path.join(self.case_dataset_path, "manifest.json")
             if self.case_dataset_path else "",
         }
+        sync_project_modules_from_dataset(self, self.case_dataset_path)
 
     def mark_case_dataset_stale(self, reason="CaseData 已修改，请重新生成 Dataset"):
         """保留输出目录，但提示当前数据包已不再对应最新 CaseData。"""
@@ -128,4 +135,8 @@ class ProjectState:
         ):
             if field_name in payload:
                 setattr(state, field_name, copy.deepcopy(payload.get(field_name)))
+        if state.case_data_sections:
+            sync_project_modules_from_case_data(state)
+        if state.case_dataset_path:
+            sync_project_modules_from_dataset(state, state.case_dataset_path)
         return state

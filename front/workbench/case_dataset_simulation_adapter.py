@@ -81,9 +81,10 @@ def _build_runner_params(dataset, summary):
     gas = config.get("gas", {}) or {}
     initial = config.get("initial", {}) or {}
     well = config.get("well", {}) or {}
+    hydraulic = config.get("hydraulic_fractures", {}) or {}
     solver = config.get("solver", {}) or {}
     grid = dataset.grid
-    hf_defaults = _temporary_hf_defaults(dataset)
+    hf_params = _hydraulic_fracture_params(dataset, hydraulic)
 
     return {
         "algorithm": "corner_edfm",
@@ -122,9 +123,7 @@ def _build_runner_params(dataset, summary):
         "so": _float(initial, "so", 0.05),
         "well_pressure": _float(well, "producer_bhp", 100.0),
         "well_radius": _float(well, "well_radius", 0.05),
-        # Temporary fallback for the current solver: wells are attached to
-        # hydraulic fracture segments, while case_dataset v1 has no HF block.
-        **hf_defaults,
+        **hf_params,
         "simulation_time": _float(solver, "total_time", 100.0),
         "time_step": _float(solver, "dt_init", 1.0),
         "dt_min": _float(solver, "dt_min", 1e-6),
@@ -136,6 +135,28 @@ def _build_runner_params(dataset, summary):
         "null_value": float(dataset.manifest.get("null_value", 99999.0)),
         "valid_cell_rule": dataset.manifest.get(
             "valid_cell_rule", "grid_actnum == 1 and value != 99999"),
+    }
+
+
+def _hydraulic_fracture_params(dataset, hydraulic):
+    if not hydraulic:
+        # Temporary fallback for older case_dataset inputs: wells are attached
+        # to hydraulic fracture segments, while early case_dataset files had no
+        # hydraulic fracture block.
+        return _temporary_hf_defaults(dataset)
+
+    hf_count = _int(hydraulic, "count", 0)
+    return {
+        "hf_enabled": hf_count > 0,
+        "hf_count": hf_count,
+        "hf_spacing_x": _float(hydraulic, "spacing_x", 0.0),
+        "hf_length": _float(hydraulic, "length", 120.0),
+        "hf_height": _float(hydraulic, "height", 30.0),
+        "hf_aperture": _float(hydraulic, "aperture", 0.1),
+        "hf_perm": _float(hydraulic, "perm", 1000.0),
+        "hf_center_x": _float(hydraulic, "center_x", -1.0),
+        "hf_center_y": _float(hydraulic, "center_y", -1.0),
+        "hf_center_z": _float(hydraulic, "center_z", -1.0),
     }
 
 

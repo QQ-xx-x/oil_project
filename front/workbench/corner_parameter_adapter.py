@@ -31,7 +31,11 @@ def build_corner_grid_params(project_state):
     _validate_saturations(initial, oil_water)
     _validate_gas_pvt(gas_pvt)
 
-    half_len = _float(hydraulic, "half_len", 60.0)
+    hf_length = _float(
+        hydraulic,
+        "length",
+        _float(hydraulic, "half_len", 60.0) * 2.0,
+    )
     well_x = _float(well, "x", 500.0)
     well_y = _float(well, "y", 250.0)
     well_z = _float(well, "z", 50.0)
@@ -105,7 +109,7 @@ def build_corner_grid_params(project_state):
         "hf_enabled": bool(hydraulic.get("num_stages", 20) > 0),
         "hf_count": _int(hydraulic, "num_stages", 20),
         "hf_spacing_x": _float(hydraulic, "spacing_x", 31.58),
-        "hf_length": half_len * 2.0,
+        "hf_length": hf_length,
         "hf_height": _float(hydraulic, "height", 30.0),
         "hf_aperture": _float(hydraulic, "aperture", 0.1),
         "hf_perm": _float(hydraulic, "perm", 1000.0),

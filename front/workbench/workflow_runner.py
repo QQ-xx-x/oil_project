@@ -39,10 +39,10 @@ class WorkbenchWorkflowRunner:
     def discover_results(self):
         store = ResultStore(project_root=self.project_root)
         store.output_sim_path = self._first_existing([
-            "output_sim.csv",
-            "output_sim_lgr.csv",
             "output_sim_lgr_noWR.csv",
             "output_sim_lgr_WR.csv",
+            "output_sim.csv",
+            "output_sim_lgr.csv",
         ])
         store.gas_pvt_table_path = self._first_existing(["gas_pvt_table.csv"])
         store.final_field_path = self._first_existing([

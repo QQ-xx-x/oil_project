@@ -41,10 +41,14 @@ class ProductionCurvePlotWidget(QWidget):
         # 英文 key -> 中文显示名
         # =========================
         self.property_display_names = {
+            "CumOil": "累积产油量",
             "CumWater": "累积产水量",
             "CumGas": "累积产气",
+            "Qo": "产油速率",
             "Qw": "产水速率",
             "Qg": "产气速率",
+            "BHP": "井底流压",
+            "AvgPressure": "平均压力",
         }
 
         # 中文显示名 -> 英文 key
@@ -55,20 +59,28 @@ class ProductionCurvePlotWidget(QWidget):
 
         # 控制属性显示顺序
         self.property_order = [
+            "CumOil",
             "CumWater",
             "CumGas",
+            "Qo",
             "Qw",
             "Qg",
+            "BHP",
+            "AvgPressure",
         ]
 
         # =========================
         # 默认固定颜色
         # =========================
         self.default_property_colors = {
+            "CumOil": (30, 120, 60),
             "CumWater": (0, 0, 255),
             "CumGas": (180, 0, 255),
+            "Qo": (60, 160, 80),
             "Qw": (0, 120, 255),
             "Qg": (160, 0, 200),
+            "BHP": (210, 80, 30),
+            "AvgPressure": (220, 140, 40),
         }
 
         # 当前颜色，可以被外部修改
@@ -287,11 +299,14 @@ class ProductionCurvePlotWidget(QWidget):
                 }
 
                 required_fields = [
-                    "CumWater",
-                    "CumGas",
-                    "Qw",
-                    "Qg",
+                    field for field in self.property_order
+                    if field in fieldnames
                 ]
+
+                if not required_fields:
+                    required_fields = self._detect_numeric_fields(
+                        csv_path, fieldnames, exclude={time_column}
+                    )
 
                 for field in required_fields:
                     if field in fieldnames:
@@ -340,6 +355,51 @@ class ProductionCurvePlotWidget(QWidget):
             print(f"load_data_from_csv error: {exc}")
             return False
 
+    def _detect_numeric_fields(self, csv_path, fieldnames, exclude=None):
+        exclude = set(exclude or [])
+        detected = []
+        try:
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                sample_rows = []
+                for index, row in enumerate(reader):
+                    sample_rows.append(row)
+                    if index >= 19:
+                        break
+        except Exception:
+            return detected
+
+        for field in fieldnames:
+            if field in exclude:
+                continue
+            for row in sample_rows:
+                raw_value = row.get(field, "")
+                try:
+                    value = float(raw_value)
+                except Exception:
+                    continue
+                if math.isfinite(value):
+                    detected.append(field)
+                    break
+        return detected
+
+    def get_available_property_keys(self):
+        """
+        获取当前数据中可绘制的英文字段 key。
+        """
+        if not self.data:
+            return []
+
+        ordered = [
+            key for key in self.property_order
+            if key in self.data and key != "date"
+        ]
+        extra = [
+            key for key in self.data.keys()
+            if key not in ordered and key != "date"
+        ]
+        return ordered + extra
+
     def get_available_properties(self):
         """
         获取当前可绘制属性，返回中文显示名。
@@ -349,10 +409,9 @@ class ProductionCurvePlotWidget(QWidget):
 
         result = []
 
-        for key in self.property_order:
-            if key in self.data:
-                display_name = self.property_display_names.get(key, key)
-                result.append(display_name)
+        for key in self.get_available_property_keys():
+            display_name = self.property_display_names.get(key, key)
+            result.append(display_name)
 
         return result
 
@@ -499,7 +558,7 @@ class ProductionCurvePlotWidget(QWidget):
                 print(f"Property not found in data: {property_name}")
                 continue
 
-            if key not in self.property_order:
+            if key not in self.property_order and key not in self.data:
                 print(f"Property is not allowed to plot: {property_name}")
                 continue
 
@@ -858,7 +917,7 @@ class ProductionCurvePlotWidget(QWidget):
         """
         key = self._normalize_property_name(property_name)
 
-        if key not in self.property_order:
+        if not self._is_known_property_key(key):
             print(f"Cannot set color. Unknown property: {property_name}")
             return
 
@@ -877,7 +936,7 @@ class ProductionCurvePlotWidget(QWidget):
         """
         key = self._normalize_property_name(property_name)
 
-        if key not in self.property_order:
+        if not self._is_known_property_key(key):
             print(f"Cannot set width. Unknown property: {property_name}")
             return
 
@@ -900,7 +959,7 @@ class ProductionCurvePlotWidget(QWidget):
         """
         key = self._normalize_property_name(property_name)
 
-        if key not in self.property_order:
+        if not self._is_known_property_key(key):
             print(f"Cannot set style. Unknown property: {property_name}")
             return
 
@@ -943,7 +1002,7 @@ class ProductionCurvePlotWidget(QWidget):
 
         key = self._normalize_property_name(property_name)
 
-        if key not in self.property_order:
+        if not self._is_known_property_key(key):
             print(f"Cannot reset style. Unknown property: {property_name}")
             return
 
@@ -960,7 +1019,7 @@ class ProductionCurvePlotWidget(QWidget):
         """
         key = self._normalize_property_name(property_name)
 
-        if key not in self.property_order:
+        if not self._is_known_property_key(key):
             return None
 
         return {
@@ -992,6 +1051,11 @@ class ProductionCurvePlotWidget(QWidget):
             return self.display_name_to_key[property_name]
 
         return property_name
+
+    def _is_known_property_key(self, key):
+        if key in self.property_order:
+            return True
+        return self.data is not None and key in self.data and key != "date"
 
     def _get_display_name(self, property_key):
         """
