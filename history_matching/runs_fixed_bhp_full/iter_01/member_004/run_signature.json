@@ -1,0 +1,233 @@
+{
+  "input_signature": {
+    "context": {
+      "base_params_sha256": "083a1cfbfd49d1f129f9bdeb9b506fd8c7e00f252d436f87d62fa67543b3ca83",
+      "build_release": "D:\\c++code\\oil_project\\build\\Release",
+      "enkf_alphas": [
+        4.0,
+        4.0,
+        4.0,
+        4.0
+      ],
+      "ensemble_size": 24,
+      "fit_parameters": [
+        {
+          "dependent": {
+            "formula": "one_minus_value",
+            "path": [
+              "initial_state",
+              "sg"
+            ]
+          },
+          "initial": 0.25,
+          "lower": 0.1,
+          "name": "initial_sw",
+          "path": [
+            "initial_state",
+            "sw"
+          ],
+          "perturb": 0.06,
+          "transform": "linear",
+          "upper": 0.55
+        },
+        {
+          "initial": 50.0,
+          "lower": 30.0,
+          "name": "well_bhp",
+          "path": [
+            "well",
+            "bhp"
+          ],
+          "perturb": 4.0,
+          "transform": "linear",
+          "upper": 70.0
+        },
+        {
+          "initial": 1000.0,
+          "lower": 200.0,
+          "name": "hf_perm",
+          "path": [
+            "hydraulic_fractures",
+            "hf_perm"
+          ],
+          "perturb": 0.35,
+          "transform": "log",
+          "upper": 2500.0
+        },
+        {
+          "initial": 120.0,
+          "lower": 30.0,
+          "name": "frac_perm",
+          "path": [
+            "fractures",
+            "frac_perm"
+          ],
+          "perturb": 0.45,
+          "transform": "log",
+          "upper": 600.0
+        },
+        {
+          "initial": 0.14,
+          "lower": 0.02,
+          "name": "wr_shape_factor",
+          "path": [
+            "dual_porosity",
+            "wr_shape_factor"
+          ],
+          "perturb": 0.3,
+          "transform": "log",
+          "upper": 0.25
+        }
+      ],
+      "history_file": "D:\\c++code\\oil_project\\history_matching\\history_fit_target.csv",
+      "history_sha256": "12bb9cafd07cfac4bbb616e9e968ab6c5cf1fe528ae34563ef27d42575c9bc3b",
+      "observation": {
+        "channels": [
+          {
+            "absolute_error": 1000.0,
+            "column": "gas_rate_sm3_d",
+            "epsilon": 1.0,
+            "model_key": "gas_rate",
+            "name": "gas_rate",
+            "relative_error": 0.6,
+            "transform": "log",
+            "weight": 0.25
+          },
+          {
+            "absolute_error": 1000000.0,
+            "column": "gas_cum_sm3",
+            "epsilon": 1.0,
+            "model_key": "gas_cum",
+            "name": "gas_cum",
+            "relative_error": 0.04,
+            "transform": "log",
+            "weight": 2.0
+          },
+          {
+            "absolute_error": 1.0,
+            "column": "water_rate_sm3_d",
+            "epsilon": 0.05,
+            "model_key": "water_rate",
+            "name": "water_rate",
+            "relative_error": 0.8,
+            "transform": "log",
+            "weight": 0.25
+          },
+          {
+            "absolute_error": 20.0,
+            "column": "water_cum_sm3",
+            "epsilon": 0.1,
+            "model_key": "water_cum",
+            "name": "water_cum",
+            "relative_error": 0.05,
+            "transform": "log",
+            "weight": 2.0
+          }
+        ],
+        "end_day": 730.0,
+        "start_day": 0.0,
+        "stride_days": 14.0
+      },
+      "random_seed": 20260521,
+      "well_control": {
+        "bhp": 42,
+        "mode": "fixed_bhp"
+      }
+    },
+    "coord_file": {
+      "path": "D:\\c++code\\oil_project\\src\\basic\\ratio_style_800x400x120_40x20x6_COORD.csv",
+      "sha256": "8d4eaceec1dc53de8883c89215b63ac0ae4cac434b66f569c132a0ff22efae67"
+    },
+    "module_file": {
+      "path": "D:\\c++code\\oil_project\\build\\Release\\edfm_core_corner_lgr.cp39-win_amd64.pyd",
+      "sha256": "94051e6157990cfa73eaeaf2c8eabb6c3fb56a5411266b3a6988f39029eb77eb"
+    },
+    "output_name": "output_sim_lgr_WR.csv",
+    "params": {
+      "coord_file": "../src/basic/ratio_style_800x400x120_40x20x6_COORD.csv",
+      "dual_porosity": {
+        "enabled": true,
+        "fracture_volume_fraction": 0.035,
+        "k_fracture_x": 1.6,
+        "k_fracture_y": 1.2,
+        "k_fracture_z": 0.15,
+        "k_matrix_x": 0.008,
+        "k_matrix_y": 0.006,
+        "k_matrix_z": 0.0015,
+        "matrix_volume_fraction": 0.965,
+        "phi_fracture": 0.36,
+        "phi_matrix": 0.055,
+        "wr_shape_factor": 0.12418010636071507
+      },
+      "fluid": {
+        "cg_fallback": 0.0008,
+        "co_placeholder": 8e-06,
+        "cw": 2.5e-06,
+        "mu_g_fallback": 0.17,
+        "mu_o_placeholder": 3.6,
+        "mu_w": 0.78,
+        "p_ref": 120.0,
+        "sgc": 0.04,
+        "sor_placeholder": 0.02,
+        "swi": 0.08
+      },
+      "fractures": {
+        "aperture": 0.075,
+        "frac_perm": 202.67007635473053,
+        "max_dip": 0.82,
+        "max_len": 36.0,
+        "max_strike": 2.72,
+        "min_len": 14.0,
+        "min_strike": 0.18,
+        "num_fracs": 72
+      },
+      "gas_pvt": {
+        "gas_Mg": 18.2,
+        "gas_Pc_bar": 46.0,
+        "gas_Psc_bar": 1.01325,
+        "gas_Tc": 202.0,
+        "gas_t_C": 126.0,
+        "gas_table_Pmax_bar": 900.0,
+        "gas_table_Pmin_bar": 2.0,
+        "gas_table_n": 1400
+      },
+      "hydraulic_fractures": {
+        "hf_aperture": 0.065,
+        "hf_center_x": 420.0,
+        "hf_center_y": 205.0,
+        "hf_center_z": 62.0,
+        "hf_count": 14,
+        "hf_height": 24.0,
+        "hf_length": 96.0,
+        "hf_perm": 621.9775327218152,
+        "hf_spacing": 58.0
+      },
+      "initial_state": {
+        "pressure": 800.0,
+        "sg": 0.7180396794654493,
+        "sw": 0.2819603205345506
+      },
+      "lgr": {
+        "d_threshold": 4.2,
+        "enabled": true,
+        "nrx": 2,
+        "nry": 2,
+        "nrz": 1
+      },
+      "simulation_days": 730.0,
+      "well": {
+        "bhp": 42.0,
+        "radius": 0.06
+      },
+      "zcorn_file": "../src/basic/ratio_style_800x400x120_40x20x6_ZCORN.csv"
+    },
+    "params_sha256": "ad37e248238b650a784e7a6fabe0a4536ced9ceef4cf1a92d292529e16d7ca83",
+    "simulation_days": 730.0,
+    "version": 1,
+    "zcorn_file": {
+      "path": "D:\\c++code\\oil_project\\src\\basic\\ratio_style_800x400x120_40x20x6_ZCORN.csv",
+      "sha256": "01f86399733767f1bc40e90bb7c8ffc9adc0578e37920a66e33d05736216a48f"
+    }
+  },
+  "output_sha256": "8c44199dd1add35437f933a1c26c880121b00965e6e14d7ed20e2c13e019966f"
+}
