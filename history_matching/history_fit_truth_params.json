@@ -1,6 +1,6 @@
 {
-  "coord_file": "D:\\c++code\\oil_project\\src\\basic\\ratio_style_800x400x120_40x20x6_COORD.csv",
-  "zcorn_file": "D:\\c++code\\oil_project\\src\\basic\\ratio_style_800x400x120_40x20x6_ZCORN.csv",
+  "coord_file": "D:\\opencv\\oil_project-main\\dist\\main\\oil_project-dev-front\\ratio_style_800x400x120_40x20x6_COORD.csv",
+  "zcorn_file": "D:\\opencv\\oil_project-main\\dist\\main\\oil_project-dev-front\\ratio_style_800x400x120_40x20x6_ZCORN.csv",
   "simulation_days": 730.0,
   "start_date": "2022-01-01",
   "fractures": {
