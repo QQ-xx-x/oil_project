@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+﻿cmake_minimum_required(VERSION 3.15)
 project(edfm_python_bindings)
 
 # Keep compatibility with older pybind11/CMake combinations.
@@ -10,19 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CheckIPOSupported)
 
-# 添加Eigen
+# 娣诲姞Eigen
 # lxw
 # set(EIGEN3_INCLUDE_DIR "D:/eigen-3.3.8")
 # ypw
-<<<<<<< HEAD
-set(EIGEN3_INCLUDE_DIR "D:/mrst_cpp/eigen")
+set(EIGEN3_INCLUDE_DIR "D:/eigen-3.4.0")
 # wzq
 # set(EIGEN3_INCLUDE_DIR "D:/vtk/vcpkg/installed/x64-windows/include/eigen3")
-=======
-# set(EIGEN3_INCLUDE_DIR "D:/mingw64/eigen")
-# wzq
-set(EIGEN3_INCLUDE_DIR "D:/vtk/vcpkg/installed/x64-windows/include/eigen3")
->>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 
 include_directories(${EIGEN3_INCLUDE_DIR})
 
@@ -30,15 +24,9 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 # lxw
 # set(pybind11_DIR "D:/Anaconda/envs/oil/Lib/site-packages/pybind11/share/cmake/pybind11")
 # ypw
-<<<<<<< HEAD
-set(pybind11_DIR "D:/conda/envs/oil/Lib/site-packages/pybind11/share/cmake/pybind11")
+set(pybind11_DIR "C:/Users/OpenCV_Demo/miniconda3/Lib/site-packages/pybind11/share/cmake/pybind11")
 # wzq
 # set(pybind11_DIR "D:/pybind11_site/pybind11/share/cmake/pybind11")
-=======
-# set(pybind11_DIR "D:/anaconda3/envs/transformers/Lib/site-packages/pybind11/share/cmake/pybind11")
-# wzq
-set(pybind11_DIR "D:/pybind11_site/pybind11/share/cmake/pybind11")
->>>>>>> 3b904cb6a638a25bba4192a64fe6e816cf1f873e
 find_package(pybind11 REQUIRED)
 
 pybind11_add_module(edfm_core

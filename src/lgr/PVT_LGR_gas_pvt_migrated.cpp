@@ -16,10 +16,14 @@
 #include <vector>
 #include <algorithm>
 #include <utility>
+#include <limits>
+#include <set>
+#include <memory>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <pybind11/embed.h>
 
 #include <Eigen/Sparse>
 #include <Eigen/Dense>
@@ -1300,9 +1304,90 @@ public:
     std::vector<State> wr_matrix_states, wr_matrix_states_prev;
     std::vector<double> wr_transfer_T;
 
-    struct Well { int target_node_idx; double WI; double P_bhp; };
+    // -------------------------------------------------------------------------
+    // 新井系统：PERF 只定义完井段，OPEN / SHUT / CONTROL 控制生产。
+    // -------------------------------------------------------------------------
+    struct WellFractureGeometry {
+        bool geometry_available{false};
+        int input_frac_id{-1};
+        int global_frac_id{-1};
+        std::array<Point3, 4> corners{};
+        double aperture_m{0.0};
+        double perm_mD{0.0};
+        double conductivity_mD_m{0.0};
+    };
+
+    struct CompletionDefinition {
+        std::string well_name;
+        std::string comp_id;
+        std::string well_type{"PRODUCER"};
+        double date_day{0.0};
+        bool is_fractured{false};
+        double md_top_m{0.0};
+        double md_bottom_m{0.0};
+        std::string depth_type{"MD"};
+        double rw_m{0.05};
+        std::string control_type{"BHP"};
+        double bhp_bar{50.0};
+        bool connect_matrix{false};
+        bool connect_fracture{false};
+        std::string connection_target{"none"};
+        int input_frac_id{-1};
+        int global_frac_id{-1};
+        int source_row{-1};
+        Point3 segment_start{0,0,0};
+        Point3 segment_end{0,0,0};
+        Point3 segment_center{0,0,0};
+        WellFractureGeometry fracture;
+    };
+
+    struct WellScheduleEvent {
+        int event_id{-1};
+        int source_row{-1};
+        std::string well_name;
+        std::string comp_id;
+        std::string event;      // OPEN / SHUT / CONTROL
+        double date_day{0.0};
+        std::string control_type{"BHP"};
+        double bhp_bar{50.0};
+    };
+
+    struct Well {
+        int target_node_idx{-1};
+        double WI{0.0};
+        double P_bhp{50.0};
+        std::string well_name{"AUTO"};
+        std::string comp_id{"AUTO"};
+        std::string connection_target{"fracture"};
+        bool is_fractured{true};
+        bool active{true};
+        int leaf_id{-1};
+        int seg_id{-1};
+        int input_frac_id{-1};
+        int global_frac_id{-1};
+        int source_row{-1};
+        double md_top_m{0.0};
+        double md_bottom_m{0.0};
+    };
+
+    struct CompletionProduction {
+        double cum_water{0.0};
+        double cum_gas{0.0};
+        double last_qw{0.0};
+        double last_qg{0.0};
+    };
+
+    bool has_parsed_wells{false};
+    std::vector<CompletionDefinition> completion_definitions;
+    std::vector<WellScheduleEvent> well_events;
+    std::unordered_map<std::string, int> completion_def_index;
+    std::unordered_map<std::string, std::vector<int>> completion_to_connection_indices;
     std::vector<Well> wells;
-    std::unordered_map<int,int> well_map;
+    std::vector<int> active_well_connection_indices;
+    std::unordered_map<int, std::vector<int>> well_map;
+    std::unordered_map<std::string, CompletionProduction> comp_prod;
+    std::unordered_map<std::string, CompletionProduction> well_prod;
+    size_t next_well_event_idx{0};
 
     SparseMatrix<double> J;
     struct CellOffsets { int diag[2][2]; };
@@ -1320,6 +1405,21 @@ public:
     std::vector<double> dfn_ky;
     std::vector<double> dfn_kz;
     std::vector<uint8_t> dfn_valid_mask;
+
+    bool has_matrix_continuum_properties{false};
+    int matrix_prop_nx{0}, matrix_prop_ny{0}, matrix_prop_nz{0};
+    std::vector<double> matrix_phi;
+    std::vector<double> matrix_kx;
+    std::vector<double> matrix_ky;
+    std::vector<double> matrix_kz;
+
+    bool has_sigma_array{false};
+    int sigma_prop_nx{0}, sigma_prop_ny{0}, sigma_prop_nz{0};
+    std::vector<double> sigma_array;
+
+    // 时间步播放
+    std::vector<double> time_steps;
+    std::vector<std::vector<double>> pressure_steps;
 
     // --- 可配置参数 (通过 pybind 设置) ---
     std::string coord_file_path{"COORD.csv"};
@@ -1614,6 +1714,28 @@ public:
         has_dfn_continuum_properties = true;
         std::cout << "Loaded external DFN continuum properties: "
                   << expected << " cells" << std::endl;
+    }
+
+    void setMatrixContinuumProperties(
+        const std::vector<double>& phi,
+        const std::vector<double>& kx,
+        const std::vector<double>& ky,
+        const std::vector<double>& kz)
+    {
+        matrix_phi = phi;
+        matrix_kx  = kx;
+        matrix_ky  = ky;
+        matrix_kz  = kz;
+        has_matrix_continuum_properties = !matrix_phi.empty();
+        if (has_matrix_continuum_properties) {
+            matrix_prop_nx = 0; matrix_prop_ny = 0; matrix_prop_nz = 0;
+            // 维度在 preprocess 里根据实际网格校验
+        }
+    }
+
+    void setSigmaArray(const std::vector<double>& sigma) {
+        sigma_array = sigma;
+        has_sigma_array = !sigma_array.empty();
     }
 
     void setFractureParameters(int total_fracs,
@@ -1973,8 +2095,33 @@ public:
             return;
         }
 
-        pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+        // --- 基质属性: per-cell 数组优先，回退全局常数 ---
+        if (has_matrix_continuum_properties) {
+            int idx = flatCellIndex(pc.ix, pc.iy, pc.iz, Nx, Ny);
+            if (idx >= 0 && idx < (int)matrix_phi.size() &&
+                idx < (int)matrix_kx.size() && idx < (int)matrix_ky.size() &&
+                idx < (int)matrix_kz.size()) {
+                double mp = matrix_phi[idx];
+                double mkx = matrix_kx[idx];
+                double mky = matrix_ky[idx];
+                double mkz = matrix_kz[idx];
+                if (mp == 99999.0 || !std::isfinite(mp)) mp = phi_matrix;
+                if (mkx == 99999.0 || !std::isfinite(mkx)) mkx = k_matrix_x;
+                if (mky == 99999.0 || !std::isfinite(mky)) mky = k_matrix_y;
+                if (mkz == 99999.0 || !std::isfinite(mkz)) mkz = k_matrix_z;
+                pc.matrix_rock = makeRockProps(
+                    std::max(0.0, mp),
+                    std::max(0.0, mkx),
+                    std::max(0.0, mky),
+                    std::max(0.0, mkz));
+            } else {
+                pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+            }
+        } else {
+            pc.matrix_rock = makeRockProps(phi_matrix, k_matrix_x, k_matrix_y, k_matrix_z);
+        }
 
+        // --- 裂缝等效属性: DFN 数组由 applyDFNContinuumPropertiesToParents 覆盖 ---
         double vf = std::max(fracture_volume_fraction, 1e-12);
         pc.fracture_continuum_rock = makeRockProps(
             phi_fracture,
@@ -4076,8 +4223,15 @@ public:
             int pid = leaves[leaf].parent_id;
             if (pid < 0 || pid >= (int)parents.size() || !parents[pid].active) continue;
             double k_eff = matrixPermForWarrenRootTransfer(leaves[leaf]);
+
+            double sigma_val = wr_shape_factor; // 默认回退
+            if (has_sigma_array && pid >= 0 && pid < (int)sigma_array.size()) {
+                double s = sigma_array[pid];
+                if (s != 99999.0 && std::isfinite(s)) sigma_val = s;
+            }
+
             double T_wr = FLOW_BETA
-                        * wr_shape_factor
+                        * sigma_val
                         * k_eff
                         * std::max(leaves[leaf].vol * matrix_volume_fraction, 1e-12);
             if (!std::isfinite(T_wr) || T_wr <= EPS) continue;
@@ -4149,6 +4303,605 @@ public:
         }
     }
 
+
+    // -------------------------------------------------------------------------
+    // Parsed wells 输入：前端 parser 已经把 well_tracks.csv + well_completions.csv
+    // 解析为 wells_v2_event_comp_id。C++ 只接收结构化结果。
+    // -------------------------------------------------------------------------
+    std::string completionKey(const std::string& well_name, const std::string& comp_id) const {
+        return well_name + "::" + comp_id;
+    }
+
+    static bool pyHasKey(py::handle h, const char* key) {
+        return PyMapping_HasKeyString(h.ptr(), key) == 1;
+    }
+
+    static py::object pyGetObj(py::dict d, const char* key) {
+        if (!pyHasKey(d, key)) return py::none();
+        return py::reinterpret_borrow<py::object>(d[py::str(key)]);
+    }
+
+    static std::string pyGetString(py::dict d, const char* key, const std::string& def = "") {
+        py::object obj = pyGetObj(d, key);
+        if (obj.is_none()) return def;
+        return py::str(obj).cast<std::string>();
+    }
+
+    static double pyGetDouble(py::dict d, const char* key, double def = 0.0) {
+        py::object obj = pyGetObj(d, key);
+        if (obj.is_none()) return def;
+        try { return obj.cast<double>(); }
+        catch (...) { return def; }
+    }
+
+    static int pyGetInt(py::dict d, const char* key, int def = 0) {
+        py::object obj = pyGetObj(d, key);
+        if (obj.is_none()) return def;
+        try { return obj.cast<int>(); }
+        catch (...) {
+            try { return (int)std::llround(obj.cast<double>()); }
+            catch (...) { return def; }
+        }
+    }
+
+    static bool pyGetBool(py::dict d, const char* key, bool def = false) {
+        py::object obj = pyGetObj(d, key);
+        if (obj.is_none()) return def;
+        try { return obj.cast<bool>(); }
+        catch (...) {
+            std::string s = py::str(obj).cast<std::string>();
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+            if (s == "1" || s == "true" || s == "yes" || s == "open") return true;
+            if (s == "0" || s == "false" || s == "no" || s == "shut") return false;
+            return def;
+        }
+    }
+
+    static Point3 pyGetPointXYZ(py::dict d) {
+        return {pyGetDouble(d, "x_m", 0.0), pyGetDouble(d, "y_m", 0.0), pyGetDouble(d, "z_m", 0.0)};
+    }
+
+    void setParsedWellsJson(const std::string& json_text) {
+        // 优先不引入 nlohmann::json 依赖，直接复用 Python 标准库 json。
+        // 该接口用于 pybind 场景；standalone main 未加载 Python 解释器时会自动走旧井逻辑。
+        py::object json_module = py::module_::import("json");
+        py::object data = json_module.attr("loads")(json_text);
+        setParsedWellsData(data.cast<py::dict>());
+    }
+
+    void setParsedWellsData(py::dict wells_data) {
+        std::string schema = pyGetString(wells_data, "schema_version", "");
+        if (!schema.empty() && schema != "wells_v2_event_comp_id") {
+            std::cerr << "[WARNING] parsed wells schema_version=" << schema
+                      << ", expected wells_v2_event_comp_id" << std::endl;
+        }
+
+        completion_definitions.clear();
+        completion_def_index.clear();
+        well_events.clear();
+        completion_to_connection_indices.clear();
+        wells.clear();
+        active_well_connection_indices.clear();
+        well_map.clear();
+        comp_prod.clear();
+        well_prod.clear();
+        next_well_event_idx = 0;
+
+        py::object wells_obj = pyGetObj(wells_data, "wells");
+        if (wells_obj.is_none()) throw std::invalid_argument("Parsed wells data has no 'wells' array.");
+
+        for (py::handle wh : py::reinterpret_borrow<py::iterable>(wells_obj)) {
+            py::dict wd = py::reinterpret_borrow<py::dict>(wh);
+            std::string well_name = pyGetString(wd, "well_name", "");
+            std::string well_type = pyGetString(wd, "well_type", "PRODUCER");
+            if (well_name.empty()) throw std::invalid_argument("Parsed wells contains a well with empty well_name.");
+
+            py::object defs_obj = pyGetObj(wd, "completion_definitions");
+            if (!defs_obj.is_none()) {
+                for (py::handle ch : py::reinterpret_borrow<py::iterable>(defs_obj)) {
+                    py::dict cd = py::reinterpret_borrow<py::dict>(ch);
+                    CompletionDefinition comp;
+                    comp.well_name = pyGetString(cd, "well_name", well_name);
+                    comp.comp_id = pyGetString(cd, "comp_id", "");
+                    comp.well_type = pyGetString(cd, "well_type", well_type);
+                    comp.date_day = pyGetDouble(cd, "date_day", 0.0);
+                    comp.is_fractured = pyGetBool(cd, "is_fractured", false);
+                    comp.md_top_m = pyGetDouble(cd, "md_top_m", 0.0);
+                    comp.md_bottom_m = pyGetDouble(cd, "md_bottom_m", 0.0);
+                    comp.depth_type = pyGetString(cd, "depth_type", "MD");
+                    comp.rw_m = pyGetDouble(cd, "rw_m", well_radius);
+                    comp.control_type = pyGetString(cd, "control_type", "BHP");
+                    comp.bhp_bar = pyGetDouble(cd, "bhp_bar", well_pressure);
+                    comp.connect_matrix = pyGetBool(cd, "connect_matrix", false);
+                    comp.connect_fracture = pyGetBool(cd, "connect_fracture", false);
+                    comp.connection_target = pyGetString(cd, "connection_target", "none");
+                    comp.input_frac_id = pyGetInt(cd, "frac_id", -1);
+                    comp.source_row = pyGetInt(cd, "source_row", -1);
+                    if (comp.comp_id.empty()) throw std::invalid_argument("Completion comp_id cannot be empty.");
+                    if (!(comp.md_top_m < comp.md_bottom_m)) {
+                        throw std::invalid_argument("Completion " + completionKey(comp.well_name, comp.comp_id) +
+                                                    " has md_top_m >= md_bottom_m.");
+                    }
+
+                    py::object seg_obj = pyGetObj(cd, "well_segment_xyz");
+                    if (!seg_obj.is_none()) {
+                        py::dict seg = py::reinterpret_borrow<py::dict>(seg_obj);
+                        py::object start_obj = pyGetObj(seg, "start");
+                        py::object end_obj = pyGetObj(seg, "end");
+                        py::object center_obj = pyGetObj(seg, "center");
+                        if (!start_obj.is_none()) comp.segment_start = pyGetPointXYZ(py::reinterpret_borrow<py::dict>(start_obj));
+                        if (!end_obj.is_none()) comp.segment_end = pyGetPointXYZ(py::reinterpret_borrow<py::dict>(end_obj));
+                        if (!center_obj.is_none()) comp.segment_center = pyGetPointXYZ(py::reinterpret_borrow<py::dict>(center_obj));
+                    }
+
+                    py::object frac_obj = pyGetObj(cd, "fracture");
+                    if (!frac_obj.is_none()) {
+                        py::dict fd = py::reinterpret_borrow<py::dict>(frac_obj);
+                        comp.fracture.geometry_available = pyGetBool(fd, "geometry_available", true);
+                        comp.fracture.input_frac_id = comp.input_frac_id;
+                        comp.fracture.aperture_m = pyGetDouble(fd, "aperture_m", 0.0);
+                        comp.fracture.perm_mD = pyGetDouble(fd, "perm_mD", 0.0);
+                        comp.fracture.conductivity_mD_m = pyGetDouble(fd, "conductivity_mD_m", 0.0);
+                        py::object corners_obj = pyGetObj(fd, "corners");
+                        int cidx = 0;
+                        if (!corners_obj.is_none()) {
+                            for (py::handle co : py::reinterpret_borrow<py::iterable>(corners_obj)) {
+                                if (cidx >= 4) break;
+                                comp.fracture.corners[cidx++] = pyGetPointXYZ(py::reinterpret_borrow<py::dict>(co));
+                            }
+                        }
+                        if (cidx == 4) comp.fracture.geometry_available = true;
+                    }
+
+                    std::string key = completionKey(comp.well_name, comp.comp_id);
+                    if (completion_def_index.count(key)) {
+                        throw std::invalid_argument("Duplicate PERF/completion definition for " + key);
+                    }
+                    completion_def_index[key] = (int)completion_definitions.size();
+                    completion_definitions.push_back(comp);
+                    comp_prod[key] = CompletionProduction{};
+                    well_prod[comp.well_name] = CompletionProduction{};
+                }
+            }
+
+            py::object events_obj = pyGetObj(wd, "events");
+            if (!events_obj.is_none()) {
+                for (py::handle eh : py::reinterpret_borrow<py::iterable>(events_obj)) {
+                    py::dict ed = py::reinterpret_borrow<py::dict>(eh);
+                    WellScheduleEvent ev;
+                    ev.event_id = pyGetInt(ed, "event_id", (int)well_events.size());
+                    ev.source_row = pyGetInt(ed, "source_row", -1);
+                    ev.well_name = pyGetString(ed, "well_name", well_name);
+                    ev.comp_id = pyGetString(ed, "comp_id", "");
+                    ev.event = pyGetString(ed, "event", "");
+                    std::transform(ev.event.begin(), ev.event.end(), ev.event.begin(), [](unsigned char c){ return (char)std::toupper(c); });
+                    ev.date_day = pyGetDouble(ed, "date_day", 0.0);
+                    ev.control_type = pyGetString(ed, "control_type", "BHP");
+                    ev.bhp_bar = pyGetDouble(ed, "bhp_bar", well_pressure);
+                    if (ev.comp_id.empty()) throw std::invalid_argument("Well event comp_id cannot be empty.");
+                    if (ev.event != "OPEN" && ev.event != "SHUT" && ev.event != "CONTROL") {
+                        throw std::invalid_argument("Unsupported well event: " + ev.event);
+                    }
+                    well_events.push_back(ev);
+                }
+            }
+        }
+
+        std::sort(well_events.begin(), well_events.end(), [](const WellScheduleEvent& a, const WellScheduleEvent& b) {
+            if (std::abs(a.date_day - b.date_day) > 1e-12) return a.date_day < b.date_day;
+            if (a.source_row != b.source_row) return a.source_row < b.source_row;
+            return a.event_id < b.event_id;
+        });
+
+        has_parsed_wells = true;
+        std::cout << "Loaded parsed wells: completions=" << completion_definitions.size()
+                  << ", events=" << well_events.size() << std::endl;
+    }
+
+    void addHydraulicFracturesFromParsedWellCompletions() {
+        if (!has_parsed_wells) return;
+        int next_global_id = 0;
+        for (const auto& f : fractures) next_global_id = std::max(next_global_id, f.id + 1);
+        std::unordered_map<int, int> input_to_global;
+
+        for (auto& comp : completion_definitions) {
+            if (!(comp.is_fractured && comp.connect_fracture)) continue;
+            if (!comp.fracture.geometry_available) {
+                throw std::runtime_error("Fractured completion " + completionKey(comp.well_name, comp.comp_id) +
+                                         " has no fracture geometry.");
+            }
+            if (comp.input_frac_id < 0) {
+                throw std::runtime_error("Fractured completion " + completionKey(comp.well_name, comp.comp_id) +
+                                         " requires input frac_id >= 0.");
+            }
+            if (comp.fracture.aperture_m <= 0.0 || comp.fracture.perm_mD <= 0.0) {
+                throw std::runtime_error("Fractured completion " + completionKey(comp.well_name, comp.comp_id) +
+                                         " has non-positive aperture or perm.");
+            }
+            double area = quadArea3D(comp.fracture.corners);
+            if (!std::isfinite(area) || area <= EPS) {
+                throw std::runtime_error("Fractured completion " + completionKey(comp.well_name, comp.comp_id) +
+                                         " has zero fracture area.");
+            }
+            double expected_cond = comp.fracture.aperture_m * comp.fracture.perm_mD;
+            if (comp.fracture.conductivity_mD_m > 0.0 &&
+                std::abs(comp.fracture.conductivity_mD_m - expected_cond) > std::max(1e-9, 1e-6 * std::abs(expected_cond))) {
+                std::cerr << "[WARNING] conductivity_mD_m differs from aperture_m*perm_mD for "
+                          << completionKey(comp.well_name, comp.comp_id) << std::endl;
+            }
+            if (input_to_global.count(comp.input_frac_id)) {
+                std::cerr << "[WARNING] input_frac_id=" << comp.input_frac_id
+                          << " is reused; existing global id will be reused." << std::endl;
+                comp.global_frac_id = input_to_global[comp.input_frac_id];
+                comp.fracture.global_frac_id = comp.global_frac_id;
+                continue;
+            }
+
+            Fracture f;
+            f.id = next_global_id++;
+            f.is_hydraulic = true;
+            f.aperture = comp.fracture.aperture_m;
+            f.perm = comp.fracture.perm_mD;
+            f.vertices.assign(comp.fracture.corners.begin(), comp.fracture.corners.end());
+            fractures.push_back(f);
+            comp.global_frac_id = f.id;
+            comp.fracture.global_frac_id = f.id;
+            input_to_global[comp.input_frac_id] = f.id;
+        }
+    }
+
+    static bool segmentIntersectsAABB(const Point3& a, const Point3& b,
+                                      const Point3& box_min, const Point3& box_max,
+                                      double tol) {
+        Point3 mn{box_min.x - tol, box_min.y - tol, box_min.z - tol};
+        Point3 mx{box_max.x + tol, box_max.y + tol, box_max.z + tol};
+        double tmin = 0.0, tmax = 1.0;
+        auto update = [&](double p, double q) -> bool {
+            if (std::abs(p) < 1e-14) return q >= 0.0;
+            double r = q / p;
+            if (p < 0.0) { if (r > tmax) return false; if (r > tmin) tmin = r; }
+            else { if (r < tmin) return false; if (r < tmax) tmax = r; }
+            return true;
+        };
+        Point3 d = b - a;
+        if (!update(-d.x, a.x - mn.x)) return false;
+        if (!update( d.x, mx.x - a.x)) return false;
+        if (!update(-d.y, a.y - mn.y)) return false;
+        if (!update( d.y, mx.y - a.y)) return false;
+        if (!update(-d.z, a.z - mn.z)) return false;
+        if (!update( d.z, mx.z - a.z)) return false;
+        return tmax >= tmin;
+    }
+
+    double computeMatrixCompletionWI(const LeafCell& lc,
+                                     const CompletionDefinition& comp,
+                                     double rw) const {
+        const RockProps& rock = activeContinuumRock(lc);
+        double k_eff = std::sqrt(std::max(rock.K[0], K_FLOOR) * std::max(rock.K[1], K_FLOOR));
+        double seg_len = (comp.segment_end - comp.segment_start).norm();
+        double h_eff = std::max(1e-6, std::min(seg_len, std::max({lc.dx, lc.dy, lc.dz})));
+        double re = 0.28 * std::sqrt(std::max(lc.dx * lc.dx + lc.dy * lc.dy, 1e-12));
+        re = std::max(re, 1.1 * rw);
+        double denom = std::log(re / std::max(rw, 1e-12));
+        if (!std::isfinite(denom) || denom <= 1e-12) return 0.0;
+        double WI = FLOW_BETA * 2.0 * PI * k_eff * h_eff / denom;
+        return (std::isfinite(WI) && WI > 0.0) ? WI : 0.0;
+    }
+
+    void rebuildActiveWellMap() {
+        active_well_connection_indices.clear();
+        well_map.clear();
+        for (int i = 0; i < (int)wells.size(); ++i) {
+            if (!wells[i].active) continue;
+            if (wells[i].target_node_idx < 0 || wells[i].target_node_idx >= n_total) continue;
+            active_well_connection_indices.push_back(i);
+            well_map[wells[i].target_node_idx].push_back(i);
+        }
+    }
+
+    void buildWellConnectionsFromCompletionDefinitions() {
+        wells.clear();
+        completion_to_connection_indices.clear();
+        well_map.clear();
+        active_well_connection_indices.clear();
+
+        for (const auto& comp : completion_definitions) {
+            std::string key = completionKey(comp.well_name, comp.comp_id);
+            if (comp.connect_fracture) {
+                int best_s = -1;
+                double best_dist = std::numeric_limits<double>::max();
+                double best_area = -1.0;
+                for (int s = 0; s < n_seg; ++s) {
+                    const Segment& seg = segments[s];
+                    if (seg.frac_id != comp.global_frac_id) continue;
+                    if (seg.matrix_leaf_id < 0 || seg.matrix_leaf_id >= n_leaf) continue;
+                    const LeafCell& lc = leaves[seg.matrix_leaf_id];
+                    if (lc.parent_id < 0 || lc.parent_id >= (int)parents.size()) continue;
+                    if (!parents[lc.parent_id].active) continue;
+                    if (seg.area <= EPS || seg.aperture <= EPS || seg.perm <= EPS) continue;
+                    double dist = (seg.center - comp.segment_center).norm();
+                    if (dist < best_dist - 1e-10 ||
+                        (std::abs(dist - best_dist) <= 1e-10 && seg.area > best_area)) {
+                        best_s = s;
+                        best_dist = dist;
+                        best_area = seg.area;
+                    }
+                }
+                if (best_s < 0) {
+                    std::cerr << "[WARNING] No active segment found for fractured completion " << key << std::endl;
+                } else {
+                    const Segment& seg = segments[best_s];
+                    double rw = std::max(comp.rw_m, 1e-6);
+                    double re = computeSegmentEquivalentRadius(seg, rw);
+                    double denom = std::log(re / rw);
+                    double WI = (denom > 0.0) ? FLOW_BETA * 2.0 * PI * seg.perm * seg.aperture / denom : 0.0;
+                    if (!std::isfinite(WI) || WI <= 0.0) {
+                        std::cerr << "[WARNING] Invalid fracture WI for completion " << key << std::endl;
+                    } else {
+                        Well w;
+                        w.target_node_idx = n_leaf + best_s;
+                        w.WI = WI;
+                        w.P_bhp = comp.bhp_bar;
+                        w.well_name = comp.well_name;
+                        w.comp_id = comp.comp_id;
+                        w.connection_target = "fracture";
+                        w.is_fractured = true;
+                        w.active = false; // OPEN 才激活
+                        w.leaf_id = seg.matrix_leaf_id;
+                        w.seg_id = best_s;
+                        w.input_frac_id = comp.input_frac_id;
+                        w.global_frac_id = comp.global_frac_id;
+                        w.source_row = comp.source_row;
+                        w.md_top_m = comp.md_top_m;
+                        w.md_bottom_m = comp.md_bottom_m;
+                        int idx = (int)wells.size();
+                        wells.push_back(w);
+                        completion_to_connection_indices[key].push_back(idx);
+                    }
+                }
+            }
+
+            if (comp.connect_matrix) {
+                std::vector<int> hit_leaves;
+                double tol = std::max(1e-6, 0.05 * std::max({dx, dy, dz, 1.0}));
+                for (int lid = 0; lid < n_leaf; ++lid) {
+                    const LeafCell& lc = leaves[lid];
+                    if (!lc.active) continue;
+                    if (lc.parent_id < 0 || lc.parent_id >= (int)parents.size() || !parents[lc.parent_id].active) continue;
+                    if (segmentIntersectsAABB(comp.segment_start, comp.segment_end, lc.bbox_min, lc.bbox_max, tol)) {
+                        hit_leaves.push_back(lid);
+                    }
+                }
+                if (hit_leaves.empty()) {
+                    int best_lid = -1;
+                    double best_dist = std::numeric_limits<double>::max();
+                    for (int lid = 0; lid < n_leaf; ++lid) {
+                        const LeafCell& lc = leaves[lid];
+                        if (!lc.active) continue;
+                        if (lc.parent_id < 0 || lc.parent_id >= (int)parents.size() || !parents[lc.parent_id].active) continue;
+                        double dist = (lc.center - comp.segment_center).norm();
+                        if (dist < best_dist) { best_dist = dist; best_lid = lid; }
+                    }
+                    if (best_lid >= 0) {
+                        std::cerr << "[WARNING] Matrix completion " << key
+                                  << " intersects no leaf; using nearest active leaf fallback " << best_lid << std::endl;
+                        hit_leaves.push_back(best_lid);
+                    } else {
+                        std::cerr << "[WARNING] Matrix completion " << key
+                                  << " has no active leaf fallback." << std::endl;
+                    }
+                }
+                for (int lid : hit_leaves) {
+                    const LeafCell& lc = leaves[lid];
+                    double WI = computeMatrixCompletionWI(lc, comp, std::max(comp.rw_m, 1e-6));
+                    if (!std::isfinite(WI) || WI <= 0.0) continue;
+                    Well w;
+                    w.target_node_idx = lid;
+                    w.WI = WI;
+                    w.P_bhp = comp.bhp_bar;
+                    w.well_name = comp.well_name;
+                    w.comp_id = comp.comp_id;
+                    w.connection_target = "matrix";
+                    w.is_fractured = false;
+                    w.active = false; // OPEN 才激活
+                    w.leaf_id = lid;
+                    w.seg_id = -1;
+                    w.input_frac_id = comp.input_frac_id;
+                    w.global_frac_id = comp.global_frac_id;
+                    w.source_row = comp.source_row;
+                    w.md_top_m = comp.md_top_m;
+                    w.md_bottom_m = comp.md_bottom_m;
+                    int idx = (int)wells.size();
+                    wells.push_back(w);
+                    completion_to_connection_indices[key].push_back(idx);
+                }
+            }
+        }
+        std::cout << "Parsed-well connections built: " << wells.size() << std::endl;
+    }
+
+    void resetWellProductionLastRates() {
+        for (auto& kv : comp_prod) { kv.second.last_qw = 0.0; kv.second.last_qg = 0.0; }
+        for (auto& kv : well_prod) { kv.second.last_qw = 0.0; kv.second.last_qg = 0.0; }
+    }
+
+    void initializeWellScheduleState() {
+        for (auto& w : wells) w.active = false;
+        next_well_event_idx = 0;
+        rebuildActiveWellMap();
+        comp_prod.clear();
+        well_prod.clear();
+        for (const auto& comp : completion_definitions) {
+            comp_prod[completionKey(comp.well_name, comp.comp_id)] = CompletionProduction{};
+            well_prod[comp.well_name] = CompletionProduction{};
+        }
+        std::ofstream log("well_event_log_lgr.csv");
+        log << "time,event,well_name,comp_id,n_connections,active_after,bhp_bar,message\n";
+        log.close();
+        std::ofstream hist("well_completion_history_lgr.csv");
+        hist << "Time,well_name,comp_id,status,Qw,Qg,CumWater,CumGas,BHP,n_active_connections\n";
+        hist.close();
+        applyWellEventsUpTo(0.0);
+    }
+
+    void appendWellEventLog(double time, const WellScheduleEvent& ev,
+                            int n_connections, bool active_after,
+                            const std::string& message) {
+        std::ofstream log("well_event_log_lgr.csv", std::ios::app);
+        log << time << "," << ev.event << "," << ev.well_name << "," << ev.comp_id << ","
+            << n_connections << "," << (active_after ? 1 : 0) << "," << ev.bhp_bar << ","
+            << message << "\n";
+    }
+
+    void applyWellEventsUpTo(double t) {
+        if (!has_parsed_wells) return;
+        bool changed = false;
+        while (next_well_event_idx < well_events.size() && well_events[next_well_event_idx].date_day <= t + 1e-10) {
+            const WellScheduleEvent& ev = well_events[next_well_event_idx++];
+            std::string key = completionKey(ev.well_name, ev.comp_id);
+            auto it = completion_to_connection_indices.find(key);
+            int nconn = (it == completion_to_connection_indices.end()) ? 0 : (int)it->second.size();
+            std::string message = "ok";
+            bool active_after = false;
+            if (nconn == 0) message = "no_connection";
+
+            if (ev.event == "OPEN") {
+                if (it != completion_to_connection_indices.end()) {
+                    for (int idx : it->second) {
+                        if (idx < 0 || idx >= (int)wells.size()) continue;
+                        wells[idx].active = true;
+                        wells[idx].P_bhp = ev.bhp_bar;
+                        active_after = true;
+                    }
+                }
+            } else if (ev.event == "SHUT") {
+                if (it != completion_to_connection_indices.end()) {
+                    for (int idx : it->second) {
+                        if (idx < 0 || idx >= (int)wells.size()) continue;
+                        wells[idx].active = false;
+                    }
+                }
+                active_after = false;
+            } else if (ev.event == "CONTROL") {
+                if (ev.control_type != "BHP" && ev.control_type != "bhp") {
+                    message = "unsupported_control_type";
+                } else if (it != completion_to_connection_indices.end()) {
+                    for (int idx : it->second) {
+                        if (idx < 0 || idx >= (int)wells.size()) continue;
+                        wells[idx].P_bhp = ev.bhp_bar;
+                        active_after = active_after || wells[idx].active;
+                    }
+                }
+            }
+            appendWellEventLog(t, ev, nconn, active_after, message);
+            changed = true;
+        }
+        if (changed) rebuildActiveWellMap();
+    }
+
+    double nextWellEventTime() const {
+        if (!has_parsed_wells || next_well_event_idx >= well_events.size()) return std::numeric_limits<double>::infinity();
+        return well_events[next_well_event_idx].date_day;
+    }
+
+    double truncateDtByNextWellEvent(double t, double dt) const {
+        double ev_t = nextWellEventTime();
+        if (std::isfinite(ev_t) && ev_t > t + 1e-10 && ev_t < t + dt - 1e-10) {
+            return std::max(ev_t - t, 1e-12);
+        }
+        return dt;
+    }
+
+    void computeWellProductionForCurrentState(double dt, double& step_water, double& step_gas, bool update_cumulative) {
+        step_water = 0.0;
+        step_gas = 0.0;
+        if (update_cumulative) resetWellProductionLastRates();
+        const std::vector<int>* active_list = has_parsed_wells ? &active_well_connection_indices : nullptr;
+        if (has_parsed_wells) {
+            for (int idx : *active_list) {
+                if (idx < 0 || idx >= (int)wells.size()) continue;
+                const Well& w = wells[idx];
+                int u = w.target_node_idx;
+                if (u < 0 || u >= (int)states.size()) continue;
+                double dP = states[u].P - w.P_bhp;
+                if (dP <= 0.0) continue;
+                PropertiesT<double> pu = getProps(states[u]);
+                double ww = w.WI * pu.lw * dP * dt;
+                double gg = w.WI * pu.lg * dP * dt;
+                if (!std::isfinite(ww) || !std::isfinite(gg)) continue;
+                step_water += ww;
+                step_gas += gg;
+                if (update_cumulative) {
+                    std::string ck = completionKey(w.well_name, w.comp_id);
+                    auto& cp = comp_prod[ck];
+                    cp.cum_water += ww;
+                    cp.cum_gas += gg;
+                    cp.last_qw += ww / std::max(dt, 1e-30);
+                    cp.last_qg += gg / std::max(dt, 1e-30);
+                    auto& wp = well_prod[w.well_name];
+                    wp.cum_water += ww;
+                    wp.cum_gas += gg;
+                    wp.last_qw += ww / std::max(dt, 1e-30);
+                    wp.last_qg += gg / std::max(dt, 1e-30);
+                }
+            }
+        } else {
+            for (const auto& w : wells) {
+                int u = w.target_node_idx;
+                if (u < 0 || u >= (int)states.size()) continue;
+                double dP = states[u].P - w.P_bhp;
+                if (dP > 0.0) {
+                    PropertiesT<double> pu = getProps(states[u]);
+                    step_water += w.WI * pu.lw * dP * dt;
+                    step_gas   += w.WI * pu.lg * dP * dt;
+                }
+            }
+        }
+    }
+
+    int activeCompletionCount() const {
+        std::unordered_set<std::string> keys;
+        for (int idx : active_well_connection_indices) {
+            if (idx >= 0 && idx < (int)wells.size()) keys.insert(completionKey(wells[idx].well_name, wells[idx].comp_id));
+        }
+        return (int)keys.size();
+    }
+
+    double representativeActiveBHP() const {
+        if (!has_parsed_wells || active_well_connection_indices.empty()) return well_pressure;
+        double sum = 0.0;
+        int n = 0;
+        for (int idx : active_well_connection_indices) {
+            if (idx >= 0 && idx < (int)wells.size()) { sum += wells[idx].P_bhp; ++n; }
+        }
+        return n > 0 ? sum / n : well_pressure;
+    }
+
+    void appendWellCompletionHistory(double t) {
+        if (!has_parsed_wells) return;
+        std::ofstream hist("well_completion_history_lgr.csv", std::ios::app);
+        for (const auto& comp : completion_definitions) {
+            std::string ck = completionKey(comp.well_name, comp.comp_id);
+            int nactive = 0;
+            double bhp = comp.bhp_bar;
+            auto it = completion_to_connection_indices.find(ck);
+            if (it != completion_to_connection_indices.end()) {
+                for (int idx : it->second) {
+                    if (idx >= 0 && idx < (int)wells.size()) {
+                        bhp = wells[idx].P_bhp;
+                        if (wells[idx].active) ++nactive;
+                    }
+                }
+            }
+            const auto& cp = comp_prod[ck];
+            hist << t << "," << comp.well_name << "," << comp.comp_id << ","
+                 << (nactive > 0 ? "OPEN" : "SHUT") << ","
+                 << cp.last_qw << "," << cp.last_qg << ","
+                 << cp.cum_water << "," << cp.cum_gas << ","
+                 << bhp << "," << nactive << "\n";
+        }
+    }
+
     void setupWells() {
         wells.clear();
         well_map.clear();
@@ -4203,13 +4956,21 @@ public:
                 w.target_node_idx = n_leaf + best_s;
                 w.WI = FLOW_BETA *2.0 * PI * kf * b / denom;
                 w.P_bhp = well_pressure;
+                w.well_name = "AUTO";
+                w.comp_id = "AUTO_frac_" + std::to_string(fid);
+                w.connection_target = "fracture";
+                w.is_fractured = true;
+                w.active = true;
+                w.leaf_id = segments[best_s].matrix_leaf_id;
+                w.seg_id = best_s;
+                w.input_frac_id = fid;
+                w.global_frac_id = fid;
                 if (!std::isfinite(w.WI) || w.WI <= EPS) continue;
 
-                int idx = (int)wells.size();
                 wells.push_back(w);
-                well_map[w.target_node_idx] = idx;
             }
         }
+        rebuildActiveWellMap();
         std::cout << "Setup wells (segment-based WI) = " << wells.size() << std::endl;
     }
 
@@ -4543,9 +5304,13 @@ public:
 
                 auto it = well_map.find(i);
                 if (it != well_map.end()) {
-                    auto R_well = computeWell_AD(wells[it->second], states_ad[i], props_ad[i]);
-                    R_acc(0) += R_well(0);
-                    R_acc(1) += R_well(1);
+                    for (int widx : it->second) {
+                        if (widx < 0 || widx >= (int)wells.size()) continue;
+                        if (!wells[widx].active) continue;
+                        auto R_well = computeWell_AD(wells[widx], states_ad[i], props_ad[i]);
+                        R_acc(0) += R_well(0);
+                        R_acc(1) += R_well(1);
+                    }
                 }
 
                 for (int eq = 0; eq < 2; ++eq) {
@@ -4584,15 +5349,7 @@ public:
 
             double max_res = Rg.lpNorm<Infinity>();
             if (max_res < tol) {
-                for (const auto& w : wells) {
-                    int u = w.target_node_idx;
-                    double dP = states[u].P - w.P_bhp;
-                    if (dP > 0.0) {
-                        PropertiesT<double> pu = getProps(states[u]);
-                        step_water += w.WI * pu.lw * dP * dt;
-                        step_gas   += w.WI * pu.lg * dP * dt;
-                    }
-                }
+                computeWellProductionForCurrentState(dt, step_water, step_gas, false);
                 return true;
             }
 
@@ -4700,7 +5457,9 @@ public:
 
     void setAllWellBHP(double bhp) {
         well_pressure = bhp;
-        for (auto& w : wells) w.P_bhp = bhp;
+        for (auto& w : wells) {
+            if (!has_parsed_wells || w.active) w.P_bhp = bhp;
+        }
     }
 
     double rateControlTarget(double t) const {
@@ -4719,6 +5478,7 @@ public:
     double rateControlMobilitySum(bool control_gas, const std::vector<State>& state_values) const {
         double sum = 0.0;
         for (const auto& w : wells) {
+            if (has_parsed_wells && !w.active) continue;
             int u = w.target_node_idx;
             if (u < 0 || u >= (int)state_values.size()) continue;
             PropertiesT<double> pu = getProps(state_values[u]);
@@ -4735,6 +5495,7 @@ public:
         double numerator = 0.0;
         double denominator = 0.0;
         for (const auto& w : wells) {
+            if (has_parsed_wells && !w.active) continue;
             int u = w.target_node_idx;
             if (u < 0 || u >= (int)state_values.size()) continue;
             PropertiesT<double> pu = getProps(state_values[u]);
@@ -4982,24 +5743,33 @@ public:
 
     void exportWells() {
         std::ofstream wellFile("well_info_lgr.csv");
-        wellFile << "well_id,node_idx,type,x,y,z,WI,P_bhp\n";
+        wellFile << "connection_id,well_name,comp_id,connection_target,is_fractured,"
+                 << "input_frac_id,global_frac_id,node_idx,node_type,"
+                 << "leaf_id,seg_id,x,y,z,WI,P_bhp,active_initial,"
+                 << "md_top_m,md_bottom_m,source_row\n";
         for (size_t i = 0; i < wells.size(); ++i) {
-            int u = wells[i].target_node_idx;
-            double x, y, z;
-            std::string type;
-            if (u < n_leaf) {
+            const Well& w = wells[i];
+            int u = w.target_node_idx;
+            double x = 0.0, y = 0.0, z = 0.0;
+            std::string type = "Invalid";
+            if (u >= 0 && u < n_leaf) {
                 x = leaves[u].center.x; y = leaves[u].center.y; z = leaves[u].center.z;
                 type = "Leaf";
-            } else {
+            } else if (u >= n_leaf && u < n_leaf + n_seg) {
                 int seg_idx = u - n_leaf;
                 x = segments[seg_idx].center.x;
                 y = segments[seg_idx].center.y;
                 z = segments[seg_idx].center.z;
                 type = "FractureSegment";
             }
-            wellFile << i << "," << u << "," << type << ","
+            wellFile << i << "," << w.well_name << "," << w.comp_id << "," << w.connection_target << ","
+                     << (w.is_fractured ? 1 : 0) << ","
+                     << w.input_frac_id << "," << w.global_frac_id << ","
+                     << u << "," << type << ","
+                     << w.leaf_id << "," << w.seg_id << ","
                      << x << "," << y << "," << z << ","
-                     << wells[i].WI << "," << wells[i].P_bhp << "\n";
+                     << w.WI << "," << w.P_bhp << "," << (w.active ? 1 : 0) << ","
+                     << w.md_top_m << "," << w.md_bottom_m << "," << w.source_row << "\n";
         }
         wellFile.close();
         std::cout << "Wells exported: well_info_lgr.csv" << std::endl;
@@ -5141,14 +5911,14 @@ public:
     py::array_t<double> getParentGridGeometry() const {
         int n_parent_cells = 0;
         for (const auto& p : parents) {
-            if (!p.refined) n_parent_cells++;
+            if (p.active && !p.refined) n_parent_cells++;
         }
 
         py::array_t<double> result(std::vector<py::ssize_t>{n_parent_cells, 24});
         auto r = result.mutable_unchecked<2>();
         int idx = 0;
         for (const auto& p : parents) {
-            if (p.refined) continue;
+            if (!p.active || p.refined) continue;
             for (int j = 0; j < 8; ++j) {
                 r(idx, j*3 + 0) = p.corners[j].x;
                 r(idx, j*3 + 1) = p.corners[j].y;
@@ -5187,6 +5957,32 @@ public:
         return result;
     }
 
+
+
+
+
+ 
+
+
+
+    py::array_t<double> getTimeSteps() const {
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)time_steps.size()});
+        auto r = result.mutable_unchecked<1>();
+        for (size_t i = 0; i < time_steps.size(); ++i) r((py::ssize_t)i) = time_steps[i];
+        return result;
+    }
+
+    py::array_t<double> getPressureSteps() const {
+        if (pressure_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)pressure_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < pressure_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = pressure_steps[t][i];
+        return result;
+    }
+
     SimulationResult runSimulation() {
         if (!use_external_corner_point_grid &&
             (coord_file_path.empty() || zcorn_file_path.empty())) {
@@ -5217,7 +6013,9 @@ public:
         std::string run_tag = enable_dual_porosity ? "_WR" : "_noWR";
         std::cout << "Writing production history to output_sim_lgr" << run_tag << ".csv" << std::endl;
         std::ofstream file("output_sim_lgr" + run_tag + ".csv");
-        file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
+        file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg,nActiveCompletions,nActiveConnections\n";
+        time_steps.clear();
+        pressure_steps.clear();
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -5228,8 +6026,10 @@ public:
         int step = 0;
 
         while (t < total_days - 1e-12) {
+            applyWellEventsUpTo(t);
             step++;
             dt_try = std::min(dt_try, total_days - t);
+            dt_try = truncateDtByNextWellEvent(t, dt_try);
             double sw = 0.0, sg = 0.0;
             bool ok = false;
             int actual_iter = 0;
@@ -5251,9 +6051,20 @@ public:
             }
             std::cout << "ok" << std::endl;
 
+            if (has_parsed_wells) {
+                computeWellProductionForCurrentState(dt_try, sw, sg, true);
+            }
+
             t += dt_try;
+            applyWellEventsUpTo(t);
             states_prev = states;
             if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
+
+            // 记录时间步压力场（动态播放用）
+            time_steps.push_back(t);
+            std::vector<double> p_snap(n_leaf);
+            for (int i = 0; i < n_leaf; ++i) p_snap[i] = states[i].P;
+            pressure_steps.push_back(std::move(p_snap));
             tot_w += sw;
             tot_g += sg;
             double avgP = 0.0;
@@ -5263,9 +6074,14 @@ public:
             double qw = sw / std::max(dt_try, 1e-30);
             double qg = sg / std::max(dt_try, 1e-30);
 
-            file << t << "," << well_pressure << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
-                 << "," << n_leaf << "," << n_seg << "," << qw << "," << qg << "\n";
+            int n_active_comp = has_parsed_wells ? activeCompletionCount() : (int)wells.size();
+            int n_active_conn = has_parsed_wells ? (int)active_well_connection_indices.size() : (int)wells.size();
+            double output_bhp = has_parsed_wells ? representativeActiveBHP() : well_pressure;
+            file << t << "," << output_bhp << "," << tot_w << "," << tot_g << "," << avgP << "," << dt_try
+                 << "," << n_leaf << "," << n_seg << "," << qw << "," << qg
+                 << "," << n_active_comp << "," << n_active_conn << "\n";
             file.flush();
+            appendWellCompletionHistory(t);
 
             double fac = std::pow((double)target_iter / (double)std::max(1, actual_iter), 0.5);
             fac = std::max(0.5, std::min(1.5, fac));
@@ -5320,16 +6136,22 @@ public:
                 use_region_fractures ? region_z_min : 0.0,
                 use_region_fractures ? region_z_max : -1.0);
         }
-        generateHydraulicFractures(
-            hydraulic_frac_count,
-            hydraulic_frac_spacing,
-            hydraulic_half_length,
-            hydraulic_height,
-            hydraulic_aperture,
-            hydraulic_perm,
-            hydraulic_center_x,
-            hydraulic_center_y,
-            hydraulic_center_z);
+        if (has_parsed_wells) {
+            // 静态裂缝原则：PERF 中的压裂几何在 markRefinement() 之前加入 fractures。
+            // OPEN / SHUT 后续只控制井项，不动态改变网格和 EDFM 连接。
+            addHydraulicFracturesFromParsedWellCompletions();
+        } else {
+            generateHydraulicFractures(
+                hydraulic_frac_count,
+                hydraulic_frac_spacing,
+                hydraulic_half_length,
+                hydraulic_height,
+                hydraulic_aperture,
+                hydraulic_perm,
+                hydraulic_center_x,
+                hydraulic_center_y,
+                hydraulic_center_z);
+        }
         markRefinement();
         buildLeafGrid();
         buildParentFaceCoverage();
@@ -5347,7 +6169,13 @@ public:
         }
         buildAllConnections(mm, mf, ff, wr_mf);
 
-        setupWells();
+        if (has_parsed_wells) {
+            buildWellConnectionsFromCompletionDefinitions();
+            initializeWellScheduleState();
+        } else {
+            setupWells();
+        }
+        exportWells();
         printACTNUMSummary();
         initState();
         buildJacobianPattern();
@@ -5358,6 +6186,22 @@ public:
 
 int main() {
     SimulatorLGR sim;
+    // standalone 兼容：如果当前目录存在 parsed wells JSON，则启用新 event + comp_id 井系统；
+    // 否则保留旧的自动人工裂缝井 fallback。
+    std::ifstream wells_json_file("parsed_wells_example_event_comp_id.json");
+    std::unique_ptr<py::scoped_interpreter> py_guard;
+    if (wells_json_file.good()) {
+        try {
+            std::stringstream buffer;
+            buffer << wells_json_file.rdbuf();
+            py_guard.reset(new py::scoped_interpreter());
+            sim.setParsedWellsJson(buffer.str());
+            std::cout << "Loaded parsed_wells_example_event_comp_id.json for standalone run." << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "[WARNING] Failed to load parsed wells JSON in standalone main: " << e.what()
+                      << ". Falling back to legacy automatic wells." << std::endl;
+        }
+    }
     std::cout << "Preprocessing (corner-point CSV parent grid + LGR + EDFM)..." << std::endl;
     if (!sim.preprocess()) {
         std::cerr << "Preprocess failed." << std::endl;
@@ -5390,6 +6234,10 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("setCornerPointGrid", &SimulatorLGR::setCornerPointGrid)
         .def("setDFNFractures", &SimulatorLGR::setDFNFractures)
         .def("setDFNContinuumProperties", &SimulatorLGR::setDFNContinuumProperties)
+        .def("setParsedWellsJson", &SimulatorLGR::setParsedWellsJson)
+        .def("setParsedWellsData", &SimulatorLGR::setParsedWellsData)
+        .def("setMatrixContinuumProperties", &SimulatorLGR::setMatrixContinuumProperties)
+        .def("setSigmaArray", &SimulatorLGR::setSigmaArray)
         .def("setFractureParameters", &SimulatorLGR::setFractureParameters)
         .def("setRegionFractureParameters", &SimulatorLGR::setRegionFractureParameters)
         .def("setHydraulicFractureParameters", &SimulatorLGR::setHydraulicFractureParameters,
@@ -5448,5 +6296,7 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("getCellGeometryWithPressure", &SimulatorLGR::getCellGeometryWithPressure)
         .def("getLGRGridGeometry", &SimulatorLGR::getLGRGridGeometry)
         .def("getParentGridGeometry", &SimulatorLGR::getParentGridGeometry)
-        .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry);
+        .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry)
+        .def("getTimeSteps", &SimulatorLGR::getTimeSteps)
+        .def("getPressureSteps", &SimulatorLGR::getPressureSteps);
 }

@@ -303,8 +303,15 @@ Sg = 0.7
 // ==================================================
 
 [WELL]
-well_track_file = well_tracks.csv
-well_completion_file = well_completions.csv
+producer_bhp = 100
+// 生产井井底流压 BHP。
+
+
+well_radius = 0.05
+// 井半径。
+
+
+
 
 
 [SOLVER]

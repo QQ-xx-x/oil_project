@@ -1,0 +1,9 @@
+﻿well_name,well_type,event,comp_id,date,is_fractured,md_top_m,md_bottom_m,depth_type,rw_m,control_type,bhp_bar,connect_matrix,connect_fracture,frac_id,c1_x,c1_y,c1_z,c2_x,c2_y,c2_z,c3_x,c3_y,c3_z,c4_x,c4_y,c4_z,aperture_m,perm_mD,conductivity_mD_m
+H1,PRODUCER,PERF,H1_frac_000,0,1,250,350,MD,0.05,BHP,50,0,1,0,375,170,20,375,230,20,375,230,60,375,170,60,0.1,1000,100
+H1,PRODUCER,PERF,H1_frac_001,0,1,550,650,MD,0.05,BHP,50,0,1,1,675,170,20,675,230,20,675,230,60,675,170,60,0.1,1000,100
+V1,PRODUCER,PERF,V1_matrix_000,0,0,10,50,MD,0.05,BHP,50,1,0,-1,,,,,,,,,,,,,,,
+H1,PRODUCER,OPEN,H1_frac_000,0,1,250,350,MD,0.05,BHP,50,0,1,0,,,,,,,,,,,,,,,
+V1,PRODUCER,OPEN,V1_matrix_000,0,0,10,50,MD,0.05,BHP,50,1,0,-1,,,,,,,,,,,,,,,
+H1,PRODUCER,OPEN,H1_frac_001,200,1,550,650,MD,0.05,BHP,50,0,1,1,,,,,,,,,,,,,,,
+H1,PRODUCER,SHUT,H1_frac_000,400,1,250,350,MD,0.05,BHP,50,0,1,0,,,,,,,,,,,,,,,
+V1,PRODUCER,SHUT,V1_matrix_000,600,0,10,50,MD,0.05,BHP,50,1,0,-1,,,,,,,,,,,,,,,
