@@ -222,7 +222,13 @@ def run_truth_simulation(params, run_dir, log_path, quiet=True):
         "wr_shape_factor": float(dp.get("wr_shape_factor", 0.085)),
         "simulation_time": float(params.get("simulation_days", 730.0)),
     }
-    run_simulation(run_params)
+
+    old_cwd = Path.cwd()
+    os.chdir(run_path)
+    try:
+        run_simulation(run_params)
+    finally:
+        os.chdir(old_cwd)
 
     sim_file = run_path / "output_sim_lgr_WR.csv"
     if not sim_file.exists():
