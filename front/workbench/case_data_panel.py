@@ -20,6 +20,7 @@ from .case_data_parser import (
     save_case_data, update_keyword_value,
 )
 from .case_dataset_builder import build_case_dataset
+from .model_config_dialog import ensure_model_config_confirmed
 
 
 class CaseDataPanel(QWidget):
@@ -268,6 +269,9 @@ class CaseDataPanel(QWidget):
         if self.case_data is None:
             QMessageBox.warning(self, "生成 Dataset", "尚未加载 CaseData 文件。")
             return False
+        if self.project_state is not None:
+            if not ensure_model_config_confirmed(self.project_state, self):
+                return False
         output_dir = self.dataset_path_edit.text().strip() if hasattr(self, "dataset_path_edit") else ""
         if not output_dir:
             output_dir = self._default_dataset_dir()
@@ -276,7 +280,11 @@ class CaseDataPanel(QWidget):
         try:
             self._load_project_snapshot()
             snapshot_path = self._export_dataset_case_data_snapshot()
-            result = build_case_dataset(snapshot_path, output_dir)
+            result = build_case_dataset(
+                snapshot_path,
+                output_dir,
+                model_config=getattr(self.project_state, "model_config", None),
+            )
         except Exception as exc:
             QMessageBox.critical(self, "生成 Dataset 失败", str(exc))
             return False

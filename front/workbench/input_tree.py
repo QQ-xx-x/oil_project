@@ -17,6 +17,7 @@ from .parameter_panels import (
     WorkbenchMatrixPanel, WorkbenchNaturalFracturesPanel,
     WorkbenchOilWaterPanel, WorkbenchSimulationPanel, WorkbenchWellPanel,
 )
+from .project_state import MODEL_TYPE_WR, normalize_model_config
 from .settings_dialog import ObjectSettingsDialog, ParameterSettingsDialog
 
 
@@ -28,6 +29,19 @@ DEFAULT_CASE_SECTION_NAMES = [
     "GRID", "ROCK", "FRACTURE", "LGR", "FLUID", "GAS",
     "INITIAL", "WELL", "SOLVER", "OUTPUT", "WR",
 ]
+
+WR_SCHEMA_GROUP_KEYS = {
+    "dual_porosity",
+    "fracture_equivalent_properties",
+}
+WR_CASE_SECTIONS = {"WR"}
+WR_CASE_KEYWORDS = {
+    "fracture_phi_file",
+    "fracture_kx_file",
+    "fracture_ky_file",
+    "fracture_kz_file",
+    "sigma_file",
+}
 
 
 class InputTree(QTreeWidget):
@@ -63,6 +77,7 @@ class InputTree(QTreeWidget):
         self._populate()
         self.expandToDepth(0)
         self.refresh_case_data_sections(preserve_expanded=False)
+        self.refresh_model_config_visibility()
 
     def _item(self, text, key, object_type="参数模块", checked=False,
               icon_name="generic", icon_status=None, tooltip=None,
@@ -142,6 +157,58 @@ class InputTree(QTreeWidget):
                 })
                 child_item.addChild(field_item)
             module_item.addChild(child_item)
+
+    def refresh_model_config_visibility(self):
+        is_wr = self._is_wr_model()
+        self._building = True
+        for index in range(self.topLevelItemCount()):
+            self._apply_model_visibility(self.topLevelItem(index), is_wr)
+        self._building = False
+        current = self.currentItem()
+        if current is not None and self._item_or_ancestor_hidden(current):
+            self.setCurrentItem(None)
+
+    def _is_wr_model(self):
+        if self.project_state is None:
+            return False
+        if hasattr(self.project_state, "is_wr_model"):
+            return bool(self.project_state.is_wr_model())
+        config = normalize_model_config(getattr(self.project_state, "model_config", None))
+        return config.get("model_type") == MODEL_TYPE_WR
+
+    def _apply_model_visibility(self, item, is_wr):
+        hidden = self._is_wr_related_item(item) and not is_wr
+        item.setHidden(hidden)
+        if hidden:
+            item.setExpanded(False)
+        for index in range(item.childCount()):
+            self._apply_model_visibility(item.child(index), is_wr)
+
+    def _is_wr_related_item(self, item):
+        data = item.data(0, DATA_ROLE) or {}
+        child_key = data.get("child_key")
+        if child_key in WR_SCHEMA_GROUP_KEYS:
+            return True
+
+        key = item.data(0, KEY_ROLE)
+        if isinstance(key, str):
+            if key.startswith("case_data_section:"):
+                section = key.split(":", 1)[1].upper()
+                return section in WR_CASE_SECTIONS
+            if key.startswith("case_data_keyword:"):
+                parts = key.split(":", 2)
+                if len(parts) == 3:
+                    section = parts[1].upper()
+                    keyword = parts[2].lower()
+                    if section in WR_CASE_SECTIONS:
+                        return True
+                    return keyword in WR_CASE_KEYWORDS
+
+        field = data.get("field") or {}
+        if isinstance(field, dict):
+            field_key = str(field.get("key", "") or "").lower()
+            return field_key in WR_CASE_KEYWORDS
+        return False
 
     def _schema_route(self, item):
         data = item.data(0, DATA_ROLE) or {}
@@ -267,8 +334,10 @@ class InputTree(QTreeWidget):
             if confirmed:
                 if self._case_data_signature() != before_signature:
                     self.refresh_case_data_sections(preserve_expanded=True)
+                    self.refresh_model_config_visibility()
             else:
                 self._restore_case_data_snapshot(before_case_data)
+            self.refresh_model_config_visibility()
             return
         panel_factory = self._panel_factories.get(key)
         if isinstance(key, str) and key.startswith("case_data_section:"):
@@ -308,6 +377,7 @@ class InputTree(QTreeWidget):
             else:
                 self._restore_case_data_snapshot(before_case_data)
                 self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
+            self.refresh_model_config_visibility()
         elif isinstance(key, str) and key.startswith("case_data_"):
             confirmed = (
                 result == dialog.Accepted
@@ -322,6 +392,9 @@ class InputTree(QTreeWidget):
             else:
                 self._restore_case_data_snapshot(before_case_data)
                 self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
+            self.refresh_model_config_visibility()
+        else:
+            self.refresh_model_config_visibility()
 
     def _case_data_signature(self):
         summary = getattr(self.project_state, "case_data_summary", {}) or {}
@@ -415,6 +488,7 @@ class InputTree(QTreeWidget):
         else:
             root.setExpanded(False)
         self._building = False
+        self.refresh_model_config_visibility()
         if current_key:
             self.select_key(current_key)
 
@@ -576,11 +650,19 @@ class InputTree(QTreeWidget):
 
     def select_key(self, key):
         item = self._find_item(key)
-        if item is None:
+        if item is None or self._item_or_ancestor_hidden(item):
             return False
         self.setCurrentItem(item)
         self.scrollToItem(item)
         return True
+
+    def _item_or_ancestor_hidden(self, item):
+        current = item
+        while current is not None:
+            if current.isHidden():
+                return True
+            current = current.parent()
+        return False
 
     def _find_item(self, key):
         for index in range(self.topLevelItemCount()):

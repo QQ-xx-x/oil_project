@@ -31,6 +31,14 @@ from .case_dataset_schema import (
     REQUIRED_FILE_KEYS,
     SCHEMA_VERSION,
     VALIDATION_FILE,
+    WR_PROPERTY_FILE_KEYS,
+)
+from .project_state import (
+    MODEL_TYPE_WR,
+    WR_INPUT_MODE_CONSTANT,
+    WR_INPUT_MODE_FILE,
+    WR_INPUT_MODE_MIXED,
+    normalize_model_config,
 )
 
 
@@ -57,7 +65,7 @@ class CaseDatasetBuildError(ValueError):
 
 
 def build_case_dataset(case_data_path, output_dir, include_raw=True,
-                       null_value=DEFAULT_NULL_VALUE):
+                       null_value=DEFAULT_NULL_VALUE, model_config=None):
     """把 CaseData 和其引用文件保存为标准 case_dataset 目录。
 
     这个函数尽量生成完整诊断信息。除 CaseData 主文件不存在外，其余文件缺失或解析失败
@@ -74,6 +82,8 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
 
     os.makedirs(output_dir, exist_ok=True)
     validation = _new_validation()
+    model_config = normalize_model_config(model_config)
+    _record_model_config_validation(validation, model_config)
 
     case_data = parse_case_data(case_data_path)
     for error in case_data.errors:
@@ -98,12 +108,14 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         grid_summary.get("total_cell_count"),
         null_value,
         validation,
+        model_config,
     )
 
     dfn_payload, dfn_summary = _parse_dfn_payload(files, validation)
 
     _write_json(os.path.join(output_dir, CONFIG_FILE), {
         "schema_version": SCHEMA_VERSION,
+        "model_config": model_config,
         "config": config,
     })
     _write_json(os.path.join(output_dir, CASE_SECTIONS_FILE), {
@@ -138,6 +150,7 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         "raw_dir": RAW_DIR if include_raw else "",
         "null_value": float(null_value),
         "valid_cell_rule": "grid_actnum == 1 and value != 99999",
+        "model_config": model_config,
         "grid": grid_summary,
         "arrays": array_summary,
         "dfn": dfn_summary,
@@ -262,16 +275,21 @@ def _parse_grid_arrays(grid_file, arrays, validation):
 
 
 def _parse_property_arrays(files, arrays, array_summary, active_mask,
-                           expected_count, null_value, validation):
-    for file_key in REQUIRED_FILE_KEYS:
+                           expected_count, null_value, validation,
+                           model_config=None):
+    required_file_keys = _required_file_keys(model_config)
+    for file_key in required_file_keys:
         if file_key not in files:
             _add_error(validation, f"缺少必要文件关键字: {file_key}")
 
     all_lengths_match = True
     for file_key, array_key in PROPERTY_ARRAYS.items():
+        if not _should_parse_property_file(file_key, model_config):
+            continue
         path = files.get(file_key)
         if not path:
-            if file_key not in REQUIRED_FILE_KEYS:
+            if file_key not in required_file_keys and _warn_missing_optional_file(
+                    file_key, model_config):
                 _add_warning(validation, f"未提供可选属性文件: {file_key}")
             continue
         if not os.path.exists(path):
@@ -313,6 +331,48 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
         all_lengths_match,
         f"expected={expected_count}",
     )
+
+
+def _record_model_config_validation(validation, model_config):
+    model_type = model_config.get("model_type", "")
+    wr_input_mode = model_config.get("wr_input_mode", "")
+    _set_check(
+        validation,
+        "model_config",
+        True,
+        f"model_type={model_type}, wr_input_mode={wr_input_mode}",
+    )
+    validation["model_config"] = dict(model_config)
+    if model_type == MODEL_TYPE_WR and not model_config.get("confirmed"):
+        _add_warning(validation, "WR 模型方案尚未标记为已确认，请核对输入数据")
+
+
+def _required_file_keys(model_config=None):
+    config = normalize_model_config(model_config)
+    required = list(REQUIRED_FILE_KEYS)
+    if (config.get("model_type") == MODEL_TYPE_WR and
+            config.get("wr_input_mode") == WR_INPUT_MODE_FILE):
+        required.extend(WR_PROPERTY_FILE_KEYS)
+    return tuple(required)
+
+
+def _warn_missing_optional_file(file_key, model_config=None):
+    config = normalize_model_config(model_config)
+    if file_key not in WR_PROPERTY_FILE_KEYS:
+        return True
+    if config.get("model_type") != MODEL_TYPE_WR:
+        return False
+    return config.get("wr_input_mode") in {
+        WR_INPUT_MODE_CONSTANT,
+        WR_INPUT_MODE_MIXED,
+    }
+
+
+def _should_parse_property_file(file_key, model_config=None):
+    config = normalize_model_config(model_config)
+    if file_key in WR_PROPERTY_FILE_KEYS:
+        return config.get("model_type") == MODEL_TYPE_WR
+    return True
 
 
 def _build_valid_mask(values, active_mask, null_value):
@@ -489,4 +549,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-

@@ -1072,6 +1072,7 @@ class RibbonWidget(QTabWidget):
         self._add_groups(page, [
             ("模拟", [
                 _action("导入", "import", "small", "导入模拟相关数据"),
+                _action("模型方案", "case", "small", "选择正常模型或 WR 双重介质模型"),
                 _action("定义算例", "case", "small", "创建或编辑模拟算例"),
                 _action("常规模拟", "monitor", "large", "运行常规模拟流程"),
             ]),

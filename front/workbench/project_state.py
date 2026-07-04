@@ -10,6 +10,64 @@ from .case_config_sync import (
     sync_project_modules_from_dataset,
 )
 
+MODEL_TYPE_NORMAL = "normal"
+MODEL_TYPE_WR = "wr"
+GRID_TYPE_CORNER_POINT = "corner_point"
+WR_INPUT_MODE_FILE = "file"
+WR_INPUT_MODE_CONSTANT = "constant"
+WR_INPUT_MODE_MIXED = "mixed"
+
+
+def default_model_config():
+    return {
+        "schema_version": 1,
+        "model_type": MODEL_TYPE_NORMAL,
+        "grid_type": GRID_TYPE_CORNER_POINT,
+        "enable_lgr": True,
+        "enable_natural_fractures": True,
+        "enable_hydraulic_fractures": False,
+        "enable_real_gas_pvt": True,
+        "wr_input_mode": WR_INPUT_MODE_FILE,
+        "confirmed": False,
+    }
+
+
+def normalize_model_config(config=None, legacy_refinement=None):
+    normalized = default_model_config()
+    if legacy_refinement is not None and not config:
+        normalized["enable_lgr"] = str(legacy_refinement).strip() not in {
+            "", "0", "false", "False", "不加密",
+        }
+
+    if isinstance(config, dict):
+        normalized.update({
+            key: value
+            for key, value in config.items()
+            if key in normalized
+        })
+
+    if normalized["model_type"] not in {MODEL_TYPE_NORMAL, MODEL_TYPE_WR}:
+        normalized["model_type"] = MODEL_TYPE_NORMAL
+    if normalized["grid_type"] not in {GRID_TYPE_CORNER_POINT}:
+        normalized["grid_type"] = GRID_TYPE_CORNER_POINT
+    if normalized["wr_input_mode"] not in {
+        WR_INPUT_MODE_FILE,
+        WR_INPUT_MODE_CONSTANT,
+        WR_INPUT_MODE_MIXED,
+    }:
+        normalized["wr_input_mode"] = WR_INPUT_MODE_FILE
+
+    for key in (
+        "enable_lgr",
+        "enable_natural_fractures",
+        "enable_hydraulic_fractures",
+        "enable_real_gas_pvt",
+        "confirmed",
+    ):
+        normalized[key] = bool(normalized.get(key))
+    normalized["schema_version"] = int(normalized.get("schema_version") or 1)
+    return normalized
+
 
 @dataclass
 class ProjectState:
@@ -19,6 +77,7 @@ class ProjectState:
     project_file_path: str = ""
     algorithm: str = "corner_edfm"
     corner_grid_refinement: str = "加密"
+    model_config: dict = field(default_factory=default_model_config)
     case_data_path: str = ""
     case_data_summary: dict = field(default_factory=dict)
     case_data_sections: list = field(default_factory=list)
@@ -28,6 +87,25 @@ class ProjectState:
     checked_items: dict = field(default_factory=dict)
     module_values: dict = field(default_factory=dict)
     ui_state: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.model_config = normalize_model_config(
+            self.model_config, self.corner_grid_refinement)
+
+    def set_model_config(self, config):
+        self.model_config = normalize_model_config(
+            config, self.corner_grid_refinement)
+        self.corner_grid_refinement = (
+            "加密" if self.model_config.get("enable_lgr") else "不加密"
+        )
+
+    def update_model_config(self, **updates):
+        config = dict(self.model_config or {})
+        config.update(updates)
+        self.set_model_config(config)
+
+    def is_wr_model(self):
+        return self.model_config.get("model_type") == MODEL_TYPE_WR
 
     def set_checked(self, key, checked):
         if key:
@@ -103,6 +181,7 @@ class ProjectState:
             "project_file_path": self.project_file_path,
             "algorithm": self.algorithm,
             "corner_grid_refinement": self.corner_grid_refinement,
+            "model_config": copy.deepcopy(self.model_config),
             "case_data_path": self.case_data_path,
             "case_data_summary": copy.deepcopy(self.case_data_summary),
             "case_data_sections": copy.deepcopy(self.case_data_sections),
@@ -123,6 +202,7 @@ class ProjectState:
             "project_file_path",
             "algorithm",
             "corner_grid_refinement",
+            "model_config",
             "case_data_path",
             "case_data_summary",
             "case_data_sections",
@@ -135,6 +215,11 @@ class ProjectState:
         ):
             if field_name in payload:
                 setattr(state, field_name, copy.deepcopy(payload.get(field_name)))
+        state.model_config = normalize_model_config(
+            payload.get("model_config"), state.corner_grid_refinement)
+        state.corner_grid_refinement = (
+            "加密" if state.model_config.get("enable_lgr") else "不加密"
+        )
         if state.case_data_sections:
             sync_project_modules_from_case_data(state)
         if state.case_dataset_path:

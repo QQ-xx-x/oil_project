@@ -26,6 +26,7 @@ from .case_dataset_schema import (
     PROPERTY_ARRAYS,
     VALIDATION_FILE,
 )
+from .project_state import normalize_model_config
 
 
 class CaseDatasetReadError(ValueError):
@@ -66,6 +67,7 @@ class CaseDataset:
 
     dataset_dir: str
     manifest: Dict[str, Any]
+    model_config: Dict[str, Any]
     config: Dict[str, Any]
     case_sections: Dict[str, Any]
     validation: Dict[str, Any]
@@ -112,6 +114,7 @@ class CaseDataset:
         """返回一份面向 pybind 调用的结构化输入对象。"""
         return {
             "dataset_dir": self.dataset_dir,
+            "model_config": dict(self.model_config or {}),
             "config": self.config,
             "grid": {
                 "nx": self.grid.nx,
@@ -133,6 +136,7 @@ class CaseDataset:
         return {
             "dataset_dir": self.dataset_dir,
             "schema_version": self.manifest.get("schema_version", ""),
+            "model_config": dict(self.model_config or {}),
             "validation_ok": bool(self.validation.get("ok")),
             "error_count": len(self.validation.get("errors") or []),
             "warning_count": len(self.validation.get("warnings") or []),
@@ -196,10 +200,13 @@ def load_case_dataset(dataset_dir, strict=True):
     arrays = _read_npz_arrays(arrays_path)
     grid = _build_grid(manifest, arrays)
     properties, valid_masks = _split_property_arrays(arrays)
+    model_config = normalize_model_config(
+        config_payload.get("model_config") or manifest.get("model_config"))
 
     return CaseDataset(
         dataset_dir=dataset_dir,
         manifest=manifest,
+        model_config=model_config,
         config=config_payload.get("config", config_payload),
         case_sections=case_sections_payload,
         validation=validation,

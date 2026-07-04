@@ -339,8 +339,8 @@ def run_case_dataset_simulation(params):
     sim = edfm_core_corner.EDFMSimulator()
 
     _apply_case_dataset_grid(sim, dataset)
-    _apply_case_dataset_properties(sim, dataset)
-    _apply_case_dataset_dfn(sim, dataset)
+    _apply_case_dataset_properties(sim, dataset, params)
+    _apply_case_dataset_dfn(sim, dataset, params)
     _apply_case_dataset_controls(sim, params)
 
     result = sim.runSimulation()
@@ -364,8 +364,9 @@ def _apply_case_dataset_grid(sim, dataset):
     )
 
 
-def _apply_case_dataset_properties(sim, dataset):
+def _apply_case_dataset_properties(sim, dataset, params):
     properties = dataset.properties or {}
+    enable_dual_porosity = bool(params.get('enable_dual_porosity', False))
     matrix_keys = ('matrix_phi', 'matrix_kx', 'matrix_ky', 'matrix_kz')
     if all(key in properties for key in matrix_keys):
         if not hasattr(sim, 'setMatrixContinuumProperties'):
@@ -376,6 +377,15 @@ def _apply_case_dataset_properties(sim, dataset):
     else:
         missing = [key for key in matrix_keys if key not in properties]
         print(f"WARNING: matrix continuum properties are incomplete: {missing}", flush=True)
+
+    if not enable_dual_porosity:
+        print("CaseDataset model_type=normal; WR fracture continuum properties skipped.", flush=True)
+        return
+
+    wr_input_mode = str(params.get('wr_input_mode', 'file') or 'file').lower()
+    if wr_input_mode == 'constant':
+        print("CaseDataset WR constant mode; fracture continuum arrays skipped.", flush=True)
+        return
 
     fracture_keys = ('fracture_phi', 'fracture_kx', 'fracture_ky', 'fracture_kz')
     if all(key in properties for key in fracture_keys):
@@ -391,16 +401,24 @@ def _apply_case_dataset_properties(sim, dataset):
         )
     else:
         missing = [key for key in fracture_keys if key not in properties]
-        print(f"WARNING: fracture continuum properties are incomplete: {missing}", flush=True)
+        prefix = "WARNING" if wr_input_mode == 'file' else "CaseDataset WR mixed mode"
+        print(f"{prefix}: fracture continuum properties are incomplete: {missing}", flush=True)
 
     sigma = properties.get('sigma')
     if sigma is not None:
         if not hasattr(sim, 'setSigmaArray'):
             raise RuntimeError("edfm_core_corner_lgr does not expose setSigmaArray")
         sim.setSigmaArray(_array_float64(sigma).tolist())
+    elif wr_input_mode == 'file':
+        print("WARNING: sigma array is missing for WR file mode.", flush=True)
 
 
-def _apply_case_dataset_dfn(sim, dataset):
+def _apply_case_dataset_dfn(sim, dataset, params):
+    if not bool(params.get('enable_natural_fractures', True)):
+        if hasattr(sim, 'setFractureParameters'):
+            sim.setFractureParameters(0, 10.0, 20.0, math.pi / 3.0, 0.0, math.pi, 0.1, 100.0)
+        print("CaseDataset natural fractures disabled; DFN input skipped.", flush=True)
+        return
     if not hasattr(sim, 'setDFNFractures'):
         raise RuntimeError("edfm_core_corner_lgr does not expose setDFNFractures")
     ids, offsets, vertices, apertures, permeabilities = _dfn_arrays(dataset.dfn)
@@ -412,7 +430,10 @@ def _apply_case_dataset_dfn(sim, dataset):
 
 def _apply_case_dataset_controls(sim, params):
     if hasattr(sim, 'setHydraulicFractureParameters'):
-        hf_enabled = bool(params.get('hf_enabled', False))
+        hf_enabled = (
+            bool(params.get('enable_hydraulic_fractures', True)) and
+            bool(params.get('hf_enabled', False))
+        )
         hf_count = int(params.get('hf_count', 0)) if hf_enabled else 0
         sim.setHydraulicFractureParameters(
             hf_count,
@@ -431,7 +452,10 @@ def _apply_case_dataset_controls(sim, params):
             float(params.get('well_pressure', 100.0)),
         )
     apply_corner_fluid_properties(sim, params)
-    apply_corner_gas_pvt_properties(sim, params)
+    if bool(params.get('enable_real_gas_pvt', True)):
+        apply_corner_gas_pvt_properties(sim, params)
+    else:
+        print("CaseDataset real-gas PVT parameters disabled by model_config.", flush=True)
     apply_corner_initial_state(sim, params)
 
     if hasattr(sim, 'setLGRParameters'):
@@ -443,6 +467,8 @@ def _apply_case_dataset_controls(sim, params):
             int(params.get('lgr_nrz', 2)),
         )
     if hasattr(sim, 'setDualPorosityParameters') and params.get('enable_dual_porosity') is not None:
+        if bool(params.get('enable_dual_porosity', False)):
+            print("CaseDataset WR dual-porosity model enabled.", flush=True)
         sim.setDualPorosityParameters(
             bool(params.get('enable_dual_porosity', False)),
             float(params.get('phi_matrix', 0.04)),

@@ -9,6 +9,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
+from .project_state import (
+    MODEL_TYPE_WR,
+    WR_INPUT_MODE_CONSTANT,
+    WR_INPUT_MODE_FILE,
+    WR_INPUT_MODE_MIXED,
+    normalize_model_config,
+)
 
 
 class CaseDatasetSimulationAdapterError(ValueError):
@@ -76,7 +83,10 @@ def export_case_dataset_interface_json(dataset_dir, output_path, strict=True):
 
 def _build_runner_params(dataset, summary):
     config = dataset.config or {}
+    model_config = normalize_model_config(getattr(dataset, "model_config", None))
+    model_params = _model_config_params(model_config)
     lgr = config.get("lgr", {}) or {}
+    dual = config.get("dual_porosity", {}) or {}
     fluid = config.get("fluid", {}) or {}
     gas = config.get("gas", {}) or {}
     initial = config.get("initial", {}) or {}
@@ -85,11 +95,16 @@ def _build_runner_params(dataset, summary):
     solver = config.get("solver", {}) or {}
     grid = dataset.grid
     hf_params = _hydraulic_fracture_params(dataset, hydraulic)
+    hf_params["hf_enabled"] = bool(
+        model_params["enable_hydraulic_fractures"] and hf_params.get("hf_enabled"))
 
     return {
         "algorithm": "corner_edfm",
         "interface_source": "case_dataset",
         "case_dataset_path": os.path.abspath(dataset.dataset_dir),
+        "model_config": dict(model_config),
+        "model_type": model_params["model_type"],
+        "wr_input_mode": model_params["wr_input_mode"],
         "corner_grid_refinement": "加密" if bool(lgr.get("enable_lgr", False)) else "不加密",
         "grid_type": "corner_point",
         "nx": int(grid.nx),
@@ -101,6 +116,13 @@ def _build_runner_params(dataset, summary):
         "property_count": int(summary.get("property_count", 0) or 0),
         "dfn_fracture_count": int(summary.get("dfn_fracture_count", 0) or 0),
         "enable_lgr": bool(lgr.get("enable_lgr", False)),
+        "corner_grid_refinement": "加密" if model_params["enable_lgr"] else "不加密",
+        "enable_lgr": model_params["enable_lgr"],
+        "enable_natural_fractures": model_params["enable_natural_fractures"],
+        "enable_hydraulic_fractures": model_params["enable_hydraulic_fractures"],
+        "enable_real_gas_pvt": model_params["enable_real_gas_pvt"],
+        "enable_dual_porosity": model_params["enable_dual_porosity"],
+        "corner_grid_refinement": "\u52a0\u5bc6" if model_params["enable_lgr"] else "\u4e0d\u52a0\u5bc6",
         "d_threshold": _float(lgr, "d_threshold", 5.05),
         "lgr_nrx": _int(lgr, "nrx", 2),
         "lgr_nry": _int(lgr, "nry", 2),
@@ -124,6 +146,7 @@ def _build_runner_params(dataset, summary):
         "well_pressure": _float(well, "producer_bhp", 100.0),
         "well_radius": _float(well, "well_radius", 0.05),
         **hf_params,
+        **_dual_porosity_params(dual),
         "simulation_time": _float(solver, "total_time", 100.0),
         "time_step": _float(solver, "dt_init", 1.0),
         "dt_min": _float(solver, "dt_min", 1e-6),
@@ -135,6 +158,43 @@ def _build_runner_params(dataset, summary):
         "null_value": float(dataset.manifest.get("null_value", 99999.0)),
         "valid_cell_rule": dataset.manifest.get(
             "valid_cell_rule", "grid_actnum == 1 and value != 99999"),
+    }
+
+
+def _model_config_params(model_config):
+    config = normalize_model_config(model_config)
+    is_wr = config.get("model_type") == MODEL_TYPE_WR
+    wr_input_mode = config.get("wr_input_mode", WR_INPUT_MODE_FILE)
+    if wr_input_mode not in {
+        WR_INPUT_MODE_FILE,
+        WR_INPUT_MODE_CONSTANT,
+        WR_INPUT_MODE_MIXED,
+    }:
+        wr_input_mode = WR_INPUT_MODE_FILE
+    return {
+        "model_type": config.get("model_type"),
+        "wr_input_mode": wr_input_mode,
+        "enable_lgr": bool(config.get("enable_lgr", True)),
+        "enable_natural_fractures": bool(config.get("enable_natural_fractures", True)),
+        "enable_hydraulic_fractures": bool(config.get("enable_hydraulic_fractures", False)),
+        "enable_real_gas_pvt": bool(config.get("enable_real_gas_pvt", True)),
+        "enable_dual_porosity": bool(is_wr),
+    }
+
+
+def _dual_porosity_params(dual):
+    return {
+        "phi_matrix": _float(dual, "phi_matrix", 0.04),
+        "phi_fracture": _float(dual, "phi_fracture", 0.4),
+        "k_matrix_x": _float(dual, "k_matrix_x", 0.005),
+        "k_matrix_y": _float(dual, "k_matrix_y", 0.005),
+        "k_matrix_z": _float(dual, "k_matrix_z", 0.005),
+        "k_fracture_x": _float(dual, "k_fracture_x", 1.0),
+        "k_fracture_y": _float(dual, "k_fracture_y", 1.0),
+        "k_fracture_z": _float(dual, "k_fracture_z", 0.1),
+        "matrix_volume_fraction": _float(dual, "matrix_volume_fraction", 0.98),
+        "fracture_volume_fraction": _float(dual, "fracture_volume_fraction", 0.02),
+        "wr_shape_factor": _float(dual, "wr_shape_factor", 0.12),
     }
 
 

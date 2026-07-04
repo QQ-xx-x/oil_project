@@ -37,6 +37,14 @@ PROPERTY_ARRAYS = {
     "actnum_file": "actnum_property",
 }
 
+WR_PROPERTY_FILE_KEYS = (
+    "fracture_phi_file",
+    "fracture_kx_file",
+    "fracture_ky_file",
+    "fracture_kz_file",
+    "sigma_file",
+)
+
 REQUIRED_FILE_KEYS = (
     GRID_FILE_KEY,
     "matrix_phi_file",
@@ -47,4 +55,3 @@ REQUIRED_FILE_KEYS = (
 
 MASK_ACTIVE_KEY = "mask_active"
 MASK_PREFIX = "mask_"
-

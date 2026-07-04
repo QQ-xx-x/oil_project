@@ -143,6 +143,16 @@ class WorkbenchWindow(QMainWindow):
         if self._is_new_command(command):
             self._new_project()
             return
+        if command in {"模型方案", "运行方案"}:
+            current = self.pages.currentWidget()
+            if isinstance(current, ProjectShell):
+                current.show_model_config_dialog(force=True)
+                self.statusBar().showMessage("模型方案已更新", 4500)
+            else:
+                message = "[模型方案] 请先打开工程"
+                self.active_log().append_message(message)
+                self.statusBar().showMessage(message, 4500)
+            return
         if command in {"运行模拟", "扫描结果", "刷新结果"}:
             current = self.pages.currentWidget()
             if isinstance(current, ProjectShell):

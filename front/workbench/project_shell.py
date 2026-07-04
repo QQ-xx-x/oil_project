@@ -17,6 +17,10 @@ from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 from .input_tree import InputTree
 from .message_log import MessageLogPanel
+from .model_config_dialog import (
+    ensure_model_config_confirmed,
+    model_config_summary,
+)
 from .navigation_trees import (
     CasesTree, ModelsTree, ProcessesTree, TemplatesTree, WindowsTree,
 )
@@ -583,6 +587,17 @@ class ProjectShell(QWidget):
             f"错误 {error_count} 个，警告 {warning_count} 个")
         self._show_status("CaseData Dataset 已生成")
 
+    def show_model_config_dialog(self, force=True):
+        if not ensure_model_config_confirmed(self.project_state, self, force=force):
+            self.message_log.append_message("[模型方案] 已取消模型方案选择")
+            self._show_status("已取消模型方案选择")
+            return False
+        self.input_tree.refresh_model_config_visibility()
+        summary = model_config_summary(getattr(self.project_state, "model_config", {}))
+        self.message_log.append_message(f"[模型方案] {summary}")
+        self._show_status(f"模型方案：{summary}")
+        return True
+
     def _handle_result_selected(self, key, title, view):
         if key == "layer_control":
             self.workspace.update_context(*self._result_context(key, title), "3d", key)
@@ -681,6 +696,13 @@ class ProjectShell(QWidget):
             key, (f"当前结果：{title}", "该结果节点后续接入真实模拟输出。"))
 
     def run_simulation_scan(self):
+        if not ensure_model_config_confirmed(self.project_state, self):
+            self.message_log.append_message("[运行] 已取消：尚未确认模型方案")
+            self._show_status("已取消运行：尚未确认模型方案")
+            return
+        self.input_tree.refresh_model_config_visibility()
+        self.message_log.append_message(
+            f"[模型方案] {model_config_summary(getattr(self.project_state, 'model_config', {}))}")
         self.message_log.append_message("[运行] 正在收集 Corner Grid LGR 输入参数")
         self.simulation_service.run(self.project_state)
 
@@ -690,6 +712,13 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[运行] 算法=corner_edfm，加密={params.get('corner_grid_refinement')}")
         if params.get("interface_source") == "case_dataset":
+            self.message_log.append_message(
+                f"[模型方案] type={params.get('model_type', 'normal')}，"
+                f"WR={params.get('enable_dual_porosity')}，"
+                f"LGR={params.get('enable_lgr')}，"
+                f"DFN={params.get('enable_natural_fractures')}，"
+                f"HF={params.get('enable_hydraulic_fractures')}，"
+                f"PVT={params.get('enable_real_gas_pvt')}")
             self.message_log.append_message(
                 f"[运行] Dataset={params.get('case_dataset_path', '')}")
             self.message_log.append_message(

@@ -372,6 +372,7 @@ def parse_property(path: str, expected_len: Optional[int] = None) -> List[float]
     lines = text.split('\n')
 
     # 找到数据起始行（跳过 -- 注释、Null Value 声明、关键字行）
+    keyword_line_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*/?$")
     data_lines: List[str] = []
     for line in lines:
         stripped = line.strip()
@@ -382,6 +383,8 @@ def parse_property(path: str, expected_len: Optional[int] = None) -> List[float]
         if 'Null Value' in stripped and '=' in stripped:
             continue
         if stripped.startswith("'") and "'" in stripped[1:]:
+            continue
+        if keyword_line_pattern.match(stripped):
             continue
         if stripped == '/':
             continue
