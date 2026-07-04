@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
-"""储层建模工作台用户界面。"""
-
-from .window import WorkbenchWindow
+"""Workbench package exports."""
 
 __all__ = ["WorkbenchWindow"]
+
+
+def __getattr__(name):
+    if name == "WorkbenchWindow":
+        from .window import WorkbenchWindow
+
+        return WorkbenchWindow
+    raise AttributeError(name)

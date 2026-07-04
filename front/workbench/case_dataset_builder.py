@@ -11,7 +11,13 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from front.uniform_parser import parse_config, parse_dfn, parse_grid, parse_property
+from front.uniform_parser import (
+    parse_config,
+    parse_dfn,
+    parse_grid,
+    parse_property,
+    parse_wells,
+)
 
 from .case_data_parser import parse_case_data
 from .case_dataset_schema import (
@@ -31,6 +37,7 @@ from .case_dataset_schema import (
     REQUIRED_FILE_KEYS,
     SCHEMA_VERSION,
     VALIDATION_FILE,
+    WELLS_FILE,
     WR_PROPERTY_FILE_KEYS,
 )
 from .project_state import (
@@ -112,6 +119,8 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
     )
 
     dfn_payload, dfn_summary = _parse_dfn_payload(files, validation)
+    wells_payload, wells_summary = _parse_wells_payload(
+        case_data_path, config, files, validation)
 
     _write_json(os.path.join(output_dir, CONFIG_FILE), {
         "schema_version": SCHEMA_VERSION,
@@ -126,6 +135,10 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
     _write_json(os.path.join(output_dir, DFN_FILE), {
         "schema_version": SCHEMA_VERSION,
         "dfn": dfn_payload,
+    })
+    _write_json(os.path.join(output_dir, WELLS_FILE), {
+        "schema_version": SCHEMA_VERSION,
+        "wells": wells_payload,
     })
     _write_json(os.path.join(output_dir, VALIDATION_FILE), validation)
 
@@ -146,6 +159,7 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         "case_sections_file": CASE_SECTIONS_FILE,
         "arrays_file": ARRAYS_FILE,
         "dfn_file": DFN_FILE,
+        "wells_file": WELLS_FILE,
         "validation_file": VALIDATION_FILE,
         "raw_dir": RAW_DIR if include_raw else "",
         "null_value": float(null_value),
@@ -154,6 +168,7 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         "grid": grid_summary,
         "arrays": array_summary,
         "dfn": dfn_summary,
+        "wells": wells_summary,
         "source_files": source_files,
         "validation": {
             "ok": bool(validation.get("ok")),
@@ -438,6 +453,62 @@ def _parse_dfn_payload(files, validation):
         "bbox_min": dfn.get("bbox_min"),
         "bbox_max": dfn.get("bbox_max"),
     }
+
+
+def _parse_wells_payload(case_data_path, config, files, validation):
+    well_config = (config.get("well", {}) if isinstance(config, dict) else {}) or {}
+    track_file = _resolve_well_file(
+        case_data_path, files, well_config, "well_track_file")
+    completion_file = _resolve_well_file(
+        case_data_path, files, well_config, "well_completion_file")
+
+    if not track_file and not completion_file:
+        _set_check(validation, "wells_parse_ok", True, "no well files provided")
+        return None, {"available": False}
+
+    if not track_file or not os.path.exists(track_file):
+        _add_error(validation, f"well_track_file missing or does not exist: {track_file}")
+        _set_check(validation, "well_track_file_exists", False, track_file)
+        return None, {"available": False, "well_track_file": track_file}
+    _set_check(validation, "well_track_file_exists", True, track_file)
+
+    if not completion_file or not os.path.exists(completion_file):
+        _add_error(validation, f"well_completion_file missing or does not exist: {completion_file}")
+        _set_check(validation, "well_completion_file_exists", False, completion_file)
+        return None, {"available": False, "well_completion_file": completion_file}
+    _set_check(validation, "well_completion_file_exists", True, completion_file)
+
+    try:
+        wells = parse_wells(track_file, completion_file)
+    except Exception as exc:
+        _add_error(validation, f"wells parse failed: {exc}")
+        _set_check(validation, "wells_parse_ok", False, str(exc))
+        return None, {
+            "available": False,
+            "well_track_file": os.path.abspath(track_file),
+            "well_completion_file": os.path.abspath(completion_file),
+        }
+
+    for warning in ((wells.get("validation") or {}).get("warnings") or []):
+        _add_warning(validation, f"wells: {warning}")
+    _set_check(validation, "wells_parse_ok", True)
+    summary = dict(wells.get("summary") or {})
+    summary.update({
+        "available": True,
+        "well_track_file": os.path.abspath(track_file),
+        "well_completion_file": os.path.abspath(completion_file),
+    })
+    return wells, summary
+
+
+def _resolve_well_file(case_data_path, files, well_config, key):
+    path = files.get(key) or well_config.get(key, "")
+    if not path:
+        return ""
+    path = str(path).strip().strip("\"'")
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    return os.path.abspath(os.path.join(os.path.dirname(case_data_path), path))
 
 
 def _copy_raw_files(case_data_path, files, output_dir, include_raw, validation):

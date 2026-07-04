@@ -13,6 +13,7 @@ import sys
 import numpy as np
 
 from .data_models import CornerPointCell, CornerPointGridData, SimulationData
+from .uniform_parser import parse_wells
 from .workbench.case_dataset_reader import load_case_dataset
 
 
@@ -335,6 +336,8 @@ def run_case_dataset_simulation(params):
 
     strict = not bool(params.get('allow_invalid_case_dataset', False))
     dataset = load_case_dataset(dataset_dir, strict=strict)
+    params = dict(params)
+    params['has_parsed_wells'] = bool(getattr(dataset, 'wells', None))
     edfm_core_corner = load_corner_edfm_lgr_module()
     sim = edfm_core_corner.EDFMSimulator()
 
@@ -342,12 +345,35 @@ def run_case_dataset_simulation(params):
     _apply_case_dataset_properties(sim, dataset, params)
     _apply_case_dataset_dfn(sim, dataset, params)
     _apply_case_dataset_controls(sim, params)
+    _apply_parsed_wells(sim, params, dataset)
 
     result = sim.runSimulation()
     result_params = _case_dataset_result_params(params, dataset)
     sim_data = _collect_case_data_simulation_result(sim, result, result_params)
     sim_data.corner_point_grid = _corner_point_grid_from_dataset(dataset.grid)
     return sim_data
+
+
+def _apply_parsed_wells(sim, params, dataset=None):
+    wells_data = getattr(dataset, 'wells', None) if dataset is not None else None
+    if not wells_data:
+        track_file = params.get('well_track_file', '')
+        completion_file = params.get('well_completion_file', '')
+        if track_file and completion_file:
+            wells_data = parse_wells(track_file, completion_file)
+    if not wells_data:
+        return False
+    if not hasattr(sim, 'setParsedWellsData'):
+        raise RuntimeError("edfm_core_corner_lgr does not expose setParsedWellsData")
+    sim.setParsedWellsData(wells_data)
+    print(
+        "Parsed wells loaded: "
+        f"{(wells_data.get('summary') or {}).get('well_count', 0)} wells, "
+        f"{(wells_data.get('summary') or {}).get('completion_definition_count', 0)} completions, "
+        f"{(wells_data.get('summary') or {}).get('event_count', 0)} events",
+        flush=True,
+    )
+    return True
 
 
 def _apply_case_dataset_grid(sim, dataset):
@@ -431,6 +457,7 @@ def _apply_case_dataset_dfn(sim, dataset, params):
 def _apply_case_dataset_controls(sim, params):
     if hasattr(sim, 'setHydraulicFractureParameters'):
         hf_enabled = (
+            not bool(params.get('has_parsed_wells', False)) and
             bool(params.get('enable_hydraulic_fractures', True)) and
             bool(params.get('hf_enabled', False))
         )
@@ -670,9 +697,41 @@ def run_case_data_simulation(params):
     edfm_core_corner = load_corner_edfm_lgr_module() if use_lgr_module else load_corner_edfm_module()
     sim = edfm_core_corner.EDFMSimulator()
 
+    dataset_for_wells = _try_load_case_data_dataset(params)
+    params = dict(params)
+    params['has_parsed_wells'] = (
+        bool(getattr(dataset_for_wells, 'wells', None)) or
+        bool(params.get('well_track_file') and params.get('well_completion_file'))
+    )
+
     _apply_case_data_grid_file(sim, params)
     _apply_case_data_property_files(sim, params)
     _apply_case_data_fracture_file(sim, params)
+
+    if 'num_fracs' in params and not params.get('has_parsed_wells'):
+        sim.setFractureParameters(
+            int(params.get('num_fracs', 10)),
+            float(params.get('min_len', 10.0)),
+            float(params.get('max_len', 20.0)),
+            float(params.get('max_dip', 3.14159 / 3.0)),
+            float(params.get('min_strike', 0.0)),
+            float(params.get('max_strike', 3.14159)),
+            float(params.get('aperture', 0.1)),
+            float(params.get('frac_perm', 100.0)),
+        )
+
+    if 'hf_count' in params and not params.get('has_parsed_wells'):
+        sim.setHydraulicFractureParameters(
+            int(params.get('hf_count', 20)),
+            float(params.get('hf_spacing', 100.0)),
+            float(params.get('hf_length', 120.0)),
+            float(params.get('hf_height', 30.0)),
+            float(params.get('hf_aperture', 0.1)),
+            float(params.get('hf_perm', 1000.0)),
+            float(params.get('hf_center_x', -1.0)),
+            float(params.get('hf_center_y', -1.0)),
+            float(params.get('hf_center_z', -1.0)),
+        )
 
     if hasattr(sim, 'setWellParameters'):
         sim.setWellParameters(
@@ -691,13 +750,29 @@ def run_case_data_simulation(params):
             int(params.get('lgr_nry', 2)),
             int(params.get('lgr_nrz', 2)),
         )
+    if hasattr(sim, 'setDualPorosityParameters') and 'phi_matrix' in params:
+        sim.setDualPorosityParameters(
+            bool(params.get('enable_dual_porosity', False)),
+            float(params.get('phi_matrix', 0.04)),
+            float(params.get('phi_fracture', 0.4)),
+            float(params.get('k_matrix_x', 0.005)),
+            float(params.get('k_matrix_y', 0.005)),
+            float(params.get('k_matrix_z', 0.005)),
+            float(params.get('k_fracture_x', 1.0)),
+            float(params.get('k_fracture_y', 1.0)),
+            float(params.get('k_fracture_z', 0.1)),
+            float(params.get('matrix_volume_fraction', 0.98)),
+            float(params.get('fracture_volume_fraction', 0.02)),
+            float(params.get('wr_shape_factor', 0.12)),
+        )
     _apply_case_data_solver_parameters(sim, params)
+    _apply_parsed_wells(sim, params, dataset_for_wells)
 
     result = sim.runSimulation()
     return _collect_case_data_simulation_result(sim, result, params)
 
 
-def _apply_case_data_grid_file(sim, params):
+def _legacy_apply_case_data_grid_file(sim, params):
     grid_file = params.get('grid_file', '')
     if not grid_file:
         raise ValueError("CaseData 缺少 grid_file，无法运行模拟")
@@ -713,7 +788,7 @@ def _apply_case_data_grid_file(sim, params):
     )
 
 
-def _apply_case_data_property_files(sim, params):
+def _legacy_apply_case_data_property_files(sim, params):
     property_args = (
         params.get('matrix_phi_file', ''),
         params.get('matrix_kx_file', ''),
@@ -736,7 +811,7 @@ def _apply_case_data_property_files(sim, params):
         )
 
 
-def _apply_case_data_fracture_file(sim, params):
+def _legacy_apply_case_data_fracture_file(sim, params):
     fracture_file = params.get('fracture_file', '')
     if not fracture_file:
         return
@@ -748,6 +823,74 @@ def _apply_case_data_fracture_file(sim, params):
         "CaseData 裂缝几何文件路径已生成，但本次运行不会传入 C++。",
         flush=True,
     )
+
+
+def _apply_case_data_grid_file(sim, params):
+    if not params.get('case_dataset_path'):
+        return _legacy_apply_case_data_grid_file(sim, params)
+    dataset = _load_case_data_dataset(params)
+    grid = dataset.grid
+    if not hasattr(sim, 'setCornerPointGrid'):
+        raise RuntimeError("edfm_core_corner_lgr does not expose setCornerPointGrid")
+    sim.setCornerPointGrid(
+        int(grid.nx),
+        int(grid.ny),
+        int(grid.nz),
+        _array_float64(grid.coord),
+        _array_float64(grid.zcorn),
+        np.asarray(grid.actnum, dtype=np.int32),
+    )
+
+
+def _apply_case_data_property_files(sim, params):
+    if not params.get('case_dataset_path'):
+        return _legacy_apply_case_data_property_files(sim, params)
+    dataset = _load_case_data_dataset(params)
+    properties = dataset.properties or {}
+
+    matrix_keys = ('matrix_phi', 'matrix_kx', 'matrix_ky', 'matrix_kz')
+    if hasattr(sim, 'setMatrixContinuumProperties') and all(key in properties for key in matrix_keys):
+        sim.setMatrixContinuumProperties(*[
+            _array_float64(properties[key]).tolist() for key in matrix_keys
+        ])
+
+    fracture_keys = ('fracture_phi', 'fracture_kx', 'fracture_ky', 'fracture_kz')
+    if hasattr(sim, 'setDFNContinuumProperties') and all(key in properties for key in fracture_keys):
+        mask = _combined_valid_mask(dataset, fracture_keys)
+        sim.setDFNContinuumProperties(
+            int(dataset.grid.nx),
+            int(dataset.grid.ny),
+            int(dataset.grid.nz),
+            *[_array_float64(properties[key]) for key in fracture_keys],
+            mask,
+        )
+
+    sigma = properties.get('sigma')
+    if sigma is not None and hasattr(sim, 'setSigmaArray'):
+        sim.setSigmaArray(_array_float64(sigma).tolist())
+
+
+def _apply_case_data_fracture_file(sim, params):
+    if not params.get('case_dataset_path'):
+        return _legacy_apply_case_data_fracture_file(sim, params)
+    return
+
+
+def _try_load_case_data_dataset(params):
+    if not params.get('case_dataset_path'):
+        return None
+    try:
+        return _load_case_data_dataset(params)
+    except Exception:
+        return None
+
+
+def _load_case_data_dataset(params):
+    dataset_dir = os.path.abspath(params.get('case_dataset_path', '') or '')
+    if not dataset_dir:
+        raise ValueError("case_dataset_path is required for case_data mode")
+    strict = not bool(params.get('allow_invalid_case_dataset', False))
+    return load_case_dataset(dataset_dir, strict=strict)
 
 
 def _apply_case_data_solver_parameters(sim, params):

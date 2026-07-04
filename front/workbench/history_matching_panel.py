@@ -11,7 +11,7 @@ from pathlib import Path
 from PyQt5.QtCore import QProcess, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextEdit, QVBoxLayout, QWidget,
@@ -47,9 +47,12 @@ class HistoryMatchingViewport(QWidget):
         self.last_runtime_dir = None
         self.last_runtime_config_path = None
         self.process = None
+        self.target_process = None
         self.result_payload = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
+        self._target_stdout_buffer = ""
+        self._target_stderr_buffer = ""
         self._stop_requested = False
         self._build_ui()
         self._load_config_to_ui(self.default_config)
@@ -66,6 +69,7 @@ class HistoryMatchingViewport(QWidget):
             "history_file": "history_fit_target.csv",
             "results_dir": "results_ui",
             "runs_dir": "runs_ui",
+            "case_dataset_path": "",
             "build_release": "../build/Release",
             "random_seed": 20260521,
             "simulation_days": 730.0,
@@ -133,11 +137,31 @@ class HistoryMatchingViewport(QWidget):
 
         self.history_file_edit = QLineEdit()
         self.history_file_edit.setObjectName("parameterPathEdit")
+        self.case_dataset_path_edit = QLineEdit()
+        self.case_dataset_path_edit.setObjectName("parameterPathEdit")
         self.simulation_days_spin = self._double_spin(0.0, 100000.0, 730.0, 2)
         self.ensemble_size_spin = self._spin(2, 10000, 24)
         self.alphas_edit = QLineEdit("4.0, 4.0, 4.0, 4.0")
         self.random_seed_spin = self._spin(0, 2147483647, 20260521)
         self.max_workers_spin = self._spin(1, 256, 1)
+        self.case_dataset_status_label = QLabel("")
+        self.case_dataset_status_label.setObjectName("modulePreviewDescription")
+        self.case_dataset_status_label.setWordWrap(True)
+
+        dataset_row = QWidget()
+        dataset_layout = QHBoxLayout(dataset_row)
+        dataset_layout.setContentsMargins(0, 0, 0, 0)
+        dataset_layout.setSpacing(6)
+        self.refresh_dataset_button = QPushButton("从工程刷新")
+        self.refresh_dataset_button.setObjectName("modulePreviewResultButton")
+        self.refresh_dataset_button.clicked.connect(self._refresh_case_dataset_from_project)
+        self.choose_dataset_button = QPushButton("选择目录")
+        self.choose_dataset_button.setObjectName("modulePreviewResultButton")
+        self.choose_dataset_button.clicked.connect(self._select_case_dataset_directory)
+        self.case_dataset_path_edit.textChanged.connect(self._update_case_dataset_status)
+        dataset_layout.addWidget(self.case_dataset_path_edit, 1)
+        dataset_layout.addWidget(self.refresh_dataset_button)
+        dataset_layout.addWidget(self.choose_dataset_button)
         self.reuse_outputs_check = QCheckBox("复用已有 member 输出")
         self.quiet_logs_check = QCheckBox("静默 member 日志")
 
@@ -149,6 +173,8 @@ class HistoryMatchingViewport(QWidget):
         form.addRow("最大并行数:", self.max_workers_spin)
         form.addRow("", self.reuse_outputs_check)
         form.addRow("", self.quiet_logs_check)
+        form.addRow("case_dataset 目录:", dataset_row)
+        form.addRow("", self.case_dataset_status_label)
         layout.addWidget(group)
 
         actions = QFrame()
@@ -161,11 +187,15 @@ class HistoryMatchingViewport(QWidget):
         self.generate_config_button = QPushButton("生成运行配置")
         self.generate_config_button.setObjectName("modulePreviewResultButton")
         self.generate_config_button.clicked.connect(self._handle_generate_config_clicked)
+        self.generate_target_button = QPushButton("生成目标数据")
+        self.generate_target_button.setObjectName("modulePreviewResultButton")
+        self.generate_target_button.clicked.connect(self.start_generate_history_target)
         self.status_label = QLabel("已从默认历史拟合模板加载参数。")
         self.status_label.setObjectName("modulePreviewDescription")
         self.status_label.setWordWrap(True)
         action_layout.addWidget(self.collect_button)
         action_layout.addWidget(self.generate_config_button)
+        action_layout.addWidget(self.generate_target_button)
         action_layout.addWidget(self.status_label, 1)
         layout.addWidget(actions)
         layout.addStretch()
@@ -403,12 +433,65 @@ class HistoryMatchingViewport(QWidget):
         table.horizontalHeader().setStretchLastSection(True)
         table.verticalHeader().setVisible(False)
 
+    def _initial_case_dataset_path(self, config=None):
+        project_path = self._project_case_dataset_path()
+        if project_path:
+            return project_path
+        if isinstance(config, dict):
+            return str(config.get("case_dataset_path", "") or "")
+        return ""
+
+    def _project_case_dataset_path(self):
+        return str(getattr(self.project_state, "case_dataset_path", "") or "").strip()
+
+    def _refresh_case_dataset_from_project(self):
+        project_path = self._project_case_dataset_path()
+        if project_path:
+            self.case_dataset_path_edit.setText(project_path)
+        self._update_case_dataset_status()
+
+    def _select_case_dataset_directory(self):
+        current = self.case_dataset_path_edit.text().strip() or self._project_case_dataset_path()
+        if current:
+            current_path = Path(current).expanduser()
+            if not current_path.is_absolute():
+                current_path = self._resolve_existing_or_template_path(current)
+            current = str(current_path)
+        selected = QFileDialog.getExistingDirectory(self, "选择 case_dataset 目录", current)
+        if selected:
+            self.case_dataset_path_edit.setText(selected)
+        self._update_case_dataset_status()
+
+    def _update_case_dataset_status(self):
+        if not hasattr(self, "case_dataset_status_label"):
+            return
+        raw_path = self.case_dataset_path_edit.text().strip() if hasattr(self, "case_dataset_path_edit") else ""
+        if not raw_path:
+            self.case_dataset_status_label.setText("未设置 case_dataset。请先在 CaseData 页面生成 Dataset，或手动选择目录。")
+            return
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = self._resolve_existing_or_template_path(raw_path)
+        if not path.exists():
+            self.case_dataset_status_label.setText(f"case_dataset 不存在: {path}")
+            return
+        if not path.is_dir():
+            self.case_dataset_status_label.setText(f"case_dataset 路径不是目录: {path}")
+            return
+        manifest = path / "manifest.json"
+        if manifest.exists():
+            self.case_dataset_status_label.setText(f"case_dataset 已就绪: {path}")
+        else:
+            self.case_dataset_status_label.setText(f"目录存在，但未发现 manifest.json: {path}")
+
     def _load_config_to_ui(self, config):
         enkf = config.get("enkf") or {}
         observation = config.get("observation") or {}
         well_control = config.get("well_control") or {}
 
         self.history_file_edit.setText(str(config.get("history_file", "")))
+        self.case_dataset_path_edit.setText(self._initial_case_dataset_path(config))
+        self._update_case_dataset_status()
         self.simulation_days_spin.setValue(float(config.get("simulation_days", 0.0) or 0.0))
         self.ensemble_size_spin.setValue(int(enkf.get("ensemble_size", 24) or 24))
         self.alphas_edit.setText(", ".join(str(value) for value in enkf.get("alphas", [4.0, 4.0, 4.0, 4.0])))
@@ -489,6 +572,7 @@ class HistoryMatchingViewport(QWidget):
     def collect_runtime_config(self):
         config = copy.deepcopy(self.default_config)
         config["history_file"] = self.history_file_edit.text().strip()
+        config["case_dataset_path"] = self.case_dataset_path_edit.text().strip()
         config["simulation_days"] = float(self.simulation_days_spin.value())
         config["random_seed"] = int(self.random_seed_spin.value())
         config["enkf"] = dict(config.get("enkf") or {})
@@ -586,9 +670,11 @@ class HistoryMatchingViewport(QWidget):
 
     def generate_runtime_config_file(self):
         config = self.collect_runtime_config()
+        history_path = self._validated_history_path()
+        case_dataset_path = self._validated_case_dataset_path()
         run_dir = self._new_runtime_dir()
         run_dir.mkdir(parents=True, exist_ok=False)
-        config = self._prepare_runtime_config(config, run_dir)
+        config = self._prepare_runtime_config(config, run_dir, history_path, case_dataset_path)
         config_path = run_dir / "enkf_runtime_config.json"
         config_path.write_text(
             json.dumps(config, ensure_ascii=False, indent=2),
@@ -598,6 +684,152 @@ class HistoryMatchingViewport(QWidget):
         self.last_runtime_config_path = config_path
         self.last_collected_config = config
         return config_path
+
+    def start_generate_history_target(self):
+        if self.process is not None and self.process.state() != QProcess.NotRunning:
+            self._append_run_log("历史拟合正在运行，不能同时生成目标数据。")
+            return
+        if self.target_process is not None and self.target_process.state() != QProcess.NotRunning:
+            self._append_run_log("目标历史数据正在生成。")
+            return
+
+        try:
+            case_dataset_path = self._validated_case_dataset_path()
+        except ValueError as exc:
+            self.status_label.setText(f"生成目标数据失败：{exc}")
+            self._append_run_log(f"生成目标数据失败：{exc}")
+            return
+
+        script_path = self.history_root / "generate_history_fit_target_direct.py"
+        output_path = self.history_root / "history_fit_target.csv"
+        truth_params_path = self.history_root / "history_fit_truth_params.json"
+        log_path = self.history_root / "history_fit_truth_run.log"
+
+        self._target_stdout_buffer = ""
+        self._target_stderr_buffer = ""
+        self.run_log.clear()
+        self._append_run_log(
+            "启动目标数据生成: "
+            f"{sys.executable} {script_path} --case-dataset-path {case_dataset_path} "
+            f"--output {output_path}"
+        )
+        self.status_label.setText("正在生成目标历史数据...")
+        self.target_process = QProcess(self)
+        self.target_process.setProgram(sys.executable)
+        self.target_process.setArguments([
+            str(script_path),
+            "--case-dataset-path",
+            str(case_dataset_path),
+            "--output",
+            str(output_path),
+            "--truth-params-output",
+            str(truth_params_path),
+            "--log",
+            str(log_path),
+        ])
+        self.target_process.setWorkingDirectory(str(self.history_root))
+        self.target_process.readyReadStandardOutput.connect(self._handle_target_stdout)
+        self.target_process.readyReadStandardError.connect(self._handle_target_stderr)
+        self.target_process.errorOccurred.connect(self._handle_target_error)
+        self.target_process.finished.connect(self._handle_target_finished)
+        self._set_target_process_running(True)
+        self.target_process.start()
+
+    def _validated_case_dataset_path(self):
+        raw_path = self.case_dataset_path_edit.text().strip()
+        if not raw_path:
+            raise ValueError("未设置 case_dataset 目录")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = self._resolve_existing_or_template_path(raw_path)
+        path = path.resolve()
+        if not path.exists():
+            raise ValueError(f"case_dataset 不存在: {path}")
+        if not path.is_dir():
+            raise ValueError(f"case_dataset 路径不是目录: {path}")
+        if not (path / "manifest.json").exists():
+            raise ValueError(f"case_dataset 缺少 manifest.json: {path}")
+        return path
+
+    def _validated_history_path(self):
+        raw_path = self.history_file_edit.text().strip()
+        if not raw_path:
+            raise ValueError("未设置历史数据 CSV")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = self._resolve_history_path(raw_path)
+        path = path.resolve()
+        if not path.exists():
+            raise ValueError(f"历史数据 CSV 不存在: {path}")
+        if not path.is_file():
+            raise ValueError(f"历史数据 CSV 路径不是文件: {path}")
+        return path
+
+    def _handle_target_stdout(self):
+        if self.target_process is None:
+            return
+        text = bytes(self.target_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        self._consume_target_text(text, stderr=False)
+
+    def _handle_target_stderr(self):
+        if self.target_process is None:
+            return
+        text = bytes(self.target_process.readAllStandardError()).decode("utf-8", errors="replace")
+        self._consume_target_text(text, stderr=True)
+
+    def _consume_target_text(self, text, stderr=False):
+        if not text:
+            return
+        buffer_name = "_target_stderr_buffer" if stderr else "_target_stdout_buffer"
+        data = getattr(self, buffer_name) + text
+        lines = data.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            setattr(self, buffer_name, lines.pop())
+        else:
+            setattr(self, buffer_name, "")
+
+        for raw_line in lines:
+            line = raw_line.rstrip("\r\n")
+            if not line:
+                continue
+            self._append_run_log(f"[target stderr] {line}" if stderr else f"[target] {line}")
+            if not stderr and line.startswith("target="):
+                self.history_file_edit.setText(line.split("=", 1)[1].strip())
+
+    def _flush_target_buffers(self):
+        for buffer_name, stderr in (("_target_stdout_buffer", False), ("_target_stderr_buffer", True)):
+            line = getattr(self, buffer_name)
+            if not line:
+                continue
+            setattr(self, buffer_name, "")
+            self._append_run_log(f"[target stderr] {line}" if stderr else f"[target] {line}")
+
+    def _handle_target_error(self, error):
+        self._append_run_log(f"目标数据生成进程错误: {error}")
+        if self.target_process is None or self.target_process.state() == QProcess.NotRunning:
+            self._set_target_process_running(False)
+            self.target_process = None
+
+    def _handle_target_finished(self, exit_code, exit_status):
+        self._flush_target_buffers()
+        output_path = self.history_root / "history_fit_target.csv"
+        if exit_code == 0 and output_path.exists():
+            self.history_file_edit.setText(str(output_path))
+            self.status_label.setText(f"目标历史数据已生成：{output_path}")
+            self._append_run_log(f"目标历史数据已生成: {output_path}")
+        else:
+            self.status_label.setText(f"目标历史数据生成失败，退出码：{exit_code}")
+            self._append_run_log(f"目标历史数据生成失败: exit_code={exit_code}, exit_status={exit_status}")
+        self._set_target_process_running(False)
+        self.target_process = None
+
+    def _set_target_process_running(self, running):
+        if hasattr(self, "generate_target_button"):
+            self.generate_target_button.setEnabled(not running)
+        if hasattr(self, "generate_config_button"):
+            self.generate_config_button.setEnabled(not running)
+        if hasattr(self, "run_button"):
+            self.run_button.setEnabled(not running)
 
     def start_history_matching(self):
         if self.process is not None and self.process.state() != QProcess.NotRunning:
@@ -769,6 +1001,8 @@ class HistoryMatchingViewport(QWidget):
         self.run_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.generate_config_button.setEnabled(not running)
+        if hasattr(self, "generate_target_button"):
+            self.generate_target_button.setEnabled(not running)
         self.collect_button.setEnabled(not running)
 
     def _append_run_log(self, text):
@@ -797,7 +1031,7 @@ class HistoryMatchingViewport(QWidget):
         self.runtime_config_label.setText("运行配置: -")
         self._set_result_plot(None)
         self._populate_best_params({})
-        self._populate_result_files({})
+        self._populate_result_files(self._target_context_files())
 
     def _update_result_view(self, payload):
         if not isinstance(payload, dict):
@@ -809,6 +1043,7 @@ class HistoryMatchingViewport(QWidget):
         files = dict(payload.get("files") or {})
         if not files:
             files = self._expected_result_files()
+        files = self._with_target_context_files(files)
         results_dir = self._infer_results_dir(files)
         self.results_dir_label.setText(f"结果目录: {results_dir or '-'}")
         self._set_result_plot(files.get("plot"))
@@ -846,15 +1081,38 @@ class HistoryMatchingViewport(QWidget):
 
     def _expected_result_files(self):
         if not self.last_runtime_dir:
-            return {}
+            return self._target_context_files()
         results_dir = Path(self.last_runtime_dir) / "results"
-        return {
+        return self._with_target_context_files({
             "plot": str(results_dir / "history_fit_gas_water.png"),
             "best_fit_params": str(results_dir / "best_fit_params.json"),
             "best_fit_output": str(results_dir / "best_fit_output.csv"),
             "summary": str(results_dir / "best_fit_summary.json"),
             "assimilation_summary": str(results_dir / "assimilation_summary.csv"),
+        })
+
+    def _target_context_files(self):
+        files = {
+            "history_target_csv": str(self.history_root / "history_fit_target.csv"),
+            "truth_params": str(self.history_root / "history_fit_truth_params.json"),
+            "target_generation_log": str(self.history_root / "history_fit_truth_run.log"),
         }
+        history_text = self.history_file_edit.text().strip() if hasattr(self, "history_file_edit") else ""
+        if history_text:
+            files["current_history_csv"] = str(self._resolve_history_path(history_text))
+        dataset_text = self.case_dataset_path_edit.text().strip() if hasattr(self, "case_dataset_path_edit") else ""
+        if dataset_text:
+            dataset_path = Path(dataset_text).expanduser()
+            if not dataset_path.is_absolute():
+                dataset_path = self._resolve_existing_or_template_path(dataset_text)
+            files["case_dataset"] = str(dataset_path)
+        return files
+
+    def _with_target_context_files(self, files):
+        merged = dict(files or {})
+        for key, value in self._target_context_files().items():
+            merged.setdefault(key, value)
+        return merged
 
     def _infer_results_dir(self, files):
         for raw_path in (files or {}).values():
@@ -966,11 +1224,19 @@ class HistoryMatchingViewport(QWidget):
             suffix += 1
         return candidate
 
-    def _prepare_runtime_config(self, config, run_dir):
+    def _prepare_runtime_config(self, config, run_dir, history_path=None, case_dataset_path=None):
         runtime = copy.deepcopy(config)
         runtime["results_dir"] = "results"
         runtime["runs_dir"] = "members"
-        runtime["history_file"] = str(self._resolve_history_path(runtime.get("history_file", "")))
+        if history_path is None:
+            history_path = self._resolve_history_path(runtime.get("history_file", ""))
+        runtime["history_file"] = str(Path(history_path).resolve())
+        if case_dataset_path is None:
+            raw_dataset_path = runtime.get("case_dataset_path", "")
+            if raw_dataset_path:
+                case_dataset_path = self._resolve_existing_or_template_path(raw_dataset_path)
+        if case_dataset_path is not None:
+            runtime["case_dataset_path"] = str(Path(case_dataset_path).resolve())
         runtime["build_release"] = str(self._resolve_template_path(runtime.get("build_release", "")))
 
         base_params = runtime.get("base_params") or {}
@@ -1078,6 +1344,8 @@ class HistoryMatchingViewport(QWidget):
             self.project_state = project_state
         if result_store is not None:
             self.result_store = result_store
+        if hasattr(self, "case_dataset_path_edit") and self._project_case_dataset_path():
+            self._refresh_case_dataset_from_project()
 
     def set_context(self, title, detail, display_key=None):
         self.context_title = title or self.context_title

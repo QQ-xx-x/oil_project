@@ -257,6 +257,10 @@ def _build_runner_params(case_data_path, config, files, grid_summary):
         "so": _float(initial, "so", 0.05),
         "well_pressure": _float(well, "producer_bhp", 100.0),
         "well_radius": _float(well, "well_radius", 0.05),
+        "well_track_file": _resolve_optional_path(
+            case_data_path, files.get("well_track_file", well.get("well_track_file", ""))),
+        "well_completion_file": _resolve_optional_path(
+            case_data_path, files.get("well_completion_file", well.get("well_completion_file", ""))),
         "simulation_time": _float(solver, "total_time", 100.0),
         "time_step": _float(solver, "dt_init", 1.0),
         "dt_min": _float(solver, "dt_min", 1e-6),
@@ -274,6 +278,15 @@ def _build_runner_params(case_data_path, config, files, grid_summary):
 def _add_error(validation, message):
     validation["errors"].append(message)
     validation["ok"] = False
+
+
+def _resolve_optional_path(case_data_path, value):
+    path = str(value or "").strip().strip("\"'")
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return os.path.abspath(path)
+    return os.path.abspath(os.path.join(os.path.dirname(case_data_path), path))
 
 
 def _float(values, key, default):

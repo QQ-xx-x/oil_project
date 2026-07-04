@@ -12,6 +12,7 @@ CONFIG_FILE = "config.json"
 CASE_SECTIONS_FILE = "case_sections.json"
 ARRAYS_FILE = "arrays.npz"
 DFN_FILE = "dfn.json"
+WELLS_FILE = "wells.json"
 VALIDATION_FILE = "validation.json"
 RAW_DIR = "raw"
 

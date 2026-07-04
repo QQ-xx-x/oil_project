@@ -6,7 +6,7 @@ import os
 import random
 import shutil
 import sys
-import tempfile
+import uuid
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -24,11 +24,10 @@ DEFAULT_NOISE_BOUNDS = {
 }
 
 CASE_DATASET_PATH = PROJECT_ROOT / "case_dataset_test"
+TEMP_RUN_ROOT = PROJECT_ROOT / ".tmp" / "history_matching_truth_runs"
 
 
 TRUTH_PARAMS = {
-    "coord_file": str(COORD_FILE),
-    "zcorn_file": str(ZCORN_FILE),
     "simulation_days": 730.0,
     "start_date": "2022-01-01",
     "fractures": {
@@ -107,8 +106,8 @@ TRUTH_PARAMS = {
 }
 
 
-def require_files():
-    missing = [path for path in (BUILD_RELEASE, COORD_FILE, ZCORN_FILE) if not path.exists()]
+def require_files(case_dataset_path):
+    missing = [path for path in (Path(case_dataset_path),) if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing required files: " + ", ".join(str(path) for path in missing))
 
@@ -117,6 +116,18 @@ def choose_seed(seed):
     if seed is not None:
         return seed
     return random.SystemRandom().randrange(1, 2**63)
+
+
+def make_temp_run_dir():
+    TEMP_RUN_ROOT.mkdir(parents=True, exist_ok=True)
+    for _ in range(100):
+        run_dir = TEMP_RUN_ROOT / f"truth_fit_{uuid.uuid4().hex[:12]}"
+        try:
+            run_dir.mkdir()
+        except FileExistsError:
+            continue
+        return run_dir
+    raise RuntimeError(f"Unable to create unique truth run directory under {TEMP_RUN_ROOT}")
 
 
 @contextmanager
@@ -141,99 +152,95 @@ def redirect_process_output(log_path, enabled=True):
             os.close(stderr_fd)
 
 
-def run_truth_simulation(params, run_dir, log_path, quiet=True):
-    sys.path.insert(0, str(BUILD_RELEASE))
-    import edfm_core_corner_lgr
+def run_truth_simulation(params, run_dir, log_path, case_dataset_path, quiet=True):
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from front.simulation_runner import run_simulation
 
     run_path = Path(run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
     (run_path / "truth_params.json").write_text(json.dumps(params, indent=2), encoding="utf-8")
 
+    nf = params.get("fractures", {})
+    hf = params.get("hydraulic_fractures", {})
+    well = params.get("well", {})
+    fluid = params.get("fluid", {})
+    gpvt = params.get("gas_pvt", {})
+    init = params.get("initial_state", {})
+    lgr = params.get("lgr", {})
+    dp = params.get("dual_porosity", {})
+
+    ds_path = str(Path(case_dataset_path).resolve())
+    run_params = {
+        "interface_source": "case_data",
+        "corner_grid_refinement": "加密",
+        "case_dataset_path": ds_path,
+        "num_fracs": int(nf.get("num_fracs", 72)),
+        "min_len": float(nf.get("min_len", 14.0)),
+        "max_len": float(nf.get("max_len", 36.0)),
+        "max_dip": float(nf.get("max_dip", 0.82)),
+        "min_strike": float(nf.get("min_strike", 0.18)),
+        "max_strike": float(nf.get("max_strike", 2.72)),
+        "aperture": float(nf.get("aperture", 0.075)),
+        "frac_perm": float(nf.get("frac_perm", 180.0)),
+        "hf_count": int(hf.get("hf_count", 14)),
+        "hf_spacing": float(hf.get("hf_spacing", 58.0)),
+        "hf_length": float(hf.get("hf_length", 96.0)),
+        "hf_height": float(hf.get("hf_height", 24.0)),
+        "hf_aperture": float(hf.get("hf_aperture", 0.065)),
+        "hf_perm": float(hf.get("hf_perm", 720.0)),
+        "hf_center_x": float(hf.get("hf_center_x", -1.0)),
+        "hf_center_y": float(hf.get("hf_center_y", -1.0)),
+        "hf_center_z": float(hf.get("hf_center_z", -1.0)),
+        "well_radius": float(well.get("radius", 0.06)),
+        "well_pressure": float(well.get("bhp", 42.0)),
+        "mu_w": float(fluid.get("mu_w", 0.78)),
+        "mu_o": float(fluid.get("mu_o_placeholder", 3.6)),
+        "cw": float(fluid.get("cw", 2.5e-6)),
+        "co": float(fluid.get("co_placeholder", 8.0e-6)),
+        "p_ref": float(fluid.get("p_ref", 120.0)),
+        "swi": float(fluid.get("swi", 0.08)),
+        "sor": float(fluid.get("sor_placeholder", 0.02)),
+        "sgc": float(fluid.get("sgc", 0.04)),
+        "mu_g": float(fluid.get("mu_g_fallback", 0.17)),
+        "cg": float(fluid.get("cg_fallback", 8.0e-4)),
+        "gas_t_C": float(gpvt.get("gas_t_C", 126.0)),
+        "gas_Mg": float(gpvt.get("gas_Mg", 18.2)),
+        "gas_Tc": float(gpvt.get("gas_Tc", 202.0)),
+        "gas_Pc_bar": float(gpvt.get("gas_Pc_bar", 46.0)),
+        "gas_table_Pmin_bar": float(gpvt.get("gas_table_Pmin_bar", 2.0)),
+        "gas_table_Pmax_bar": float(gpvt.get("gas_table_Pmax_bar", 900.0)),
+        "gas_table_n": int(gpvt.get("gas_table_n", 1400)),
+        "gas_Psc_bar": float(gpvt.get("gas_Psc_bar", 1.01325)),
+        "pressure": float(init.get("pressure", 800.0)),
+        "sw": float(init.get("sw", 0.4)),
+        "sg": float(init.get("sg", 0.6)),
+        "enable_lgr": bool(lgr.get("enabled", True)),
+        "d_threshold": float(lgr.get("d_threshold", 4.2)),
+        "lgr_nrx": int(lgr.get("nrx", 2)),
+        "lgr_nry": int(lgr.get("nry", 2)),
+        "lgr_nrz": int(lgr.get("nrz", 1)),
+        "enable_dual_porosity": bool(dp.get("enabled", True)),
+        "phi_matrix": float(dp.get("phi_matrix", 0.055)),
+        "phi_fracture": float(dp.get("phi_fracture", 0.36)),
+        "k_matrix_x": float(dp.get("k_matrix_x", 0.008)),
+        "k_matrix_y": float(dp.get("k_matrix_y", 0.006)),
+        "k_matrix_z": float(dp.get("k_matrix_z", 0.0015)),
+        "k_fracture_x": float(dp.get("k_fracture_x", 1.6)),
+        "k_fracture_y": float(dp.get("k_fracture_y", 1.2)),
+        "k_fracture_z": float(dp.get("k_fracture_z", 0.15)),
+        "matrix_volume_fraction": float(dp.get("matrix_volume_fraction", 0.965)),
+        "fracture_volume_fraction": float(dp.get("fracture_volume_fraction", 0.035)),
+        "wr_shape_factor": float(dp.get("wr_shape_factor", 0.085)),
+        "simulation_time": float(params.get("simulation_days", 730.0)),
+    }
+
     old_cwd = Path.cwd()
     os.chdir(run_path)
     try:
-        sim = edfm_core_corner_lgr.EDFMSimulator()
-        sim.setCornerPointFiles(str(params["coord_file"]), str(params["zcorn_file"]))
-
-        nf = params["fractures"]
-        sim.setFractureParameters(
-            nf["num_fracs"],
-            nf["min_len"],
-            nf["max_len"],
-            nf["max_dip"],
-            nf["min_strike"],
-            nf["max_strike"],
-            nf["aperture"],
-            nf["frac_perm"],
-        )
-
-        hf = params["hydraulic_fractures"]
-        sim.setHydraulicFractureParameters(
-            hf["hf_count"],
-            hf["hf_spacing"],
-            hf["hf_length"],
-            hf["hf_height"],
-            hf["hf_aperture"],
-            hf["hf_perm"],
-            hf["hf_center_x"],
-            hf["hf_center_y"],
-            hf["hf_center_z"],
-        )
-
-        well = params["well"]
-        sim.setWellParameters(well["radius"], well["bhp"])
-
-        fluid = params["fluid"]
-        sim.setOilWaterProperties(
-            fluid["mu_w"],
-            fluid["mu_o_placeholder"],
-            fluid["cw"],
-            fluid["co_placeholder"],
-            fluid["p_ref"],
-            fluid["swi"],
-            fluid["sor_placeholder"],
-            fluid["sgc"],
-            fluid["mu_g_fallback"],
-            fluid["cg_fallback"],
-        )
-
-        gpvt = params["gas_pvt"]
-        sim.setGasPVTParameters(
-            gpvt["gas_t_C"],
-            gpvt["gas_Mg"],
-            gpvt["gas_Tc"],
-            gpvt["gas_Pc_bar"],
-            gpvt["gas_table_Pmin_bar"],
-            gpvt["gas_table_Pmax_bar"],
-            gpvt["gas_table_n"],
-            gpvt["gas_Psc_bar"],
-        )
-
-        init = params["initial_state"]
-        sim.setInitialStateParameters(init["pressure"], init["sw"], init["sg"])
-
-        lgr = params["lgr"]
-        sim.setLGRParameters(lgr["enabled"], lgr["d_threshold"], lgr["nrx"], lgr["nry"], lgr["nrz"])
-
-        dp = params["dual_porosity"]
-        sim.setDualPorosityParameters(
-            dp["enabled"],
-            dp["phi_matrix"],
-            dp["phi_fracture"],
-            dp["k_matrix_x"],
-            dp["k_matrix_y"],
-            dp["k_matrix_z"],
-            dp["k_fracture_x"],
-            dp["k_fracture_y"],
-            dp["k_fracture_z"],
-            dp["matrix_volume_fraction"],
-            dp["fracture_volume_fraction"],
-            dp["wr_shape_factor"],
-        )
-
-        sim.setSimulationParameters(params["simulation_days"])
         with redirect_process_output(log_path, enabled=quiet):
-            sim.runSimulation()
+            run_simulation(run_params)
     finally:
         os.chdir(old_cwd)
 
@@ -468,6 +475,11 @@ def main():
     parser.add_argument("--output", default=str(DEFAULT_OUT), help="Output history_fit_target.csv path.")
     parser.add_argument("--truth-params-output", default=str(DEFAULT_PARAMS_OUT), help="Saved truth parameter JSON path.")
     parser.add_argument("--log", default=str(DEFAULT_LOG_OUT), help="Truth simulation log path.")
+    parser.add_argument(
+        "--case-dataset-path",
+        default=str(CASE_DATASET_PATH),
+        help="Standard case_dataset directory used by the truth simulation.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print C++ simulation logs to the terminal.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed. Omit it to generate new observation noise every run.")
     parser.add_argument("--target-style", choices=["observed", "smooth"], default="observed")
@@ -481,18 +493,37 @@ def main():
     parser.add_argument("--run-dir", default=None, help="Internal simulation directory. Defaults to a temporary directory.")
     args = parser.parse_args()
 
-    require_files()
+    case_dataset_path = Path(args.case_dataset_path).expanduser()
+    if not case_dataset_path.is_absolute():
+        case_dataset_path = (Path.cwd() / case_dataset_path).resolve()
+    else:
+        case_dataset_path = case_dataset_path.resolve()
+
+    log_path = Path(args.log).expanduser()
+    if not log_path.is_absolute():
+        log_path = (Path.cwd() / log_path).resolve()
+    else:
+        log_path = log_path.resolve()
+
+    require_files(case_dataset_path)
     seed = choose_seed(args.seed)
     noise_bounds = {
         "gas": (args.gas_factor_min, args.gas_factor_max),
         "water": (args.water_factor_min, args.water_factor_max),
     }
 
-    run_dir = Path(args.run_dir) if args.run_dir else Path(tempfile.mkdtemp(prefix="truth_fit_", dir=OUTPUT_DIR))
+    run_dir = Path(args.run_dir) if args.run_dir else make_temp_run_dir()
     params = json.loads(json.dumps(TRUTH_PARAMS))
+    params["case_dataset_path"] = str(case_dataset_path)
 
     try:
-        sim_rows = run_truth_simulation(params, run_dir, Path(args.log), quiet=not args.verbose)
+        sim_rows = run_truth_simulation(
+            params,
+            run_dir,
+            log_path,
+            case_dataset_path,
+            quiet=not args.verbose,
+        )
         rows = generate_target(
             sim_rows,
             Path(args.output),
@@ -505,7 +536,7 @@ def main():
         )
     finally:
         if not args.keep_run_dir and args.run_dir is None and run_dir.exists():
-            shutil.rmtree(run_dir)
+            shutil.rmtree(run_dir, ignore_errors=True)
 
     params_out = Path(args.truth_params_output)
     params_out.parent.mkdir(parents=True, exist_ok=True)
@@ -513,8 +544,9 @@ def main():
 
     print(f"target={Path(args.output)}")
     print(f"truth_params={params_out}")
+    print(f"case_dataset_path={case_dataset_path}")
     if not args.verbose:
-        print(f"log={Path(args.log)}")
+        print(f"log={log_path}")
     print(f"seed={seed}")
     print(f"target_style={args.target_style}")
     print(f"noise_bounds={json.dumps(noise_bounds, ensure_ascii=False)}")

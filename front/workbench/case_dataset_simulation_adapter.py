@@ -115,6 +115,7 @@ def _build_runner_params(dataset, summary):
         "array_count": int(summary.get("array_count", 0) or 0),
         "property_count": int(summary.get("property_count", 0) or 0),
         "dfn_fracture_count": int(summary.get("dfn_fracture_count", 0) or 0),
+        "has_parsed_wells": bool(getattr(dataset, "wells", None)),
         "enable_lgr": bool(lgr.get("enable_lgr", False)),
         "corner_grid_refinement": "加密" if model_params["enable_lgr"] else "不加密",
         "enable_lgr": model_params["enable_lgr"],

@@ -25,6 +25,7 @@ from .case_dataset_schema import (
     MANIFEST_FILE,
     PROPERTY_ARRAYS,
     VALIDATION_FILE,
+    WELLS_FILE,
 )
 from .project_state import normalize_model_config
 
@@ -72,6 +73,7 @@ class CaseDataset:
     case_sections: Dict[str, Any]
     validation: Dict[str, Any]
     dfn: Dict[str, Any]
+    wells: Dict[str, Any] = field(default_factory=dict)
     arrays: Dict[str, np.ndarray] = field(default_factory=dict)
     grid: CaseDatasetGrid = None
     properties: Dict[str, np.ndarray] = field(default_factory=dict)
@@ -128,6 +130,7 @@ class CaseDataset:
             "properties": self.properties,
             "valid_masks": self.valid_masks,
             "dfn": self.dfn,
+            "wells": self.wells,
         }
 
     def summary(self):
@@ -164,6 +167,7 @@ class CaseDataset:
                 for key, value in sorted(self.properties.items())
             },
             "dfn_fracture_count": _dfn_fracture_count(self.dfn),
+            "wells": _wells_summary(self.wells),
         }
 
     def _normalize_property_key(self, key):
@@ -190,6 +194,8 @@ def load_case_dataset(dataset_dir, strict=True):
         dataset_dir, manifest, "case_sections_file", CASE_SECTIONS_FILE))
     dfn_payload = _read_json(_dataset_file_path(
         dataset_dir, manifest, "dfn_file", DFN_FILE))
+    wells_payload = _read_optional_json(_dataset_file_path(
+        dataset_dir, manifest, "wells_file", WELLS_FILE))
     validation = _read_json(_dataset_file_path(
         dataset_dir, manifest, "validation_file", VALIDATION_FILE))
     if strict and validation.get("errors"):
@@ -211,6 +217,7 @@ def load_case_dataset(dataset_dir, strict=True):
         case_sections=case_sections_payload,
         validation=validation,
         dfn=dfn_payload.get("dfn", dfn_payload),
+        wells=wells_payload.get("wells", wells_payload) if wells_payload else {},
         arrays=arrays,
         grid=grid,
         properties=properties,
@@ -234,6 +241,13 @@ def _dataset_file_path(dataset_dir, manifest, field_name, fallback_name):
 def _read_json(path):
     if not os.path.exists(path):
         raise CaseDatasetReadError(f"文件不存在: {path}")
+    with open(path, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _read_optional_json(path):
+    if not path or not os.path.exists(path):
+        return {}
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
 
@@ -288,6 +302,14 @@ def _dfn_fracture_count(dfn_payload):
     if dfn_payload.get("fracture_count") is not None:
         return int(dfn_payload.get("fracture_count") or 0)
     return len(dfn_payload.get("fractures") or [])
+
+
+def _wells_summary(wells_payload):
+    if not isinstance(wells_payload, Mapping) or not wells_payload:
+        return {"available": False}
+    summary = dict(wells_payload.get("summary") or {})
+    summary["available"] = True
+    return summary
 
 
 def _json_default(value):
