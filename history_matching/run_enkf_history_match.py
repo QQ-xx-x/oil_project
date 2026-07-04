@@ -33,14 +33,13 @@ def write_json(path, payload):
 
 def build_run_signature_context(config):
     history_path = resolve_path(config["history_file"], config)
-    build_release = resolve_path(config["build_release"], config)
     context = {
         "history_file": str(history_path.resolve()),
         "history_sha256": file_sha256(history_path),
+        "case_dataset_path": config.get("case_dataset_path", ""),
         "observation": config["observation"],
         "fit_parameters": config["fit_parameters"],
         "base_params_sha256": stable_json_sha256(config["base_params"]),
-        "build_release": str(build_release.resolve()),
         "enkf_alphas": config["enkf"].get("alphas"),
         "ensemble_size": config["enkf"].get("ensemble_size"),
         "random_seed": config.get("random_seed"),
