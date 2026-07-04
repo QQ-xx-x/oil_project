@@ -1335,6 +1335,11 @@ public:
     // 时间步播放
     std::vector<double> time_steps;
     std::vector<std::vector<double>> pressure_steps;
+    std::vector<std::vector<double>> sw_steps;
+    std::vector<std::vector<double>> porosity_steps;
+    std::vector<std::vector<double>> permeability_x_steps;
+    std::vector<std::vector<double>> permeability_y_steps;
+    std::vector<std::vector<double>> permeability_z_steps;
 
     // --- 可配置参数 (通过 pybind 设置) ---
     std::string coord_file_path{"COORD.csv"};
@@ -5274,6 +5279,57 @@ public:
         return result;
     }
 
+    py::array_t<double> getSwSteps() const {
+        if (sw_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)sw_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < sw_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = sw_steps[t][i];
+        return result;
+    }
+    py::array_t<double> getPorositySteps() const {
+        if (porosity_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)porosity_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < porosity_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = porosity_steps[t][i];
+        return result;
+    }
+    py::array_t<double> getPermeabilityXSteps() const {
+        if (permeability_x_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_x_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_x_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_x_steps[t][i];
+        return result;
+    }
+    py::array_t<double> getPermeabilityYSteps() const {
+        if (permeability_y_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_y_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_y_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_y_steps[t][i];
+        return result;
+    }
+    py::array_t<double> getPermeabilityZSteps() const {
+        if (permeability_z_steps.empty() || n_leaf == 0)
+            return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
+        py::array_t<double> result(std::vector<py::ssize_t>{(py::ssize_t)permeability_z_steps.size(), (py::ssize_t)n_leaf});
+        auto r = result.mutable_unchecked<2>();
+        for (size_t t = 0; t < permeability_z_steps.size(); ++t)
+            for (int i = 0; i < n_leaf; ++i)
+                r((py::ssize_t)t, i) = permeability_z_steps[t][i];
+        return result;
+    }
+
     SimulationResult runSimulation() {
         if (!use_external_corner_point_grid &&
             (coord_file_path.empty() || zcorn_file_path.empty())) {
@@ -5307,6 +5363,11 @@ public:
         file << "Time,BHP,CumWater,CumGas,AvgPressure,DT,nLeaf,nSeg,Qw,Qg\n";
         time_steps.clear();
         pressure_steps.clear();
+        sw_steps.clear();
+        porosity_steps.clear();
+        permeability_x_steps.clear();
+        permeability_y_steps.clear();
+        permeability_z_steps.clear();
         double t = 0.0;
         const double dt0 = 1e-5;
         const double dt_min = 1e-8;
@@ -5344,11 +5405,38 @@ public:
             states_prev = states;
             if (enable_dual_porosity) wr_matrix_states_prev = wr_matrix_states;
 
-            // 记录时间步压力场（动态播放用）
+            // 记录时间步场数据（动态播放用）
             time_steps.push_back(t);
-            std::vector<double> p_snap(n_leaf);
-            for (int i = 0; i < n_leaf; ++i) p_snap[i] = states[i].P;
-            pressure_steps.push_back(std::move(p_snap));
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = states[i].P;
+                pressure_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = states[i].Sw;
+                sw_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).phi;
+                porosity_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[0];
+                permeability_x_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[1];
+                permeability_y_steps.push_back(std::move(snap));
+            }
+            {
+                std::vector<double> snap(n_leaf);
+                for (int i = 0; i < n_leaf; ++i) snap[i] = activeContinuumRock(leaves[i]).K[2];
+                permeability_z_steps.push_back(std::move(snap));
+            }
             tot_w += sw;
             tot_g += sg;
             double avgP = 0.0;
@@ -5547,5 +5635,10 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("getParentGridGeometry", &SimulatorLGR::getParentGridGeometry)
         .def("getRefinedGridGeometry", &SimulatorLGR::getRefinedGridGeometry)
         .def("getTimeSteps", &SimulatorLGR::getTimeSteps)
-        .def("getPressureSteps", &SimulatorLGR::getPressureSteps);
+        .def("getPressureSteps", &SimulatorLGR::getPressureSteps)
+        .def("getSwSteps", &SimulatorLGR::getSwSteps)
+        .def("getPorositySteps", &SimulatorLGR::getPorositySteps)
+        .def("getPermeabilityXSteps", &SimulatorLGR::getPermeabilityXSteps)
+        .def("getPermeabilityYSteps", &SimulatorLGR::getPermeabilityYSteps)
+        .def("getPermeabilityZSteps", &SimulatorLGR::getPermeabilityZSteps);
 }
