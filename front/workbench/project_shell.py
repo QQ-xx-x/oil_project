@@ -679,6 +679,9 @@ class ProjectShell(QWidget):
             "production_curve": (
                 "当前图表：生产曲线",
                 "图表窗口显示生产曲线结果或占位曲线。"),
+            "history_matching": (
+                "当前结果：历史拟合",
+                "图表窗口显示历史拟合参数、运行设置和结果摘要。"),
             "relative_permeability_curve": (
                 "当前图表：相对渗透率曲线",
                 "图表窗口根据当前输入参数显示相对渗透率曲线。"),
@@ -928,6 +931,10 @@ class ProjectShell(QWidget):
         self.message_log.append_message(f"[诊断] 裂缝数量={fractures}，井数量={wells}")
 
     def _load_chart_data(self, key, title):
+        if key == "history_matching":
+            self.message_log.append_message("[历史拟合] 已打开历史拟合工作页")
+            return
+
         if key == "relative_permeability_curve":
             try:
                 data = build_relative_permeability_data(self.project_state)

@@ -4,9 +4,10 @@
 import os
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
-    QSplitter, QVBoxLayout, QWidget,
+    QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
+    QHBoxLayout, QLabel, QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
 try:
@@ -38,6 +39,7 @@ class ProductionCurvePanel(QWidget):
         self.property_checkboxes = {}
         self._updating_selector = False
         self._updating_time_range = False
+        self._updating_style_controls = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -80,6 +82,25 @@ class ProductionCurvePanel(QWidget):
         self.export_button = QPushButton("导出")
         self.export_button.setObjectName("modulePreviewResultButton")
         self.export_button.clicked.connect(self._choose_export_path)
+        self.style_property_combo = QComboBox()
+        self.style_property_combo.setMinimumWidth(110)
+        self.style_property_combo.currentIndexChanged.connect(self._on_style_property_changed)
+        self.line_style_combo = QComboBox()
+        self.line_style_combo.setMinimumWidth(82)
+        self.line_style_combo.currentIndexChanged.connect(self._on_curve_line_style_changed)
+        self.line_width_spin = QDoubleSpinBox()
+        self.line_width_spin.setRange(0.5, 8.0)
+        self.line_width_spin.setDecimals(1)
+        self.line_width_spin.setSingleStep(0.1)
+        self.line_width_spin.setValue(1.2)
+        self.line_width_spin.setMinimumWidth(64)
+        self.line_width_spin.valueChanged.connect(self._on_curve_width_changed)
+        self.color_button = QPushButton("颜色")
+        self.color_button.setObjectName("modulePreviewResultButton")
+        self.color_button.clicked.connect(self._choose_curve_color)
+        self.reset_style_button = QPushButton("重置样式")
+        self.reset_style_button.setObjectName("modulePreviewResultButton")
+        self.reset_style_button.clicked.connect(self._reset_current_curve_style)
         self.selector_frame.hide()
         layout.addWidget(self.selector_frame)
 
@@ -147,6 +168,7 @@ class ProductionCurvePanel(QWidget):
         available = self.plot_widget.get_available_property_keys()
         self.selected_properties = self._default_selected_properties(available)
         self._build_property_selector(available)
+        self._populate_style_controls(available)
         self._populate_time_range_controls()
         self._refresh_table_columns()
         self.plot_widget.plot_selected_properties(self.selected_properties)
@@ -217,6 +239,11 @@ class ProductionCurvePanel(QWidget):
             self.end_time_combo,
             self.reset_view_button,
             self.export_button,
+            self.style_property_combo,
+            self.line_style_combo,
+            self.line_width_spin,
+            self.color_button,
+            self.reset_style_button,
         }
         while self.selector_layout.count():
             item = self.selector_layout.takeAt(0)
@@ -239,6 +266,12 @@ class ProductionCurvePanel(QWidget):
             self.selector_layout.addWidget(checkbox)
         self._updating_selector = False
         self.selector_layout.addStretch()
+        self.selector_layout.addWidget(QLabel("样式"))
+        self.selector_layout.addWidget(self.style_property_combo)
+        self.selector_layout.addWidget(self.line_style_combo)
+        self.selector_layout.addWidget(self.line_width_spin)
+        self.selector_layout.addWidget(self.color_button)
+        self.selector_layout.addWidget(self.reset_style_button)
         self.selector_layout.addWidget(QLabel("时间"))
         self.selector_layout.addWidget(self.start_time_combo)
         self.selector_layout.addWidget(QLabel("-"))
@@ -259,6 +292,121 @@ class ProductionCurvePanel(QWidget):
         for key, checkbox in self.property_checkboxes.items():
             checkbox.setChecked(key in selected)
         self._updating_selector = False
+
+    def _populate_style_controls(self, available_properties):
+        enabled = bool(self.plot_widget is not None and available_properties)
+        self._set_style_widgets_enabled(enabled)
+        self._updating_style_controls = True
+        self.style_property_combo.clear()
+        self.line_style_combo.clear()
+        if self.plot_widget is not None:
+            for key in available_properties:
+                self.style_property_combo.addItem(self._property_display_name(key), key)
+            for style_key, display_name in self.plot_widget.get_available_line_styles():
+                self.line_style_combo.addItem(display_name, style_key)
+        self._updating_style_controls = False
+        self._sync_style_controls_from_curve()
+
+    def _set_style_widgets_enabled(self, enabled):
+        for widget in (
+            self.style_property_combo,
+            self.line_style_combo,
+            self.line_width_spin,
+            self.color_button,
+            self.reset_style_button,
+        ):
+            widget.setEnabled(bool(enabled))
+
+    def _current_style_property_key(self):
+        key = self.style_property_combo.currentData()
+        if key:
+            return str(key)
+        return self.style_property_combo.currentText().strip()
+
+    def _on_style_property_changed(self, *args):
+        if self._updating_style_controls:
+            return
+        self._sync_style_controls_from_curve()
+
+    def _on_curve_line_style_changed(self, *args):
+        if self._updating_style_controls or self.plot_widget is None:
+            return
+        key = self._current_style_property_key()
+        line_style = self.line_style_combo.currentData()
+        if key and line_style:
+            self.plot_widget.set_curve_line_style(key, line_style)
+
+    def _on_curve_width_changed(self, value):
+        if self._updating_style_controls or self.plot_widget is None:
+            return
+        key = self._current_style_property_key()
+        if key:
+            self.plot_widget.set_curve_width(key, float(value))
+
+    def _choose_curve_color(self):
+        if self.plot_widget is None:
+            return
+        key = self._current_style_property_key()
+        if not key:
+            return
+        style = self.plot_widget.get_curve_style(key) or {}
+        initial = self._qcolor_from_tuple(style.get("color"))
+        color = QColorDialog.getColor(initial, self, "选择曲线颜色")
+        if not color.isValid():
+            return
+        self.plot_widget.set_curve_color(key, color)
+        self._set_color_button(color)
+
+    def _reset_current_curve_style(self):
+        if self.plot_widget is None:
+            return
+        key = self._current_style_property_key()
+        if not key:
+            return
+        self.plot_widget.reset_curve_style(key)
+        self._sync_style_controls_from_curve()
+
+    def _sync_style_controls_from_curve(self):
+        if self.plot_widget is None or self.style_property_combo.count() <= 0:
+            self._set_style_widgets_enabled(False)
+            return
+        self._set_style_widgets_enabled(True)
+        key = self._current_style_property_key()
+        style = self.plot_widget.get_curve_style(key) or {}
+        self._updating_style_controls = True
+        line_style = style.get("line_style")
+        line_index = self.line_style_combo.findData(line_style)
+        if line_index >= 0:
+            self.line_style_combo.setCurrentIndex(line_index)
+        width = style.get("width")
+        try:
+            self.line_width_spin.setValue(float(width))
+        except (TypeError, ValueError):
+            pass
+        self._set_color_button(self._qcolor_from_tuple(style.get("color")))
+        self._updating_style_controls = False
+
+    def _set_color_button(self, color):
+        if not isinstance(color, QColor) or not color.isValid():
+            color = QColor(0, 0, 0)
+        self.color_button.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {color.name()};"
+            "color: white;"
+            "border: 1px solid #8a8f98;"
+            "padding: 2px 8px;"
+            "}"
+        )
+
+    def _qcolor_from_tuple(self, value):
+        if isinstance(value, QColor):
+            return value
+        if isinstance(value, (tuple, list)) and len(value) >= 3:
+            try:
+                return QColor(int(value[0]), int(value[1]), int(value[2]))
+            except (TypeError, ValueError):
+                return QColor(0, 0, 0)
+        return QColor(0, 0, 0)
 
     def _on_property_selection_changed(self):
         if self._updating_selector:

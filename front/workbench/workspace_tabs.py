@@ -5,6 +5,7 @@ from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import QAction, QMenu, QTabWidget, QToolButton
 
 from .icon_registry import semantic_icon_kind
+from .history_matching_panel import HistoryMatchingViewport
 from .icons import painted_icon
 from .production_curve_panel import ProductionCurveViewport
 from .viewport_placeholders import ChartViewport, ThreeDViewport, TwoDViewport, ViewPage
@@ -81,6 +82,8 @@ class WorkspaceTabs(QTabWidget):
     def _create_page(self, view_type, display_key=None):
         if view_type == "chart" and display_key == "production_curve":
             viewport = ProductionCurveViewport(self.project_state, self.result_store)
+        elif view_type == "chart" and display_key == "history_matching":
+            viewport = HistoryMatchingViewport(self.project_state, self.result_store)
         else:
             viewport = {
                 "2d": TwoDViewport,
@@ -189,7 +192,7 @@ class WorkspaceTabs(QTabWidget):
     def update_context(self, title, detail, preferred_view="3d", display_key=None):
         self._last_context = (title, detail, display_key)
         target = self._target_page_for_context(preferred_view, display_key)
-        if preferred_view == "chart" and display_key == "production_curve" and target is not None:
+        if preferred_view == "chart" and display_key in {"production_curve", "history_matching"} and target is not None:
             pages = [target]
         else:
             pages = self._pages_of_type(preferred_view) if target is not None else self._pages()
@@ -326,22 +329,33 @@ class WorkspaceTabs(QTabWidget):
                     target.set_chart_data(key, data)
 
     def _target_page_for_context(self, preferred_view, display_key):
-        if preferred_view != "chart" or display_key != "production_curve":
+        if preferred_view != "chart" or display_key not in {"production_curve", "history_matching"}:
             return self._first_page_of_type(preferred_view)
-        page = self._first_production_curve_page()
+        page = self._first_special_chart_page(display_key)
         if page is not None:
             return page
-        page = self._create_page("chart", "production_curve")
+        page = self._create_page("chart", display_key)
+        title = "历史拟合" if display_key == "history_matching" else "生产曲线"
         index = self._add_page(page, "chart", "生产曲线")
+        self.setTabText(index, title)
         self._refresh_primary_references()
-        self.workspace_message.emit("[窗口] 已新建生产曲线窗口")
+        self.workspace_message.emit(f"[窗口] 已新建{title}窗口")
         return self.widget(index)
 
-    def _first_production_curve_page(self):
+    def _first_special_chart_page(self, display_key):
+        viewport_type = {
+            "production_curve": ProductionCurveViewport,
+            "history_matching": HistoryMatchingViewport,
+        }.get(display_key)
+        if viewport_type is None:
+            return None
         for page in self._pages_of_type("chart"):
-            if isinstance(getattr(page, "viewport", None), ProductionCurveViewport):
+            if isinstance(getattr(page, "viewport", None), viewport_type):
                 return page
         return None
+
+    def _first_production_curve_page(self):
+        return self._first_special_chart_page("production_curve")
 
     def _first_page_of_type(self, view_type):
         if view_type == "2d":

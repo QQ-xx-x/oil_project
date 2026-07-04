@@ -2,6 +2,7 @@
   "history_file": "history_fit_target.csv",
   "results_dir": "results_fit_target",
   "runs_dir": "runs_fit_target",
+  "case_dataset_path": "../case_dataset_test",
   "build_release": "../build/Release",
   "random_seed": 20260521,
   "simulation_days": 730.0,

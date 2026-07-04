@@ -6,9 +6,10 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtGui import QColor, QBrush, QFont
 
 
 class ProductionCurveTableWidget(QWidget):
@@ -22,9 +23,12 @@ class ProductionCurveTableWidget(QWidget):
     4. 点击表格某一行时，向外发送 row_selected(row)
     5. 支持外部调用 select_row_by_index(row)，自动选中并滚动到对应行
     6. 当线图点击某个数据点时，对应表格行显示为蓝色底、白色字
+    7. 再次点击同一行时，取消高亮并发送 row_selected(-1)
+    8. 表格自身点击时不自动滚动，避免界面跳动
     """
 
     # 表格行点击信号，参数是行号 row_index
+    # row_index = -1 表示取消选中
     row_selected = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -55,7 +59,8 @@ class ProductionCurveTableWidget(QWidget):
 
         self.display_name_to_key = {
             display_name: key
-            for key, display_name in self.property_display_names.items()
+            for key, display_name
+            in self.property_display_names.items()
         }
 
         self.property_order = [
@@ -79,26 +84,67 @@ class ProductionCurveTableWidget(QWidget):
         self.table = QTableWidget()
         root_layout.addWidget(self.table)
 
+        # 保留隔行底色
         self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
 
-        # 强制选中行显示为蓝色底、白色字
+        # 禁止编辑
+        self.table.setEditTriggers(
+            QAbstractItemView.NoEditTriggers
+        )
+
+        # 不使用 Qt 默认选中效果。
+        # 蓝色底、白色字完全由 _mark_row_style() 手动控制。
+        self.table.setSelectionMode(
+            QAbstractItemView.NoSelection
+        )
+
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectRows
+        )
+
+        # 空间不够时才显示横向滚动条
+        self.table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded
+        )
+
+        # 去除 Qt 默认焦点轮廓；
+        # 表头字体加粗。
         self.table.setStyleSheet("""
-            QTableWidget::item:selected {
-                background-color: rgb(0, 120, 215);
-                color: white;
+            QTableWidget {
+                outline: none;
+            }
+
+            QHeaderView::section {
+                font-weight: bold;
             }
         """)
 
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
 
+        # 不让最后一列单独吞掉所有剩余空间
+        header.setStretchLastSection(False)
+
+        # 禁止用户拖动列顺序
+        header.setSectionsMovable(False)
+
+        # 禁止表头点击效果
+        header.setSectionsClickable(False)
+
+        # 表头字体加粗
+        header_font = QFont()
+        header_font.setBold(True)
+        header.setFont(header_font)
+
+        # 隐藏左侧行号
         self.table.verticalHeader().setVisible(False)
 
-        self.table.cellClicked.connect(self._on_cell_clicked)
+        self.table.cellClicked.connect(
+            self._on_cell_clicked
+        )
 
+    # =========================================================
+    # 数据接口
+    # =========================================================
     def set_data(self, data):
         """
         设置数据。
@@ -157,9 +203,15 @@ class ProductionCurveTableWidget(QWidget):
         """
         按英文 key 显示表格。
         """
+        if self.data is None or "date" not in self.data:
+            self.clear_table()
+            return
+
         dates = self.data["date"]
         row_count = len(dates)
         col_count = 1 + len(keys)
+
+        self.table.blockSignals(True)
 
         self.table.clear()
         self.table.setRowCount(row_count)
@@ -191,7 +243,35 @@ class ProductionCurveTableWidget(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row, col, item)
 
-        self.table.resizeColumnsToContents()
+        self._set_column_width_policy()
+
+        self.table.blockSignals(False)
+
+    def _set_column_width_policy(self):
+        """
+        设置表格列宽策略。
+
+        所有列统一按当前表格宽度均匀拉伸，
+        不再只让最后一列填充剩余空间。
+        """
+
+        if self.table.columnCount() <= 0:
+            return
+
+        header = self.table.horizontalHeader()
+
+        # 每列均匀拉伸，整体填满表格宽度
+        for col in range(self.table.columnCount()):
+            header.setSectionResizeMode(
+                col,
+                QHeaderView.Stretch,
+            )
+
+        # 防止列宽过窄导致表头和数值挤在一起
+        header.setMinimumSectionSize(120)
+
+        # 不让最后一列特殊拉伸
+        header.setStretchLastSection(False)
 
     def get_available_property_keys(self):
         """
@@ -201,59 +281,90 @@ class ProductionCurveTableWidget(QWidget):
             return []
 
         ordered = [
-            key for key in self.property_order
+            key
+            for key in self.property_order
             if key in self.data and key != "date"
         ]
+
         extra = [
-            key for key in self.data.keys()
+            key
+            for key in self.data.keys()
             if key not in ordered and key != "date"
         ]
+
         return ordered + extra
 
     def clear_table(self):
         """
         清空表格。
         """
+        self.table.blockSignals(True)
+
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
+
         self.current_marked_row = None
 
-    def select_row_by_index(self, row_index):
+        self.table.blockSignals(False)
+
+    # =========================================================
+    # 表格选中与线图联动
+    # =========================================================
+    def select_row_by_index(
+        self,
+        row_index,
+        scroll_to_center=True,
+    ):
         """
         外部调用：
-        根据线图点击的数据点，自动选中表格对应行并滚动过去。
+        根据线图点击的数据点，自动高亮表格对应行。
+
+        参数：
+        - row_index：要选中的行号
+        - scroll_to_center：
+            True  ：线图点击后使用，自动滚动到表格中间
+            False ：表格自身点击时使用，不自动滚动
 
         效果：
         1. 对应行蓝色底
         2. 对应行白色字
-        3. 自动滚动到表格中间
+        3. 线图点击时自动滚动到表格中间
         """
+
         try:
             row_index = int(row_index)
         except Exception:
             return
 
-        if row_index < 0 or row_index >= self.table.rowCount():
+        if row_index < 0:
+            return
+
+        if row_index >= self.table.rowCount():
             return
 
         self.table.blockSignals(True)
 
+        # 先恢复上一行的普通样式
         if self.current_marked_row is not None:
-            self._reset_row_style(self.current_marked_row)
+            self._reset_row_style(
+                self.current_marked_row
+            )
 
+        # 标记当前行
         self.current_marked_row = row_index
         self._mark_row_style(row_index)
 
-        self.table.selectRow(row_index)
+        # 仅线图点击时滚动到中间；
+        # 用户在表格内点击时不跳动。
+        if scroll_to_center:
+            first_item = self.table.item(row_index, 0)
 
-        first_item = self.table.item(row_index, 0)
-
-        if first_item is not None:
-            self.table.scrollToItem(
-                first_item,
-                QTableWidget.PositionAtCenter
-            )
+            if first_item is not None:
+                self.table.scrollToItem(
+                    first_item,
+                    QAbstractItemView.PositionAtCenter,
+                )
 
         self.table.blockSignals(False)
 
@@ -261,12 +372,18 @@ class ProductionCurveTableWidget(QWidget):
         """
         清除表格选中状态和蓝色标记。
         """
+
         self.table.blockSignals(True)
 
         if self.current_marked_row is not None:
-            self._reset_row_style(self.current_marked_row)
+            self._reset_row_style(
+                self.current_marked_row
+            )
 
         self.current_marked_row = None
+
+        # 虽然当前是 NoSelection，
+        # 这里仍保留清除调用，避免以后切回 Qt 选中模式时有残留。
         self.table.clearSelection()
 
         self.table.blockSignals(False)
@@ -275,7 +392,11 @@ class ProductionCurveTableWidget(QWidget):
         """
         把某一行设置为蓝色底、白色字。
         """
-        if row_index < 0 or row_index >= self.table.rowCount():
+
+        if row_index < 0:
+            return
+
+        if row_index >= self.table.rowCount():
             return
 
         for col in range(self.table.columnCount()):
@@ -284,14 +405,23 @@ class ProductionCurveTableWidget(QWidget):
             if item is None:
                 continue
 
-            item.setBackground(QBrush(self.mark_background_color))
-            item.setForeground(QBrush(self.mark_text_color))
+            item.setBackground(
+                QBrush(self.mark_background_color)
+            )
+
+            item.setForeground(
+                QBrush(self.mark_text_color)
+            )
 
     def _reset_row_style(self, row_index):
         """
         恢复某一行普通样式。
         """
-        if row_index < 0 or row_index >= self.table.rowCount():
+
+        if row_index < 0:
+            return
+
+        if row_index >= self.table.rowCount():
             return
 
         for col in range(self.table.columnCount()):
@@ -300,18 +430,43 @@ class ProductionCurveTableWidget(QWidget):
             if item is None:
                 continue
 
+            # 恢复 Qt 的默认 / 隔行背景色
             item.setBackground(QBrush())
-            item.setForeground(QBrush(self.normal_text_color))
+
+            item.setForeground(
+                QBrush(self.normal_text_color)
+            )
 
     def _on_cell_clicked(self, row, column):
         """
         点击表格任意单元格时：
-        1. 表格自己标记这一行
-        2. 发送当前行号给线图
+
+        1. 点击新行：
+           - 高亮当前行；
+           - 不自动滚动；
+           - 向线图发送当前行号。
+
+        2. 再次点击同一行：
+           - 取消蓝色高亮；
+           - 向线图发送 -1；
+           - 线图可以据此隐藏红色竖直定位线。
         """
-        self.select_row_by_index(row)
+
+        if self.current_marked_row == row:
+            self.clear_selection()
+            self.row_selected.emit(-1)
+            return
+
+        self.select_row_by_index(
+            row_index=row,
+            scroll_to_center=False,
+        )
+
         self.row_selected.emit(int(row))
 
+    # =========================================================
+    # 属性名称与数值格式化
+    # =========================================================
     def _normalize_property_name(self, property_name):
         """
         中文属性名转英文 key。

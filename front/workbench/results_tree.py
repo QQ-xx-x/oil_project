@@ -107,6 +107,9 @@ class ResultsTree(QTreeWidget):
         study_1.addChild(self._item(
             "Chart 1 - 生产曲线", "production_curve", "chart", "chart",
             checked=False, icon_name="chart", tooltip="打开生产曲线图表"))
+        study_1.addChild(self._item(
+            "历史拟合", "history_matching", "chart", "chart",
+            checked=False, icon_name="chart", tooltip="打开历史拟合参数和结果页面"))
         study_2 = self._item(
             "Study 2", "study_2", "folder", "chart", checked=True,
             icon_name="folder", tooltip="属性和 PVT 分析分组")

@@ -73,6 +73,7 @@ MinSizeRel/
 *.temp
 *.log
 *.docs
+history_matching/ui_runs/
 
 # Windows
 Thumbs.db

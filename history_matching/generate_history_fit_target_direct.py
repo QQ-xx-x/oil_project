@@ -23,8 +23,7 @@ DEFAULT_NOISE_BOUNDS = {
     "water": (0.08, 3.40),
 }
 
-COORD_FILE = PROJECT_ROOT / "src" / "basic" / "ratio_style_800x400x120_40x20x6_COORD.csv"
-ZCORN_FILE = PROJECT_ROOT / "src" / "basic" / "ratio_style_800x400x120_40x20x6_ZCORN.csv"
+CASE_DATASET_PATH = PROJECT_ROOT / "case_dataset_test"
 
 
 TRUTH_PARAMS = {
