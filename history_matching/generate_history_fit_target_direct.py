@@ -27,8 +27,6 @@ CASE_DATASET_PATH = PROJECT_ROOT / "case_dataset_test"
 
 
 TRUTH_PARAMS = {
-    "coord_file": str(COORD_FILE),
-    "zcorn_file": str(ZCORN_FILE),
     "simulation_days": 730.0,
     "start_date": "2022-01-01",
     "fractures": {
@@ -108,7 +106,7 @@ TRUTH_PARAMS = {
 
 
 def require_files():
-    missing = [path for path in (BUILD_RELEASE, COORD_FILE, ZCORN_FILE) if not path.exists()]
+    missing = [path for path in (CASE_DATASET_PATH,) if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing required files: " + ", ".join(str(path) for path in missing))
 
@@ -142,100 +140,89 @@ def redirect_process_output(log_path, enabled=True):
 
 
 def run_truth_simulation(params, run_dir, log_path, quiet=True):
-    sys.path.insert(0, str(BUILD_RELEASE))
-    import edfm_core_corner_lgr
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from front.simulation_runner import run_simulation
 
     run_path = Path(run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
     (run_path / "truth_params.json").write_text(json.dumps(params, indent=2), encoding="utf-8")
 
-    old_cwd = Path.cwd()
-    os.chdir(run_path)
-    try:
-        sim = edfm_core_corner_lgr.EDFMSimulator()
-        sim.setCornerPointFiles(str(params["coord_file"]), str(params["zcorn_file"]))
+    nf = params.get("fractures", {})
+    hf = params.get("hydraulic_fractures", {})
+    well = params.get("well", {})
+    fluid = params.get("fluid", {})
+    gpvt = params.get("gas_pvt", {})
+    init = params.get("initial_state", {})
+    lgr = params.get("lgr", {})
+    dp = params.get("dual_porosity", {})
 
-        nf = params["fractures"]
-        sim.setFractureParameters(
-            nf["num_fracs"],
-            nf["min_len"],
-            nf["max_len"],
-            nf["max_dip"],
-            nf["min_strike"],
-            nf["max_strike"],
-            nf["aperture"],
-            nf["frac_perm"],
-        )
-
-        hf = params["hydraulic_fractures"]
-        sim.setHydraulicFractureParameters(
-            hf["hf_count"],
-            hf["hf_spacing"],
-            hf["hf_length"],
-            hf["hf_height"],
-            hf["hf_aperture"],
-            hf["hf_perm"],
-            hf["hf_center_x"],
-            hf["hf_center_y"],
-            hf["hf_center_z"],
-        )
-
-        well = params["well"]
-        sim.setWellParameters(well["radius"], well["bhp"])
-
-        fluid = params["fluid"]
-        sim.setOilWaterProperties(
-            fluid["mu_w"],
-            fluid["mu_o_placeholder"],
-            fluid["cw"],
-            fluid["co_placeholder"],
-            fluid["p_ref"],
-            fluid["swi"],
-            fluid["sor_placeholder"],
-            fluid["sgc"],
-            fluid["mu_g_fallback"],
-            fluid["cg_fallback"],
-        )
-
-        gpvt = params["gas_pvt"]
-        sim.setGasPVTParameters(
-            gpvt["gas_t_C"],
-            gpvt["gas_Mg"],
-            gpvt["gas_Tc"],
-            gpvt["gas_Pc_bar"],
-            gpvt["gas_table_Pmin_bar"],
-            gpvt["gas_table_Pmax_bar"],
-            gpvt["gas_table_n"],
-            gpvt["gas_Psc_bar"],
-        )
-
-        init = params["initial_state"]
-        sim.setInitialStateParameters(init["pressure"], init["sw"], init["sg"])
-
-        lgr = params["lgr"]
-        sim.setLGRParameters(lgr["enabled"], lgr["d_threshold"], lgr["nrx"], lgr["nry"], lgr["nrz"])
-
-        dp = params["dual_porosity"]
-        sim.setDualPorosityParameters(
-            dp["enabled"],
-            dp["phi_matrix"],
-            dp["phi_fracture"],
-            dp["k_matrix_x"],
-            dp["k_matrix_y"],
-            dp["k_matrix_z"],
-            dp["k_fracture_x"],
-            dp["k_fracture_y"],
-            dp["k_fracture_z"],
-            dp["matrix_volume_fraction"],
-            dp["fracture_volume_fraction"],
-            dp["wr_shape_factor"],
-        )
-
-        sim.setSimulationParameters(params["simulation_days"])
-        with redirect_process_output(log_path, enabled=quiet):
-            sim.runSimulation()
-    finally:
-        os.chdir(old_cwd)
+    ds_path = str(CASE_DATASET_PATH.resolve())
+    run_params = {
+        "interface_source": "case_data",
+        "corner_grid_refinement": "加密",
+        "case_dataset_path": ds_path,
+        "num_fracs": int(nf.get("num_fracs", 72)),
+        "min_len": float(nf.get("min_len", 14.0)),
+        "max_len": float(nf.get("max_len", 36.0)),
+        "max_dip": float(nf.get("max_dip", 0.82)),
+        "min_strike": float(nf.get("min_strike", 0.18)),
+        "max_strike": float(nf.get("max_strike", 2.72)),
+        "aperture": float(nf.get("aperture", 0.075)),
+        "frac_perm": float(nf.get("frac_perm", 180.0)),
+        "hf_count": int(hf.get("hf_count", 14)),
+        "hf_spacing": float(hf.get("hf_spacing", 58.0)),
+        "hf_length": float(hf.get("hf_length", 96.0)),
+        "hf_height": float(hf.get("hf_height", 24.0)),
+        "hf_aperture": float(hf.get("hf_aperture", 0.065)),
+        "hf_perm": float(hf.get("hf_perm", 720.0)),
+        "hf_center_x": float(hf.get("hf_center_x", -1.0)),
+        "hf_center_y": float(hf.get("hf_center_y", -1.0)),
+        "hf_center_z": float(hf.get("hf_center_z", -1.0)),
+        "well_radius": float(well.get("radius", 0.06)),
+        "well_pressure": float(well.get("bhp", 42.0)),
+        "mu_w": float(fluid.get("mu_w", 0.78)),
+        "mu_o": float(fluid.get("mu_o_placeholder", 3.6)),
+        "cw": float(fluid.get("cw", 2.5e-6)),
+        "co": float(fluid.get("co_placeholder", 8.0e-6)),
+        "p_ref": float(fluid.get("p_ref", 120.0)),
+        "swi": float(fluid.get("swi", 0.08)),
+        "sor": float(fluid.get("sor_placeholder", 0.02)),
+        "sgc": float(fluid.get("sgc", 0.04)),
+        "mu_g": float(fluid.get("mu_g_fallback", 0.17)),
+        "cg": float(fluid.get("cg_fallback", 8.0e-4)),
+        "gas_t_C": float(gpvt.get("gas_t_C", 126.0)),
+        "gas_Mg": float(gpvt.get("gas_Mg", 18.2)),
+        "gas_Tc": float(gpvt.get("gas_Tc", 202.0)),
+        "gas_Pc_bar": float(gpvt.get("gas_Pc_bar", 46.0)),
+        "gas_table_Pmin_bar": float(gpvt.get("gas_table_Pmin_bar", 2.0)),
+        "gas_table_Pmax_bar": float(gpvt.get("gas_table_Pmax_bar", 900.0)),
+        "gas_table_n": int(gpvt.get("gas_table_n", 1400)),
+        "gas_Psc_bar": float(gpvt.get("gas_Psc_bar", 1.01325)),
+        "pressure": float(init.get("pressure", 800.0)),
+        "sw": float(init.get("sw", 0.4)),
+        "sg": float(init.get("sg", 0.6)),
+        "enable_lgr": bool(lgr.get("enabled", True)),
+        "d_threshold": float(lgr.get("d_threshold", 4.2)),
+        "lgr_nrx": int(lgr.get("nrx", 2)),
+        "lgr_nry": int(lgr.get("nry", 2)),
+        "lgr_nrz": int(lgr.get("nrz", 1)),
+        "enable_dual_porosity": bool(dp.get("enabled", True)),
+        "phi_matrix": float(dp.get("phi_matrix", 0.055)),
+        "phi_fracture": float(dp.get("phi_fracture", 0.36)),
+        "k_matrix_x": float(dp.get("k_matrix_x", 0.008)),
+        "k_matrix_y": float(dp.get("k_matrix_y", 0.006)),
+        "k_matrix_z": float(dp.get("k_matrix_z", 0.0015)),
+        "k_fracture_x": float(dp.get("k_fracture_x", 1.6)),
+        "k_fracture_y": float(dp.get("k_fracture_y", 1.2)),
+        "k_fracture_z": float(dp.get("k_fracture_z", 0.15)),
+        "matrix_volume_fraction": float(dp.get("matrix_volume_fraction", 0.965)),
+        "fracture_volume_fraction": float(dp.get("fracture_volume_fraction", 0.035)),
+        "wr_shape_factor": float(dp.get("wr_shape_factor", 0.085)),
+        "simulation_time": float(params.get("simulation_days", 730.0)),
+    }
+    run_simulation(run_params)
 
     sim_file = run_path / "output_sim_lgr_WR.csv"
     if not sim_file.exists():
