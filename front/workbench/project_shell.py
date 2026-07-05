@@ -847,28 +847,55 @@ class ProjectShell(QWidget):
         if bounds is None:
             return
         min_x, max_x, min_y, max_y, min_z, max_z = bounds
-        origin = (min_x, min_y, min_z)
-        if all(abs(value) < 1e-9 for value in origin):
-            return
+        dx = max_x - min_x
+        dy = max_y - min_y
+        dz = max_z - min_z
+        margin = max(dx, dy, dz, 1.0) * 1e-6
+        local_z_margin = max(1.0, dz * 0.05)
 
-        margin = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0) * 1e-6
+        def in_range(value, lower, upper, tol=margin):
+            return lower - tol <= value <= upper + tol
+
+        def map_xy(value, lower, upper):
+            if in_range(value, lower, upper):
+                return value
+            shifted = value + lower
+            if in_range(shifted, lower, upper):
+                return shifted
+            return value
+
+        def map_z(value):
+            if in_range(value, min_z, max_z):
+                return value
+            flipped = -value
+            if in_range(flipped, min_z, max_z, local_z_margin):
+                return flipped
+            shifted = value + min_z
+            if -local_z_margin <= value <= dz + local_z_margin and in_range(shifted, min_z, max_z, local_z_margin):
+                return shifted
+            return value
+
+        changed = 0
+        total = 0
         for frac in fractures:
+            normalized = []
             for point in frac.get("points", []) or []:
                 x, y, z = (float(point[0]), float(point[1]), float(point[2]))
-                if (min_x - margin <= x <= max_x + margin
-                        and min_y - margin <= y <= max_y + margin
-                        and min_z - margin <= z <= max_z + margin):
-                    return
+                mapped = (
+                    map_xy(x, min_x, max_x),
+                    map_xy(y, min_y, max_y),
+                    map_z(z),
+                )
+                normalized.append(mapped)
+                total += 1
+                if any(abs(mapped[idx] - (x, y, z)[idx]) > margin for idx in range(3)):
+                    changed += 1
+            frac["points"] = normalized
 
-        for frac in fractures:
-            shifted = []
-            for point in frac.get("points", []) or []:
-                shifted.append((
-                    float(point[0]) + origin[0],
-                    float(point[1]) + origin[1],
-                    float(point[2]) + origin[2],
-                ))
-            frac["points"] = shifted
+        if changed:
+            self.message_log.append_message(
+                f"[裂缝坐标] 已按角点网格范围校正裂缝顶点：{changed}/{total}"
+            )
 
     def _corner_grid_bounds(self, sim_data):
         cpg = getattr(sim_data, "corner_point_grid", None)

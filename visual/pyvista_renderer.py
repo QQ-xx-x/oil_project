@@ -2128,7 +2128,7 @@ class PyVistaRenderer:
         self.setup_camera(sim_data)
         self._render()
 
-    """def _get_active_parent_cells_from_leaf_data(self, sim_data):
+    def _get_active_parent_cells_from_leaf_data(self, sim_data):
         
         #根据 cell_geometry_with_pressure 中的 parent_id，
         #获取所有参与计算的 active 父网格。
@@ -2412,7 +2412,7 @@ class PyVistaRenderer:
 
         self.setup_camera_for_corner_grid(cpg)
 
-        self.plotter.render()"""
+        self.plotter.render()
 
     def setup_camera_for_corner_grid(self, cpg):
         min_x = min_y = min_z = float("inf")

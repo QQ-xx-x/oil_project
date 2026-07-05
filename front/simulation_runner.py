@@ -3,6 +3,7 @@
 负责执行模拟、保留算法 stdout 输出，并将结果写入 JSON 供 UI 进程读取。
 """
 import argparse
+import copy
 import csv
 import importlib
 import json
@@ -365,6 +366,7 @@ def _apply_parsed_wells(sim, params, dataset=None):
         return False
     if not hasattr(sim, 'setParsedWellsData'):
         raise RuntimeError("edfm_core_corner_lgr does not expose setParsedWellsData")
+    wells_data = _normalize_parsed_wells_z_to_grid(wells_data, dataset)
     sim.setParsedWellsData(wells_data)
     print(
         "Parsed wells loaded: "
@@ -447,7 +449,15 @@ def _apply_case_dataset_dfn(sim, dataset, params):
         return
     if not hasattr(sim, 'setDFNFractures'):
         raise RuntimeError("edfm_core_corner_lgr does not expose setDFNFractures")
-    ids, offsets, vertices, apertures, permeabilities = _dfn_arrays(dataset.dfn)
+    z_transform = _build_geometry_z_transform(
+        _dfn_z_values(dataset.dfn),
+        _case_dataset_grid_z_bounds(dataset),
+        "DFN fractures",
+    )
+    ids, offsets, vertices, apertures, permeabilities = _dfn_arrays(
+        dataset.dfn,
+        z_transform=z_transform,
+    )
     if len(ids) == 0:
         print("WARNING: case_dataset has no DFN fractures; solver will use generated fractures", flush=True)
         return
@@ -645,7 +655,153 @@ def _combined_valid_mask(dataset, property_keys):
     return np.asarray(combined, dtype=np.bool_)
 
 
-def _dfn_arrays(dfn_payload):
+def _case_dataset_grid_z_bounds(dataset):
+    grid = getattr(dataset, 'grid', None)
+    zcorn = _array_float64(getattr(grid, 'zcorn', []))
+    if zcorn.size == 0:
+        return None
+    finite = zcorn[np.isfinite(zcorn)]
+    if finite.size == 0:
+        return None
+    return float(np.min(finite)), float(np.max(finite))
+
+
+def _finite_range(values):
+    finite = []
+    for value in values or []:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            finite.append(number)
+    if not finite:
+        return None
+    return min(finite), max(finite)
+
+
+def _ranges_overlap(left, right, tol=0.0):
+    if left is None or right is None:
+        return False
+    return max(left[0], right[0]) <= min(left[1], right[1]) + tol
+
+
+def _format_range(value_range):
+    if value_range is None:
+        return "empty"
+    return f"{value_range[0]:.6g}..{value_range[1]:.6g}"
+
+
+def _build_geometry_z_transform(z_values, grid_z_bounds, label):
+    input_range = _finite_range(z_values)
+    if input_range is None or grid_z_bounds is None:
+        return lambda z: z
+
+    grid_min, grid_max = grid_z_bounds
+    thickness = grid_max - grid_min
+    if thickness <= 0.0:
+        return lambda z: z
+
+    grid_tol = max(1e-6, thickness * 0.02)
+    if _ranges_overlap(input_range, grid_z_bounds, grid_tol):
+        return lambda z: z
+
+    flipped_range = (-input_range[1], -input_range[0])
+    if _ranges_overlap(flipped_range, grid_z_bounds, grid_tol):
+        print(
+            f"CaseDataset {label} Z normalized: negative-depth sign flip; "
+            f"input={_format_range(input_range)}, output={_format_range(flipped_range)}, "
+            f"grid={_format_range(grid_z_bounds)}",
+            flush=True,
+        )
+        return lambda z: -z
+
+    local_depth_tol = max(1.0, thickness * 0.05)
+    shifted_range = (input_range[0] + grid_min, input_range[1] + grid_min)
+    looks_like_local_depth = (
+        input_range[0] >= -local_depth_tol and
+        input_range[1] <= thickness + local_depth_tol and
+        abs(grid_min) > local_depth_tol
+    )
+    if looks_like_local_depth and _ranges_overlap(shifted_range, grid_z_bounds, local_depth_tol):
+        print(
+            f"CaseDataset {label} Z normalized: local-depth offset by grid z-min; "
+            f"input={_format_range(input_range)}, output={_format_range(shifted_range)}, "
+            f"grid={_format_range(grid_z_bounds)}",
+            flush=True,
+        )
+        return lambda z: z + grid_min
+
+    print(
+        f"WARNING: CaseDataset {label} Z range does not overlap grid; "
+        f"input={_format_range(input_range)}, grid={_format_range(grid_z_bounds)}",
+        flush=True,
+    )
+    return lambda z: z
+
+
+def _dfn_z_values(dfn_payload):
+    dfn_payload = dfn_payload or {}
+    fractures = dfn_payload.get('fractures') or [] if isinstance(dfn_payload, dict) else []
+    z_values = []
+    for fracture in fractures:
+        points = fracture.get('vertices') or fracture.get('points') or []
+        for point in points:
+            try:
+                z_values.append(float(point[2]))
+            except (TypeError, ValueError, IndexError):
+                continue
+    return z_values
+
+
+def _iter_well_z_fields(wells_data):
+    if not isinstance(wells_data, dict):
+        return
+    wells = wells_data.get('wells') or []
+    for well in wells:
+        if not isinstance(well, dict):
+            continue
+        for point in well.get('track') or []:
+            if isinstance(point, dict) and 'z_m' in point:
+                yield point, 'z_m'
+        for completion in well.get('completion_definitions') or []:
+            if not isinstance(completion, dict):
+                continue
+            segment = completion.get('well_segment_xyz') or {}
+            if isinstance(segment, dict):
+                for key in ('start', 'end', 'center'):
+                    point = segment.get(key)
+                    if isinstance(point, dict) and 'z_m' in point:
+                        yield point, 'z_m'
+            fracture = completion.get('fracture') or {}
+            if isinstance(fracture, dict):
+                for corner in fracture.get('corners') or []:
+                    if isinstance(corner, dict) and 'z_m' in corner:
+                        yield corner, 'z_m'
+
+
+def _normalize_parsed_wells_z_to_grid(wells_data, dataset=None):
+    grid_z_bounds = _case_dataset_grid_z_bounds(dataset) if dataset is not None else None
+    z_values = [
+        container[key]
+        for container, key in _iter_well_z_fields(wells_data)
+    ]
+    z_transform = _build_geometry_z_transform(z_values, grid_z_bounds, "parsed wells")
+    if not z_values or z_transform(0.0) == 0.0 and z_transform(1.0) == 1.0:
+        return wells_data
+
+    normalized = copy.deepcopy(wells_data)
+    for container, key in _iter_well_z_fields(normalized):
+        try:
+            container[key] = float(z_transform(float(container[key])))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _dfn_arrays(dfn_payload, z_transform=None):
+    if z_transform is None:
+        z_transform = lambda z: z
     dfn_payload = dfn_payload or {}
     fractures = dfn_payload.get('fractures') or [] if isinstance(dfn_payload, dict) else []
     ids = []
@@ -659,7 +815,7 @@ def _dfn_arrays(dfn_payload):
             continue
         try:
             clean_points = [
-                (float(point[0]), float(point[1]), float(point[2]))
+                (float(point[0]), float(point[1]), float(z_transform(float(point[2]))))
                 for point in points
             ]
         except (TypeError, ValueError, IndexError):
