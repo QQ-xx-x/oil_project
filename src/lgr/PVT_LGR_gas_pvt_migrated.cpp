@@ -1383,6 +1383,13 @@ public:
     double initial_pressure{800.0};
     double initial_sw{0.05};
     double simulation_total_days{7300.0};
+    double dt_initial{1e-5};
+    double dt_min_config{1e-8};
+    double dt_max_config{100.0};
+    int    newton_max_iter_config{15};
+    double newton_tol_config{1e-3};
+    double linear_tol_config{1e-8};
+    int    linear_max_iter_config{1000};
 
     bool enable_dual_porosity{false};
     double phi_matrix{0.04};
@@ -1858,6 +1865,26 @@ public:
 
     void setSimulationParameters(double total_days) {
         simulation_total_days = total_days;
+    }
+
+    void setSolverParameters(
+        double total_days,
+        double dt_init,
+        double dt_min_val,
+        double dt_max_val,
+        int    newton_max_iter,
+        double newton_tol,
+        double linear_tol,
+        int    linear_max_iter)
+    {
+        simulation_total_days    = total_days;
+        dt_initial               = dt_init;
+        dt_min_config            = dt_min_val;
+        dt_max_config            = dt_max_val;
+        newton_max_iter_config   = newton_max_iter;
+        newton_tol_config        = newton_tol;
+        linear_tol_config        = linear_tol;
+        linear_max_iter_config   = linear_max_iter;
     }
 
     void setLGRParameters(bool enabled,
@@ -4592,8 +4619,8 @@ public:
     }
 
     bool solveStep(double dt, double& step_water, double& step_gas, int& actual_iter) {
-        const int max_iter = 15;
-        const double tol = 1e-3;
+        int max_iter = newton_max_iter_config;
+        const double tol = newton_tol_config;
         std::vector<State> backup = states;
         std::vector<State> wr_backup = wr_matrix_states;
         std::vector<StateAD2> states_ad(n_total);
@@ -4708,7 +4735,7 @@ public:
             BiCGSTAB<SparseMatrix<double>, IncompleteLUT<double>> solver;
             solver.preconditioner().setDroptol(1e-5);
             solver.preconditioner().setFillfactor(40);
-            solver.setTolerance(1e-5);
+            solver.setTolerance(linear_tol_config);
             solver.setMaxIterations(500);
             solver.compute(J);
             if (solver.info() != Success) {
@@ -5369,9 +5396,10 @@ public:
         permeability_y_steps.clear();
         permeability_z_steps.clear();
         double t = 0.0;
-        const double dt0 = 1e-5;
-        const double dt_min = 1e-8;
-        const double dt_max = 100.0;
+        double dt0   = dt_initial;
+        double dt_min = dt_min_config;
+        double dt_max = dt_max_config;
+        int max_iter = newton_max_iter_config;
         int target_iter = 6;
         double dt_try = dt0;
         double tot_w = 0.0, tot_g = 0.0;
@@ -5592,6 +5620,15 @@ PYBIND11_MODULE(edfm_core_corner_lgr, m) {
         .def("setWaterRateControlSchedule", &SimulatorLGR::setWaterRateControlSchedule)
         .def("setInitialStateParameters", &SimulatorLGR::setInitialStateParameters)
         .def("setSimulationParameters", &SimulatorLGR::setSimulationParameters)
+        .def("setSolverParameters", &SimulatorLGR::setSolverParameters,
+             py::arg("total_days"),
+             py::arg("dt_init") = 1e-5,
+             py::arg("dt_min_val") = 1e-8,
+             py::arg("dt_max_val") = 100.0,
+             py::arg("newton_max_iter") = 15,
+             py::arg("newton_tol") = 1e-3,
+             py::arg("linear_tol") = 1e-8,
+             py::arg("linear_max_iter") = 1000)
         .def("setLGRParameters", &SimulatorLGR::setLGRParameters)
         .def("setDualPorosityParameters", &SimulatorLGR::setDualPorosityParameters,
              py::arg("enable_dual_porosity") = false,
