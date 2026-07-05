@@ -4312,6 +4312,9 @@ public:
         std::ofstream hist("well_completion_history_lgr.csv");
         hist << "Time,well_name,comp_id,status,Qw,Qg,CumWater,CumGas,BHP,n_active_connections\n";
         hist.close();
+        std::ofstream whist("well_production_history_lgr.csv");
+        whist << "Time,well_name,status,Qw,Qg,CumWater,CumGas,BHP,n_active_completions,n_active_connections\n";
+        whist.close();
         applyWellEventsUpTo(0.0);
     }
     void appendWellEventLog(double time, const WellScheduleEvent& ev,
@@ -4502,6 +4505,63 @@ public:
                  << cp.last_qw << "," << cp.last_qg << ","
                  << cp.cum_water << "," << cp.cum_gas << ","
                  << bhp << "," << nactive << "\n";
+        }
+    }
+    void appendWellProductionHistory(double t) {
+        if (!has_parsed_wells) return;
+
+        std::set<std::string> well_name_set;
+        for (const auto& comp : completion_definitions) well_name_set.insert(comp.well_name);
+        for (const auto& kv : well_prod) well_name_set.insert(kv.first);
+        for (const auto& w : wells) well_name_set.insert(w.well_name);
+
+        std::ofstream hist("well_production_history_lgr.csv", std::ios::app);
+        for (const auto& well_name : well_name_set) {
+            int n_active_connections = 0;
+            std::unordered_set<std::string> active_completion_keys;
+            double active_bhp_sum = 0.0;
+            int active_bhp_count = 0;
+            double all_connection_bhp_sum = 0.0;
+            int all_connection_bhp_count = 0;
+            double definition_bhp_sum = 0.0;
+            int definition_bhp_count = 0;
+
+            for (const auto& comp : completion_definitions) {
+                if (comp.well_name != well_name) continue;
+                definition_bhp_sum += comp.bhp_bar;
+                ++definition_bhp_count;
+            }
+
+            for (const auto& w : wells) {
+                if (w.well_name != well_name) continue;
+                all_connection_bhp_sum += w.P_bhp;
+                ++all_connection_bhp_count;
+                if (!w.active) continue;
+                ++n_active_connections;
+                active_completion_keys.insert(completionKey(w.well_name, w.comp_id));
+                active_bhp_sum += w.P_bhp;
+                ++active_bhp_count;
+            }
+
+            double bhp = well_pressure;
+            if (active_bhp_count > 0) {
+                bhp = active_bhp_sum / active_bhp_count;
+            } else if (all_connection_bhp_count > 0) {
+                bhp = all_connection_bhp_sum / all_connection_bhp_count;
+            } else if (definition_bhp_count > 0) {
+                bhp = definition_bhp_sum / definition_bhp_count;
+            }
+
+            const auto wp_it = well_prod.find(well_name);
+            CompletionProduction zero_prod;
+            const CompletionProduction& wp = (wp_it != well_prod.end()) ? wp_it->second : zero_prod;
+
+            hist << t << "," << well_name << ","
+                 << (n_active_connections > 0 ? "OPEN" : "SHUT") << ","
+                 << wp.last_qw << "," << wp.last_qg << ","
+                 << wp.cum_water << "," << wp.cum_gas << ","
+                 << bhp << "," << active_completion_keys.size() << ","
+                 << n_active_connections << "\n";
         }
     }
     void setupWells() {
@@ -5621,6 +5681,7 @@ public:
                  << "," << n_active_comp << "," << n_active_conn << "\n";
             file.flush();
             appendWellCompletionHistory(t);
+            appendWellProductionHistory(t);
             double fac = std::pow((double)target_iter / (double)std::max(1, actual_iter), 0.5);
             fac = std::max(0.5, std::min(1.5, fac));
             dt_try = std::min(dt_max, std::max(dt0, dt_try) * fac);
