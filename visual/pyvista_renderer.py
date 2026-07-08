@@ -90,6 +90,13 @@ import pyvista as pv
 # 固定三面坐标系网格密度。
 COORDINATE_APPROX_DIVISIONS = 6
 COORDINATE_LABEL_FONT_SIZE = 12
+COORDINATE_TICK_LENGTH_RATIO = 0.010
+COORDINATE_TICK_LABEL_OFFSET_RATIO = 0.025
+COORDINATE_AXIS_TITLE_GAP_RATIO = 0.028
+COORDINATE_LABEL_DEPTH_OFFSET_RATIO = 0.003
+COORDINATE_LABEL_SCREEN_EPSILON_PX = 2.0
+# 相机视线与 X / Y / Z 轴足够接近时，认为是标准六向视图。
+COORDINATE_STANDARD_VIEW_COS_THRESHOLD = 0.999
 
 class PyVistaRenderer:
     """基于 PyVista 的渲染器，并保留对旧 VTK 渲染器接口的兼容面。"""
@@ -99,7 +106,7 @@ class PyVistaRenderer:
         self.plotter = qt_view.plotter
         self.renderer = qt_view.renderer
         self.cache = self._new_cache()
-
+        self._parsed_well_data = None
         self.view = qt_view
         self.pv_renderer = qt_view.renderer
 
@@ -107,7 +114,6 @@ class PyVistaRenderer:
 
         self.plotter.enable_anti_aliasing()
         self.plotter.enable_depth_peeling()
-
         self._add_petrel_arrow()
 
         ren = self.renderer
@@ -179,56 +185,117 @@ class PyVistaRenderer:
             color="#39d353"
         )
 
-
     # =====================================================================
     # 动态三面三维坐标系
     # =====================================================================
-
     def _clear_fixed_coordinate_axes(self):
         """
         删除当前坐标系的网格、刻度线、边框和文字。
-        不移除动态相机监听器。
+        不移除相机监听器。
         """
 
         self._remove_actor_list(
-            self.cache.get("fixed_coordinate_axis_actors", [])
+            self.cache.get(
+                "fixed_coordinate_axis_actors",
+                [],
+            )
         )
 
-        self._remove_actor(
-            self.cache.get("fixed_coordinate_label_actor")
+        self._clear_fixed_coordinate_label_actors()
+
+        self.cache[
+            "fixed_coordinate_axis_actors"
+        ] = []
+
+        self.cache[
+            "fixed_coordinate_label_specs"
+        ] = []
+
+        self.cache[
+            "fixed_coordinate_bounds"
+        ] = None
+
+        self.cache[
+            "fixed_coordinate_visible"
+        ] = False
+
+        self.cache[
+            "fixed_coordinate_hidden_axis"
+        ] = None
+
+
+    def _clear_fixed_coordinate_label_actors(self):
+        """
+        删除所有坐标系文字 actor。
+        """
+        label_actors = self.cache.get(
+            "fixed_coordinate_label_actors",
+            [],
+        ) or []
+
+        self._remove_actor_list(
+            label_actors
         )
 
-        self.cache["fixed_coordinate_axis_actors"] = []
-        self.cache["fixed_coordinate_label_actor"] = None
-        self.cache["fixed_coordinate_bounds"] = None
-        self.cache["fixed_coordinate_visible"] = False
+        old_label_actor = self.cache.get(
+            "fixed_coordinate_label_actor"
+        )
+
+        if (
+            old_label_actor is not None
+            and old_label_actor not in label_actors
+        ):
+            self._remove_actor(
+                old_label_actor
+            )
+
+        self.cache[
+            "fixed_coordinate_label_actor"
+        ] = None
+
+        self.cache[
+            "fixed_coordinate_label_actors"
+        ] = []
+
+        self.cache[
+            "fixed_coordinate_label_layout_signature"
+        ] = None
 
 
     @staticmethod
     def _nice_grid_step(value):
         """
-        将普通数值转为适合显示的坐标刻度步长。
+        将普通数值转换为适合显示的坐标刻度步长。
         """
-
         value = float(value)
 
         if value <= 0.0:
             return 1.0
 
-        exponent = np.floor(np.log10(value))
-        fraction = value / (10.0 ** exponent)
+        exponent = np.floor(
+            np.log10(value)
+        )
+
+        fraction = value / (
+            10.0 ** exponent
+        )
 
         if fraction < 1.5:
             nice_fraction = 1.0
+
         elif fraction < 3.0:
             nice_fraction = 2.0
+
         elif fraction < 7.0:
             nice_fraction = 5.0
+
         else:
             nice_fraction = 10.0
 
         return float(
-            nice_fraction * (10.0 ** exponent)
+            nice_fraction * (
+                10.0 ** exponent
+            )
         )
 
 
@@ -244,12 +311,19 @@ class PyVistaRenderer:
     ):
         """
         计算统一网格步长。
-        X、Y、Z 三个方向共用同一套间隔。
+        X、Y、Z 三个方向共用相同刻度间隔。
         """
+        x_span = abs(
+            float(xmax) - float(xmin)
+        )
 
-        x_span = abs(float(xmax) - float(xmin))
-        y_span = abs(float(ymax) - float(ymin))
-        z_span = abs(float(zmax) - float(zmin))
+        y_span = abs(
+            float(ymax) - float(ymin)
+        )
+
+        z_span = abs(
+            float(zmax) - float(zmin)
+        )
 
         max_span = max(
             x_span,
@@ -265,7 +339,9 @@ class PyVistaRenderer:
             2,
         )
 
-        return self._nice_grid_step(raw_step)
+        return self._nice_grid_step(
+            raw_step
+        )
 
 
     @staticmethod
@@ -276,9 +352,8 @@ class PyVistaRenderer:
     ):
         """
         根据真实模型坐标范围生成刻度。
-        最小值和最大值一定保留。
+        最小值与最大值一定保留。
         """
-
         vmin = float(vmin)
         vmax = float(vmax)
         step = float(step)
@@ -311,16 +386,21 @@ class PyVistaRenderer:
     @staticmethod
     def _format_fixed_coordinate_value(value):
         """
-        以真实工程坐标显示。
-        不显示科学计数法。
+        格式化刻度数值。
         """
-
         value = float(value)
 
-        if abs(value) >= 1.0:
-            return f"{value:.0f}"
+        if abs(value) < 1e-8:
+            return "0"
 
-        return f"{value:.3f}"
+        if abs(value - round(value)) < 1e-8:
+            return f"{round(value):.0f}"
+
+        return (
+            f"{value:.3f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
 
 
     def _add_fixed_coordinate_line(
@@ -334,7 +414,6 @@ class PyVistaRenderer:
         """
         添加坐标轴线、边框线、网格线或刻度短线。
         """
-
         start = np.asarray(
             start_point,
             dtype=np.float64,
@@ -369,99 +448,775 @@ class PyVistaRenderer:
         return actor
 
 
-    def _create_fixed_coordinate_labels(
+    def _append_fixed_coordinate_label_spec(
         self,
-        label_points,
-        label_texts,
+        label_specs,
+        axis_point,
+        label_point,
+        text,
     ):
         """
-        创建刻度数字和坐标轴标题。
+        保存一个刻度标签规格。
         """
-
-        self._remove_actor(
-            self.cache.get("fixed_coordinate_label_actor")
+        label_specs.append(
+            {
+                "axis_point": tuple(
+                    float(value)
+                    for value in axis_point
+                ),
+                "label_point": tuple(
+                    float(value)
+                    for value in label_point
+                ),
+                "text": str(text),
+            }
         )
 
-        self.cache["fixed_coordinate_label_actor"] = None
 
-        if not label_points or not label_texts:
-            return
+    def _add_fixed_coordinate_tick_with_label(
+        self,
+        label_specs,
+        axis_point,
+        tick_end_point,
+        label_point,
+        text,
+        color=(0.12, 0.12, 0.12),
+        line_width=1.2,
+    ):
+        """
+        添加一条刻度短线，并保存对应文字标签。
+        """
+        self._add_fixed_coordinate_line(
+            axis_point,
+            tick_end_point,
+            color=color,
+            line_width=line_width,
+            opacity=1.0,
+        )
+
+        self._append_fixed_coordinate_label_spec(
+            label_specs=label_specs,
+            axis_point=axis_point,
+            label_point=label_point,
+            text=text,
+        )
+
+
+    def _world_to_display_for_coordinate_label(
+        self,
+        world_point,
+    ):
+        """
+        将三维世界坐标转换为当前屏幕坐标。
+        """
+        if world_point is None:
+            return None
 
         try:
+            x, y, z = [
+                float(value)
+                for value in world_point
+            ]
+
+            renderer = self.plotter.renderer
+
+            renderer.SetWorldPoint(
+                x,
+                y,
+                z,
+                1.0,
+            )
+
+            renderer.WorldToDisplay()
+
+            display_point = renderer.GetDisplayPoint()
+
+            if display_point is None:
+                return None
+
+            return (
+                float(display_point[0]),
+                float(display_point[1]),
+            )
+
+        except Exception:
+            return None
+
+
+    def _get_coordinate_label_justification(
+        self,
+        axis_point,
+        label_point,
+    ):
+        """
+        根据标签锚点相对坐标轴基准点的屏幕投影方向，
+        自动决定文字展开方向。
+        """
+        axis_display = (
+            self._world_to_display_for_coordinate_label(
+                axis_point
+            )
+        )
+
+        label_display = (
+            self._world_to_display_for_coordinate_label(
+                label_point
+            )
+        )
+
+        if (
+            axis_display is None
+            or label_display is None
+        ):
+            return (
+                "center",
+                "center",
+            )
+
+        dx = (
+            float(label_display[0])
+            - float(axis_display[0])
+        )
+
+        dy = (
+            float(label_display[1])
+            - float(axis_display[1])
+        )
+
+        epsilon = float(
+            COORDINATE_LABEL_SCREEN_EPSILON_PX
+        )
+
+        if dx > epsilon:
+            horizontal = "left"
+
+        elif dx < -epsilon:
+            horizontal = "right"
+
+        else:
+            horizontal = "center"
+
+        if dy > epsilon:
+            vertical = "bottom"
+
+        elif dy < -epsilon:
+            vertical = "top"
+
+        else:
+            vertical = "center"
+
+        return (
+            horizontal,
+            vertical,
+        )
+
+
+    def _build_fixed_coordinate_label_groups(
+        self,
+        label_specs,
+    ):
+        """
+        根据当前屏幕投影，按文字对齐方式分组。
+        """
+        groups = {}
+
+        for index, spec in enumerate(
+            label_specs
+        ):
+            horizontal, vertical = (
+                self._get_coordinate_label_justification(
+                    axis_point=spec["axis_point"],
+                    label_point=spec["label_point"],
+                )
+            )
+
+            group_key = (
+                horizontal,
+                vertical,
+            )
+
+            if group_key not in groups:
+                groups[group_key] = {
+                    "points": [],
+                    "texts": [],
+                    "indices": [],
+                }
+
+            groups[group_key][
+                "points"
+            ].append(
+                spec["label_point"]
+            )
+
+            groups[group_key][
+                "texts"
+            ].append(
+                spec["text"]
+            )
+
+            groups[group_key][
+                "indices"
+            ].append(index)
+
+        layout_signature = tuple(
+            (
+                group_key,
+                tuple(
+                    groups[group_key][
+                        "indices"
+                    ]
+                ),
+            )
+            for group_key in sorted(
+                groups.keys()
+            )
+        )
+
+        return (
+            groups,
+            layout_signature,
+        )
+
+
+    def _create_fixed_coordinate_label_actors(
+        self,
+        groups,
+        layout_signature,
+    ):
+        """
+        删除旧文字 actor，并按当前投影方向重新创建。
+        """
+        self._clear_fixed_coordinate_label_actors()
+
+        label_actors = []
+
+        for (
+            horizontal,
+            vertical,
+        ) in sorted(
+            groups.keys()
+        ):
+            group = groups[
+                (
+                    horizontal,
+                    vertical,
+                )
+            ]
+
             points = np.asarray(
-                label_points,
+                group["points"],
                 dtype=np.float64,
             )
 
-            labels = [
+            texts = [
                 str(text)
-                for text in label_texts
+                for text in group["texts"]
             ]
 
-            actor = self.plotter.add_point_labels(
-                points=points,
-                labels=labels,
-                font_size=COORDINATE_LABEL_FONT_SIZE,
-                text_color=(0.0, 0.0, 0.0),
-                show_points=False,
-                fill_shape=False,
-                shape_opacity=0.0,
-                always_visible=True,
-                render=False,
+            if len(points) == 0:
+                continue
+
+            try:
+                actor = self.plotter.add_point_labels(
+                    points=points,
+                    labels=texts,
+                    font_size=COORDINATE_LABEL_FONT_SIZE,
+                    text_color=(0.0, 0.0, 0.0),
+                    show_points=False,
+                    fill_shape=False,
+                    shape_opacity=0.0,
+                    always_visible=True,
+                    justification_horizontal=horizontal,
+                    justification_vertical=vertical,
+                    render=False,
+                )
+
+                if actor is not None:
+                    label_actors.append(actor)
+
+            except Exception as exc:
+                print("=" * 60)
+                print("创建坐标系标签失败：")
+                print("horizontal =", horizontal)
+                print("vertical =", vertical)
+                print(type(exc).__name__, exc)
+                print("=" * 60)
+
+        self.cache[
+            "fixed_coordinate_label_actors"
+        ] = label_actors
+
+        self.cache[
+            "fixed_coordinate_label_actor"
+        ] = (
+            label_actors[0]
+            if label_actors
+            else None
+        )
+
+        self.cache[
+            "fixed_coordinate_label_layout_signature"
+        ] = layout_signature
+
+
+    def _update_fixed_coordinate_label_alignments(
+        self,
+        force=False,
+    ):
+        """
+        根据当前相机投影更新标签对齐方式。
+        """
+        label_specs = self.cache.get(
+            "fixed_coordinate_label_specs",
+            [],
+        ) or []
+
+        if not label_specs:
+            return False
+
+        groups, layout_signature = (
+            self._build_fixed_coordinate_label_groups(
+                label_specs
             )
+        )
 
-            self.cache[
-                "fixed_coordinate_label_actor"
-            ] = actor
+        old_signature = self.cache.get(
+            "fixed_coordinate_label_layout_signature"
+        )
 
-        except Exception as exc:
-            print("=" * 60)
-            print("创建动态坐标文字失败：")
-            print(type(exc).__name__, exc)
-            print("=" * 60)
+        if (
+            not force
+            and layout_signature == old_signature
+        ):
+            return False
+
+        self._create_fixed_coordinate_label_actors(
+            groups=groups,
+            layout_signature=layout_signature,
+        )
+
+        return True
 
 
     def get_corner_model_bounds(self, sim_data):
         """
-        从 cell_geometry_with_pressure 中获取模型真实坐标范围。
+        获取当前完整工程模型的总范围。
+
+        包含：
+        1. 角点网格 cell_geometry_with_pressure；
+        2. 天然裂缝、人工裂缝的所有 points；
+        3. 真实井轨迹所有 x_m / y_m / z_m 点。
+
+        保留原函数名称，外部调用方式不变。
         """
 
+        point_groups = []
+
+        def append_valid_points(points):
+            """
+            将一组 XYZ 点加入范围计算。
+            自动过滤空数据、非法数据、NaN、inf。
+            """
+            if points is None:
+                return
+
+            try:
+                points_array = np.asarray(
+                    points,
+                    dtype=np.float64,
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                return
+
+            if points_array.size == 0:
+                return
+
+            try:
+                points_array = points_array.reshape(
+                    -1,
+                    3,
+                )
+
+            except ValueError:
+                return
+
+            finite_mask = np.isfinite(
+                points_array
+            ).all(
+                axis=1
+            )
+
+            points_array = points_array[
+                finite_mask
+            ]
+
+            if len(points_array) == 0:
+                return
+
+            point_groups.append(
+                points_array
+            )
+
+        # ---------------------------------------------------------
+        # 1. 角点网格范围
+        # cell_geometry_with_pressure:
+        # 4:28 = 8 个角点 * XYZ
+        # ---------------------------------------------------------
         cell_data = getattr(
             sim_data,
             "cell_geometry_with_pressure",
             None,
         )
 
-        if cell_data is None:
-            return None
+        if cell_data is not None:
+            try:
+                cell_array = np.asarray(
+                    cell_data,
+                    dtype=np.float64,
+                )
 
-        if len(cell_data) == 0:
-            return None
+                if (
+                    cell_array.ndim == 2
+                    and cell_array.shape[0] > 0
+                    and cell_array.shape[1] >= 28
+                ):
+                    grid_points = cell_array[
+                        :,
+                        4:28,
+                    ].reshape(
+                        -1,
+                        3,
+                    )
 
-        try:
-            # 第 4 ~ 27 列为每个单元 8 个顶点的 XYZ 坐标
-            raw_points = cell_data[:, 4:28].reshape(
-                -1,
-                3,
+                    append_valid_points(
+                        grid_points
+                    )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+                pass
+
+        # ---------------------------------------------------------
+        # 2. 裂缝范围
+        # 同时包含天然裂缝和人工裂缝。
+        # 每个 fracture 的 points 即当前裂缝渲染使用的顶点。
+        # ---------------------------------------------------------
+        fractures = getattr(
+            sim_data,
+            "fractures",
+            None,
+        )
+
+        if isinstance(
+            fractures,
+            (list, tuple),
+        ):
+            for fracture in fractures:
+                if not isinstance(
+                    fracture,
+                    dict,
+                ):
+                    continue
+
+                append_valid_points(
+                    fracture.get(
+                        "points",
+                        None,
+                    )
+                )
+
+        # ---------------------------------------------------------
+        # 3. 真实井轨迹范围
+        #
+        # 与 render_wells() 保持一致：
+        # 优先 sim_data.parsed_well_data，
+        # 没有时回退 self._parsed_well_data。
+        # ---------------------------------------------------------
+        well_data = getattr(
+            sim_data,
+            "parsed_well_data",
+            None,
+        )
+
+        if not isinstance(
+            well_data,
+            dict,
+        ):
+            well_data = getattr(
+                self,
+                "_parsed_well_data",
+                None,
             )
 
-            return (
-                float(np.min(raw_points[:, 0])),
-                float(np.max(raw_points[:, 0])),
+        # 井 tube 的视觉半径。
+        # 当前 render_wells() 使用 tube(radius=2.0)。
+        well_tube_radius = 2.0
 
-                float(np.min(raw_points[:, 1])),
-                float(np.max(raw_points[:, 1])),
+        well_min_x = None
+        well_max_x = None
+        well_min_y = None
+        well_max_y = None
+        well_min_z = None
+        well_max_z = None
 
-                float(np.min(raw_points[:, 2])),
-                float(np.max(raw_points[:, 2])),
+        if isinstance(
+            well_data,
+            dict,
+        ):
+            wells = well_data.get(
+                "wells",
+                [],
             )
 
-        except Exception as exc:
-            print("=" * 60)
-            print("获取当前模型坐标范围失败：")
-            print(type(exc).__name__, exc)
-            print("=" * 60)
+            if isinstance(
+                wells,
+                list,
+            ):
+                for well in wells:
+                    if not isinstance(
+                        well,
+                        dict,
+                    ):
+                        continue
+
+                    track = well.get(
+                        "track",
+                        [],
+                    )
+
+                    if not isinstance(
+                        track,
+                        list,
+                    ):
+                        continue
+
+                    valid_track_points = []
+
+                    for point in track:
+                        if not isinstance(
+                            point,
+                            dict,
+                        ):
+                            continue
+
+                        try:
+                            x = float(
+                                point["x_m"]
+                            )
+
+                            y = float(
+                                point["y_m"]
+                            )
+
+                            z = float(
+                                point["z_m"]
+                            )
+
+                        except (
+                            KeyError,
+                            TypeError,
+                            ValueError,
+                        ):
+                            continue
+
+                        if not np.isfinite(
+                            [x, y, z]
+                        ).all():
+                            continue
+
+                        valid_track_points.append(
+                            (
+                                x,
+                                y,
+                                z,
+                            )
+                        )
+
+                    if not valid_track_points:
+                        continue
+
+                    track_array = np.asarray(
+                        valid_track_points,
+                        dtype=np.float64,
+                    )
+
+                    append_valid_points(
+                        track_array
+                    )
+
+                    current_min_x = float(
+                        np.min(
+                            track_array[:, 0]
+                        )
+                    )
+
+                    current_max_x = float(
+                        np.max(
+                            track_array[:, 0]
+                        )
+                    )
+
+                    current_min_y = float(
+                        np.min(
+                            track_array[:, 1]
+                        )
+                    )
+
+                    current_max_y = float(
+                        np.max(
+                            track_array[:, 1]
+                        )
+                    )
+
+                    current_min_z = float(
+                        np.min(
+                            track_array[:, 2]
+                        )
+                    )
+
+                    current_max_z = float(
+                        np.max(
+                            track_array[:, 2]
+                        )
+                    )
+
+                    if well_min_x is None:
+                        well_min_x = current_min_x
+                        well_max_x = current_max_x
+                        well_min_y = current_min_y
+                        well_max_y = current_max_y
+                        well_min_z = current_min_z
+                        well_max_z = current_max_z
+
+                    else:
+                        well_min_x = min(
+                            well_min_x,
+                            current_min_x,
+                        )
+
+                        well_max_x = max(
+                            well_max_x,
+                            current_max_x,
+                        )
+
+                        well_min_y = min(
+                            well_min_y,
+                            current_min_y,
+                        )
+
+                        well_max_y = max(
+                            well_max_y,
+                            current_max_y,
+                        )
+
+                        well_min_z = min(
+                            well_min_z,
+                            current_min_z,
+                        )
+
+                        well_max_z = max(
+                            well_max_z,
+                            current_max_z,
+                        )
+
+        if not point_groups:
             return None
+
+        all_points = np.vstack(
+            point_groups
+        )
+
+        xmin = float(
+            np.min(
+                all_points[:, 0]
+            )
+        )
+
+        xmax = float(
+            np.max(
+                all_points[:, 0]
+            )
+        )
+
+        ymin = float(
+            np.min(
+                all_points[:, 1]
+            )
+        )
+
+        ymax = float(
+            np.max(
+                all_points[:, 1]
+            )
+        )
+
+        zmin = float(
+            np.min(
+                all_points[:, 2]
+            )
+        )
+
+        zmax = float(
+            np.max(
+                all_points[:, 2]
+            )
+        )
+
+        # ---------------------------------------------------------
+        # 井的实际显示是 tube(radius=2.0)。
+        # 坐标系范围要把井筒实体而非仅井轨迹中心线包进去。
+        # ---------------------------------------------------------
+        if well_min_x is not None:
+            xmin = min(
+                xmin,
+                well_min_x
+                - well_tube_radius,
+            )
+
+            xmax = max(
+                xmax,
+                well_max_x
+                + well_tube_radius,
+            )
+
+            ymin = min(
+                ymin,
+                well_min_y
+                - well_tube_radius,
+            )
+
+            ymax = max(
+                ymax,
+                well_max_y
+                + well_tube_radius,
+            )
+
+            zmin = min(
+                zmin,
+                well_min_z
+                - well_tube_radius,
+            )
+
+            zmax = max(
+                zmax,
+                well_max_z
+                + well_tube_radius,
+            )
+
+        return (
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            zmin,
+            zmax,
+        )
 
 
     def _get_camera_aware_coordinate_signature(
@@ -469,9 +1224,8 @@ class PyVistaRenderer:
         bounds,
     ):
         """
-        判断相机在模型哪个方向。
+        判断相机当前位于模型哪个方向。
         """
-
         if bounds is None or len(bounds) != 6:
             return None
 
@@ -496,24 +1250,22 @@ class PyVistaRenderer:
                     self.plotter.camera.position,
                     dtype=np.float64,
                 )
+
             except Exception:
                 return None
 
-        # 相机在 +X 侧，看向模型时，坐标面放到 xmin
         x_side = (
             "xmin"
             if camera_position[0] >= center_x
             else "xmax"
         )
 
-        # 相机在 +Y 侧，看向模型时，坐标面放到 ymin
         y_side = (
             "ymin"
             if camera_position[1] >= center_y
             else "ymax"
         )
 
-        # 相机在 +Z 上方，看向模型时，坐标面放到 zmin
         z_side = (
             "zmin"
             if camera_position[2] >= center_z
@@ -527,6 +1279,77 @@ class PyVistaRenderer:
         )
 
 
+    def _get_hidden_coordinate_axis_for_standard_view(self):
+        """
+        判断当前是否为标准六向视图。
+        """
+        try:
+            camera_position, focal_point, _ = (
+                self.plotter.camera_position
+            )
+
+            camera_position = np.asarray(
+                camera_position,
+                dtype=np.float64,
+            )
+
+            focal_point = np.asarray(
+                focal_point,
+                dtype=np.float64,
+            )
+
+        except Exception:
+            return None
+
+        view_vector = (
+            camera_position
+            - focal_point
+        )
+
+        vector_length = float(
+            np.linalg.norm(view_vector)
+        )
+
+        if vector_length <= 1e-12:
+            return None
+
+        view_direction = (
+            view_vector / vector_length
+        )
+
+        absolute_direction = np.abs(
+            view_direction
+        )
+
+        dominant_index = int(
+            np.argmax(
+                absolute_direction
+            )
+        )
+
+        dominant_value = float(
+            absolute_direction[
+                dominant_index
+            ]
+        )
+
+        if (
+            dominant_value
+            < COORDINATE_STANDARD_VIEW_COS_THRESHOLD
+        ):
+            return None
+
+        axis_names = (
+            "x",
+            "y",
+            "z",
+        )
+
+        return axis_names[
+            dominant_index
+        ]
+
+
     def create_fixed_3d_coordinate_axes(
         self,
         bounds,
@@ -536,7 +1359,6 @@ class PyVistaRenderer:
         """
         根据当前相机方向创建动态三面坐标系。
         """
-
         if bounds is None or len(bounds) != 6:
             print("动态坐标系创建失败：bounds 无效")
             return
@@ -559,8 +1381,10 @@ class PyVistaRenderer:
             return
 
         if signature is None:
-            signature = self._get_camera_aware_coordinate_signature(
-                bounds
+            signature = (
+                self._get_camera_aware_coordinate_signature(
+                    bounds
+                )
             )
 
         if signature is None:
@@ -572,30 +1396,112 @@ class PyVistaRenderer:
 
         x_side, y_side, z_side = signature
 
-        # 三个“背面”
-        x_plane = xmin if x_side == "xmin" else xmax
-        y_plane = ymin if y_side == "ymin" else ymax
-        z_plane = zmin if z_side == "zmin" else zmax
+        # ---------------------------------------------------------
+        # 标准六视图隐藏轴规则。
+        # ---------------------------------------------------------
+        hidden_axis = (
+            self._get_hidden_coordinate_axis_for_standard_view()
+        )
 
-        # 对应的另一侧边界
-        x_outer = xmax if x_side == "xmin" else xmin
-        y_outer = ymax if y_side == "ymin" else ymin
-        z_outer = zmax if z_side == "zmin" else zmin
+        show_x_axis = (
+            hidden_axis != "x"
+        )
 
-        # 从坐标面向外偏移的方向
-        sign_x_plane = -1.0 if x_side == "xmin" else 1.0
-        sign_y_plane = -1.0 if y_side == "ymin" else 1.0
-        sign_z_plane = -1.0 if z_side == "zmin" else 1.0
+        show_y_axis = (
+            hidden_axis != "y"
+        )
 
-        # 从外侧边向外偏移的方向
-        sign_x_outer = 1.0 if x_outer == xmax else -1.0
-        sign_y_outer = 1.0 if y_outer == ymax else -1.0
-        sign_z_outer = 1.0 if z_outer == zmax else -1.0
+        show_z_axis = (
+            hidden_axis != "z"
+        )
+
+        # 左视图 / 右视图时：
+        # X 是屏幕深度方向。
+        # 因此 Z 轴刻度和 Z 标签要沿 Y 方向偏移。
+        is_side_x_view = (
+            hidden_axis == "x"
+        )
+
+        # 当前三个坐标面。
+        x_plane = (
+            xmin
+            if x_side == "xmin"
+            else xmax
+        )
+
+        y_plane = (
+            ymin
+            if y_side == "ymin"
+            else ymax
+        )
+
+        z_plane = (
+            zmin
+            if z_side == "zmin"
+            else zmax
+        )
+
+        # 对应另一侧边界。
+        x_outer = (
+            xmax
+            if x_side == "xmin"
+            else xmin
+        )
+
+        y_outer = (
+            ymax
+            if y_side == "ymin"
+            else ymin
+        )
+
+        z_outer = (
+            zmax
+            if z_side == "zmin"
+            else zmin
+        )
+
+        # 从坐标面向外偏移的方向。
+        sign_x_plane = (
+            -1.0
+            if x_side == "xmin"
+            else 1.0
+        )
+
+        sign_y_plane = (
+            -1.0
+            if y_side == "ymin"
+            else 1.0
+        )
+
+        sign_z_plane = (
+            -1.0
+            if z_side == "zmin"
+            else 1.0
+        )
+
+        # 从外侧边向外偏移的方向。
+        sign_x_outer = (
+            1.0
+            if x_outer == xmax
+            else -1.0
+        )
+
+        sign_y_outer = (
+            1.0
+            if y_outer == ymax
+            else -1.0
+        )
+
+        sign_z_outer = (
+            1.0
+            if z_outer == zmax
+            else -1.0
+        )
 
         self._clear_fixed_coordinate_axes()
 
         # ---------------------------------------------------------
-        # 统一网格步长和真实刻度
+        # 网格刻度。
         # ---------------------------------------------------------
         grid_step = self._get_fixed_grid_step(
             xmin=xmin,
@@ -626,101 +1532,85 @@ class PyVistaRenderer:
         )
 
         # ---------------------------------------------------------
-        # 标签和刻度向外偏移距离
+        # 基于模型最大尺寸计算距离。
         # ---------------------------------------------------------
-        offset_x = max(
-            abs(x_span) * 0.035,
-            grid_step * 0.40,
+        reference_span = max(
+            abs(x_span),
+            abs(y_span),
+            abs(z_span),
         )
 
-        offset_y = max(
-            abs(y_span) * 0.035,
-            grid_step * 0.40,
+        reference_span = max(
+            float(reference_span),
+            1e-12,
         )
 
-        offset_z = max(
-            abs(z_span) * 0.035,
-            grid_step * 0.40,
+        tick_x = (
+            reference_span
+            * COORDINATE_TICK_LENGTH_RATIO
         )
 
-        tick_x = max(
-            abs(x_span) * 0.012,
-            grid_step * 0.10,
+        tick_y = (
+            reference_span
+            * COORDINATE_TICK_LENGTH_RATIO
         )
 
-        tick_y = max(
-            abs(y_span) * 0.012,
-            grid_step * 0.10,
+        tick_label_offset = (
+            reference_span
+            * COORDINATE_TICK_LABEL_OFFSET_RATIO
         )
 
-        # =========================================================
-        # 统一 X / Y / Z 标题到各自刻度数字之间的真实距离
-        # =========================================================
-        axis_title_to_tick_gap = (
-            offset_y * (3.0 - 1.35)
+        axis_title_offset = (
+            tick_label_offset
+            + reference_span
+            * COORDINATE_AXIS_TITLE_GAP_RATIO
         )
 
-        # Y 轴刻度数字到 Y 边框的距离
-        y_axis_tick_label_offset = (
-            offset_x * 1.35
+        label_depth_offset = (
+            reference_span
+            * COORDINATE_LABEL_DEPTH_OFFSET_RATIO
         )
 
-        # Z 轴刻度数字到 Z 边框的距离
-        z_axis_tick_label_offset = (
-            offset_x * 1.35
-        )
-
-        # Y-axis 到 Y 轴边框的最终距离
-        y_axis_title_offset = (
-            y_axis_tick_label_offset
-            + axis_title_to_tick_gap
-        )
-
-        # Z-axis 到 Z 轴边框的最终距离
-        z_axis_title_offset = (
-            z_axis_tick_label_offset
-            + axis_title_to_tick_gap
-        )
-
-        # 带刻度的边：黑色加粗
+        # 主轴样式。
         axis_color = (0.12, 0.12, 0.12)
         axis_line_width = 1.8
 
-        # 普通边框
+        # 普通灰色边框样式。
         edge_color = (0.58, 0.58, 0.58)
         edge_line_width = 1.0
 
-        # 内部网格
+        # 内部网格样式。
         grid_color = (0.62, 0.62, 0.62)
         grid_line_width = 0.7
 
-        label_points = []
-        label_texts = []
+        label_specs = []
 
         # =========================================================
         # 1. XY 平面
         # z = z_plane
         # =========================================================
 
-        # 前方 X 刻度边
-        self._add_fixed_coordinate_line(
-            (xmin, y_outer, z_plane),
-            (xmax, y_outer, z_plane),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 前方 X 主轴。
+        if show_x_axis:
+            self._add_fixed_coordinate_line(
+                (xmin, y_outer, z_plane),
+                (xmax, y_outer, z_plane),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # 前方 Y 刻度边
-        self._add_fixed_coordinate_line(
-            (x_outer, ymin, z_plane),
-            (x_outer, ymax, z_plane),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 前方 Y 主轴。
+        if show_y_axis:
+            self._add_fixed_coordinate_line(
+                (x_outer, ymin, z_plane),
+                (x_outer, ymax, z_plane),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # XY 面另外两条普通边
+        # XY 面普通边框。
         self._add_fixed_coordinate_line(
             (xmin, y_plane, z_plane),
             (xmax, y_plane, z_plane),
@@ -737,7 +1627,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # XY 面 X 向网格
+        # XY 面 X 向网格。
         for x in x_ticks:
             self._add_fixed_coordinate_line(
                 (x, ymin, z_plane),
@@ -747,7 +1637,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # XY 面 Y 向网格
+        # XY 面 Y 向网格。
         for y in y_ticks:
             self._add_fixed_coordinate_line(
                 (xmin, y, z_plane),
@@ -762,25 +1652,27 @@ class PyVistaRenderer:
         # x = x_plane
         # =========================================================
 
-        # 左侧 Z 刻度边
-        self._add_fixed_coordinate_line(
-            (x_plane, y_outer, zmin),
-            (x_plane, y_outer, zmax),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 左侧 Z 主轴。
+        if show_z_axis:
+            self._add_fixed_coordinate_line(
+                (x_plane, y_outer, zmin),
+                (x_plane, y_outer, zmax),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # 顶部 Y 刻度边
-        self._add_fixed_coordinate_line(
-            (x_plane, ymin, z_outer),
-            (x_plane, ymax, z_outer),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 顶部 Y 主轴。
+        if show_y_axis:
+            self._add_fixed_coordinate_line(
+                (x_plane, ymin, z_outer),
+                (x_plane, ymax, z_outer),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # YZ 面另一条竖边
+        # YZ 面普通边框。
         self._add_fixed_coordinate_line(
             (x_plane, y_plane, zmin),
             (x_plane, y_plane, zmax),
@@ -789,7 +1681,6 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # YZ 面底边
         self._add_fixed_coordinate_line(
             (x_plane, ymin, z_plane),
             (x_plane, ymax, z_plane),
@@ -798,7 +1689,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # YZ 面 Y 向网格
+        # YZ 面 Y 向网格。
         for y in y_ticks:
             self._add_fixed_coordinate_line(
                 (x_plane, y, zmin),
@@ -808,7 +1699,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # YZ 面 Z 向网格
+        # YZ 面 Z 向网格。
         for z in z_ticks:
             self._add_fixed_coordinate_line(
                 (x_plane, ymin, z),
@@ -823,25 +1714,27 @@ class PyVistaRenderer:
         # y = y_plane
         # =========================================================
 
-        # 右侧 Z 刻度边
-        self._add_fixed_coordinate_line(
-            (x_outer, y_plane, zmin),
-            (x_outer, y_plane, zmax),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 右侧 Z 主轴。
+        if show_z_axis:
+            self._add_fixed_coordinate_line(
+                (x_outer, y_plane, zmin),
+                (x_outer, y_plane, zmax),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # 顶部 X 刻度边
-        self._add_fixed_coordinate_line(
-            (xmin, y_plane, z_outer),
-            (xmax, y_plane, z_outer),
-            color=axis_color,
-            line_width=axis_line_width,
-            opacity=1.0,
-        )
+        # 顶部 X 主轴。
+        if show_x_axis:
+            self._add_fixed_coordinate_line(
+                (xmin, y_plane, z_outer),
+                (xmax, y_plane, z_outer),
+                color=axis_color,
+                line_width=axis_line_width,
+                opacity=1.0,
+            )
 
-        # XZ 面另一条竖边
+        # XZ 面普通边框。
         self._add_fixed_coordinate_line(
             (x_plane, y_plane, zmin),
             (x_plane, y_plane, zmax),
@@ -850,7 +1743,6 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # XZ 面底边
         self._add_fixed_coordinate_line(
             (xmin, y_plane, z_plane),
             (xmax, y_plane, z_plane),
@@ -859,7 +1751,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # XZ 面 X 向网格
+        # XZ 面 X 向网格。
         for x in x_ticks:
             self._add_fixed_coordinate_line(
                 (x, y_plane, zmin),
@@ -869,7 +1761,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # XZ 面 Z 向网格
+        # XZ 面 Z 向网格。
         for z in z_ticks:
             self._add_fixed_coordinate_line(
                 (xmin, y_plane, z),
@@ -880,215 +1772,368 @@ class PyVistaRenderer:
             )
 
         # =========================================================
-        # 上方 X 轴刻度
+        # 顶部 X 轴刻度与数字
         # =========================================================
-        for x in x_ticks:
-            self._add_fixed_coordinate_line(
-                (x, y_plane, z_outer),
-                (
+        if show_x_axis:
+            for x in x_ticks:
+                axis_point = (
                     x,
-                    y_plane + sign_y_plane * tick_y,
+                    y_plane,
                     z_outer,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
-
-            label_points.append(
-                (
-                    x,
-                    y_plane + sign_y_plane * offset_y * 1.35,
-                    z_outer + sign_z_outer * offset_z * 0.08,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(x)
-            )
+                tick_end_point = (
+                    x,
+                    y_plane
+                    + sign_y_plane * tick_y,
+                    z_outer,
+                )
+
+                label_point = (
+                    x,
+                    y_plane
+                    + sign_y_plane
+                    * tick_label_offset,
+                    z_outer
+                    + sign_z_outer
+                    * label_depth_offset,
+                )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        x
+                    ),
+                )
 
         # =========================================================
-        # 上方 Y 轴刻度
+        # 顶部 Y 轴刻度与数字
         # =========================================================
-        for y in y_ticks:
-            self._add_fixed_coordinate_line(
-                (x_plane, y, z_outer),
-                (
-                    x_plane + sign_x_plane * tick_x,
+        if show_y_axis:
+            for y in y_ticks:
+                axis_point = (
+                    x_plane,
                     y,
                     z_outer,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
-
-            label_points.append(
-                (
-                    x_plane + sign_x_plane * offset_x * 1.35,
-                    y,
-                    z_outer + sign_z_outer * offset_z * 0.08,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(y)
-            )
+                tick_end_point = (
+                    x_plane
+                    + sign_x_plane * tick_x,
+                    y,
+                    z_outer,
+                )
+
+                label_point = (
+                    x_plane
+                    + sign_x_plane
+                    * tick_label_offset,
+                    y,
+                    z_outer
+                    + sign_z_outer
+                    * label_depth_offset,
+                )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        y
+                    ),
+                )
 
         # =========================================================
-        # 前方 X 轴刻度
+        # 前方 X 轴刻度与数字
         # =========================================================
-        for x in x_ticks:
-            self._add_fixed_coordinate_line(
-                (x, y_outer, z_plane),
-                (
+        if show_x_axis:
+            for x in x_ticks:
+                axis_point = (
                     x,
-                    y_outer + sign_y_outer * tick_y,
+                    y_outer,
                     z_plane,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
+                )
 
-            label_points.append(
-                (
+                tick_end_point = (
                     x,
-                    y_outer + sign_y_outer * offset_y * 1.35,
-                    z_plane + sign_z_plane * offset_z * 0.10,
+                    y_outer
+                    + sign_y_outer * tick_y,
+                    z_plane,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(x)
-            )
+                label_point = (
+                    x,
+                    y_outer
+                    + sign_y_outer
+                    * tick_label_offset,
+                    z_plane
+                    + sign_z_plane
+                    * label_depth_offset,
+                )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        x
+                    ),
+                )
 
         # =========================================================
-        # 前方 Y 轴刻度
+        # 前方 Y 轴刻度与数字
         # =========================================================
-        for y in y_ticks:
-            self._add_fixed_coordinate_line(
-                (x_outer, y, z_plane),
-                (
-                    x_outer + sign_x_outer * tick_x,
+        if show_y_axis:
+            for y in y_ticks:
+                axis_point = (
+                    x_outer,
                     y,
                     z_plane,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
-
-            label_points.append(
-                (
-                    x_outer + sign_x_outer * offset_x * 1.35,
-                    y,
-                    z_plane + sign_z_plane * offset_z * 0.10,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(y)
-            )
+                tick_end_point = (
+                    x_outer
+                    + sign_x_outer * tick_x,
+                    y,
+                    z_plane,
+                )
+
+                label_point = (
+                    x_outer
+                    + sign_x_outer
+                    * tick_label_offset,
+                    y,
+                    z_plane
+                    + sign_z_plane
+                    * label_depth_offset,
+                )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        y
+                    ),
+                )
 
         # =========================================================
-        # 左右两侧 Z 轴刻度
+        # 左右两侧 Z 轴刻度与数字
+        #
+        # 普通斜视图：
+        #     Z 刻度沿 X 方向外移。
+        #
+        # 左视图 / 右视图：
+        #     X 是屏幕深度方向。
+        #     Z 刻度和数字必须改为沿 Y 方向外移。
         # =========================================================
-        for z in z_ticks:
+        if show_z_axis:
+            for z in z_ticks:
 
-            # YZ 面外侧 Z 边
-            self._add_fixed_coordinate_line(
-                (x_plane, y_outer, z),
-                (
-                    x_plane + sign_x_plane * tick_x,
+                # -------------------------------------------------
+                # 第一条 Z 边：YZ 面外侧
+                # 位置：x_plane, y_outer
+                # -------------------------------------------------
+                axis_point = (
+                    x_plane,
                     y_outer,
                     z,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
-
-            label_points.append(
-                (
-                    x_plane + sign_x_plane * offset_x * 1.35,
-                    y_outer,
-                    z,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(z)
-            )
+                if is_side_x_view:
+                    tick_end_point = (
+                        x_plane,
+                        y_outer
+                        + sign_y_outer * tick_y,
+                        z,
+                    )
 
-            # XZ 面外侧 Z 边
-            self._add_fixed_coordinate_line(
-                (x_outer, y_plane, z),
-                (
-                    x_outer + sign_x_outer * tick_x,
+                    label_point = (
+                        x_plane,
+                        y_outer
+                        + sign_y_outer
+                        * tick_label_offset,
+                        z,
+                    )
+
+                else:
+                    tick_end_point = (
+                        x_plane
+                        + sign_x_plane * tick_x,
+                        y_outer,
+                        z,
+                    )
+
+                    label_point = (
+                        x_plane
+                        + sign_x_plane
+                        * tick_label_offset,
+                        y_outer,
+                        z,
+                    )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        z
+                    ),
+                )
+
+                # -------------------------------------------------
+                # 第二条 Z 边：XZ 面外侧
+                # 位置：x_outer, y_plane
+                # -------------------------------------------------
+                axis_point = (
+                    x_outer,
                     y_plane,
                     z,
-                ),
-                color=axis_color,
-                line_width=1.2,
-                opacity=1.0,
-            )
-
-            label_points.append(
-                (
-                    x_outer + sign_x_outer * offset_x * 1.35,
-                    y_plane,
-                    z,
                 )
-            )
 
-            label_texts.append(
-                self._format_fixed_coordinate_value(z)
-            )
+                if is_side_x_view:
+                    tick_end_point = (
+                        x_outer,
+                        y_plane
+                        + sign_y_plane * tick_y,
+                        z,
+                    )
+
+                    label_point = (
+                        x_outer,
+                        y_plane
+                        + sign_y_plane
+                        * tick_label_offset,
+                        z,
+                    )
+
+                else:
+                    tick_end_point = (
+                        x_outer
+                        + sign_x_outer * tick_x,
+                        y_plane,
+                        z,
+                    )
+
+                    label_point = (
+                        x_outer
+                        + sign_x_outer
+                        * tick_label_offset,
+                        y_plane,
+                        z,
+                    )
+
+                self._add_fixed_coordinate_tick_with_label(
+                    label_specs=label_specs,
+                    axis_point=axis_point,
+                    tick_end_point=tick_end_point,
+                    label_point=label_point,
+                    text=self._format_fixed_coordinate_value(
+                        z
+                    ),
+                )
 
         # =========================================================
         # 坐标轴标题
-        #
-        # X-axis 保持原位置。
-        #
-        # Y-axis、Z-axis 到各自刻度数字的真实三维距离，
-        # 均与 X-axis 到 X 轴刻度数字的距离一致。
         # =========================================================
-        label_points.extend([
-            # X-axis
-            (
+
+        # X-axis
+        if show_x_axis:
+            axis_point = (
                 (xmin + xmax) * 0.5,
-                y_outer + sign_y_outer * offset_y * 3.0,
-                z_plane + sign_z_plane * offset_z * 0.10,
-            ),
+                y_outer,
+                z_plane,
+            )
 
-            # Y-axis
-            (
-                x_outer + sign_x_outer * y_axis_title_offset,
+            label_point = (
+                (xmin + xmax) * 0.5,
+                y_outer
+                + sign_y_outer
+                * axis_title_offset,
+                z_plane
+                + sign_z_plane
+                * label_depth_offset,
+            )
+
+            self._append_fixed_coordinate_label_spec(
+                label_specs=label_specs,
+                axis_point=axis_point,
+                label_point=label_point,
+                text="X-axis",
+            )
+
+        # Y-axis
+        if show_y_axis:
+            axis_point = (
+                x_outer,
                 (ymin + ymax) * 0.5,
-                z_plane + sign_z_plane * offset_z * 0.10,
-            ),
+                z_plane,
+            )
 
-            # Z-axis
-            (
-                x_plane + sign_x_plane * z_axis_title_offset,
+            label_point = (
+                x_outer
+                + sign_x_outer
+                * axis_title_offset,
+                (ymin + ymax) * 0.5,
+                z_plane
+                + sign_z_plane
+                * label_depth_offset,
+            )
+
+            self._append_fixed_coordinate_label_spec(
+                label_specs=label_specs,
+                axis_point=axis_point,
+                label_point=label_point,
+                text="Y-axis",
+            )
+
+        # Z-axis
+        if show_z_axis:
+            axis_point = (
+                x_plane,
                 y_outer,
                 (zmin + zmax) * 0.5,
-            ),
-        ])
+            )
 
-        label_texts.extend([
-            "X-axis",
-            "Y-axis",
-            "Z-axis",
-        ])
+            if is_side_x_view:
+                label_point = (
+                    x_plane,
+                    y_outer
+                    + sign_y_outer
+                    * axis_title_offset,
+                    (zmin + zmax) * 0.5,
+                )
 
-        self._create_fixed_coordinate_labels(
-            label_points=label_points,
-            label_texts=label_texts,
-        )
+            else:
+                label_point = (
+                    x_plane
+                    + sign_x_plane
+                    * axis_title_offset,
+                    y_outer,
+                    (zmin + zmax) * 0.5,
+                )
 
-        self.cache["fixed_coordinate_bounds"] = (
+            self._append_fixed_coordinate_label_spec(
+                label_specs=label_specs,
+                axis_point=axis_point,
+                label_point=label_point,
+                text="Z-axis",
+            )
+
+        self.cache[
+            "fixed_coordinate_label_specs"
+        ] = label_specs
+
+        self.cache[
+            "fixed_coordinate_bounds"
+        ] = (
             xmin,
             xmax,
             ymin,
@@ -1097,19 +2142,29 @@ class PyVistaRenderer:
             zmax,
         )
 
-        self.cache["fixed_coordinate_visible"] = True
-        self.cache["camera_aware_coordinate_signature"] = signature
+        self.cache[
+            "fixed_coordinate_visible"
+        ] = True
 
+        self.cache[
+            "camera_aware_coordinate_signature"
+        ] = signature
+
+        self.cache[
+            "fixed_coordinate_hidden_axis"
+        ] = hidden_axis
+
+        self._update_fixed_coordinate_label_alignments(
+            force=True
+        )
 
     # =====================================================================
     # 相机旋转监听
     # =====================================================================
-
     def _get_render_interactor_for_coordinate_axes(self):
         """
         获取 PyVistaQt / PyVista 的交互器。
         """
-
         candidates = [
             getattr(self.plotter, "iren", None),
             getattr(self.vtk_widget, "iren", None),
@@ -1133,9 +2188,18 @@ class PyVistaRenderer:
                 None,
             )
 
-            if inner_interactor is not None and (
-                hasattr(inner_interactor, "add_observer")
-                or hasattr(inner_interactor, "AddObserver")
+            if (
+                inner_interactor is not None
+                and (
+                    hasattr(
+                        inner_interactor,
+                        "add_observer",
+                    )
+                    or hasattr(
+                        inner_interactor,
+                        "AddObserver",
+                    )
+                )
             ):
                 return inner_interactor
 
@@ -1144,9 +2208,8 @@ class PyVistaRenderer:
 
     def _remove_camera_aware_coordinate_observers(self):
         """
-        取消动态坐标系的相机监听器。
+        取消动态坐标系相机监听器。
         """
-
         observers = self.cache.get(
             "camera_aware_coordinate_observers",
             [],
@@ -1157,11 +2220,21 @@ class PyVistaRenderer:
                 continue
 
             try:
-                if hasattr(interactor, "remove_observer"):
-                    interactor.remove_observer(observer_id)
+                if hasattr(
+                    interactor,
+                    "remove_observer",
+                ):
+                    interactor.remove_observer(
+                        observer_id
+                    )
 
-                elif hasattr(interactor, "RemoveObserver"):
-                    interactor.RemoveObserver(observer_id)
+                elif hasattr(
+                    interactor,
+                    "RemoveObserver",
+                ):
+                    interactor.RemoveObserver(
+                        observer_id
+                    )
 
             except Exception:
                 pass
@@ -1176,10 +2249,11 @@ class PyVistaRenderer:
         event_name,
     ):
         """
-        监听旋转、平移、缩放过程中的相机变化。
+        监听旋转、缩放、平移等相机变化。
         """
-
-        interactor = self._get_render_interactor_for_coordinate_axes()
+        interactor = (
+            self._get_render_interactor_for_coordinate_axes()
+        )
 
         if interactor is None:
             print("动态坐标系监听失败：未获取到 interactor")
@@ -1194,6 +2268,7 @@ class PyVistaRenderer:
                     event_name,
                     _callback,
                 )
+
             else:
                 observer_id = interactor.AddObserver(
                     event_name,
@@ -1208,9 +2283,7 @@ class PyVistaRenderer:
                     observer_id,
                 )
             )
-
             return observer_id
-
         except Exception as exc:
             print("=" * 60)
             print("动态坐标系监听器注册失败：")
@@ -1222,9 +2295,8 @@ class PyVistaRenderer:
 
     def _update_camera_aware_coordinate_axes(self):
         """
-        拖动旋转过程中自动执行。
+        相机旋转、缩放、平移过程中自动执行。
         """
-
         if not self.cache.get(
             "camera_aware_coordinate_enabled",
             False,
@@ -1238,8 +2310,10 @@ class PyVistaRenderer:
         if bounds is None:
             return
 
-        new_signature = self._get_camera_aware_coordinate_signature(
-            bounds
+        new_signature = (
+            self._get_camera_aware_coordinate_signature(
+                bounds
+            )
         )
 
         if new_signature is None:
@@ -1249,64 +2323,69 @@ class PyVistaRenderer:
             "camera_aware_coordinate_signature"
         )
 
-        if new_signature == old_signature:
-            return
-
-        self.create_fixed_3d_coordinate_axes(
-            bounds=bounds,
-            approx_divisions=COORDINATE_APPROX_DIVISIONS,
-            signature=new_signature,
+        new_hidden_axis = (
+            self._get_hidden_coordinate_axis_for_standard_view()
         )
 
-        self._render()
+        old_hidden_axis = self.cache.get(
+            "fixed_coordinate_hidden_axis"
+        )
+        if (
+            new_signature != old_signature
+            or new_hidden_axis != old_hidden_axis
+        ):
+            self.create_fixed_3d_coordinate_axes(
+                bounds=bounds,
+                approx_divisions=COORDINATE_APPROX_DIVISIONS,
+                signature=new_signature,
+            )
+
+            self._render()
+            return
+        labels_changed = (
+            self._update_fixed_coordinate_label_alignments(
+                force=False
+            )
+        )
+        if labels_changed:
+            self._render()
 
 
     # =====================================================================
     # UI 调用接口
     # =====================================================================
-
     def show_coordinate_axes_for_model(self, sim_data):
         """
-        根据当前模型显示动态坐标系。
+        根据当前完整模型显示动态三面坐标系。
         """
-
         model_bounds = self.get_corner_model_bounds(
             sim_data
         )
-
         if model_bounds is None:
             print("=" * 60)
-            print("显示坐标系失败：当前模型没有有效角点网格。")
-            print("需要 cell_geometry_with_pressure 数据。")
+            print("显示坐标系失败：当前没有有效网格、裂缝或井坐标数据。")
             print("=" * 60)
             return False
-
         try:
             self.cache[
                 "camera_aware_coordinate_enabled"
             ] = True
-
-            signature = self._get_camera_aware_coordinate_signature(
-                model_bounds
+            signature = (
+                self._get_camera_aware_coordinate_signature(
+                    model_bounds
+                )
             )
-
             self.create_fixed_3d_coordinate_axes(
                 bounds=model_bounds,
                 approx_divisions=COORDINATE_APPROX_DIVISIONS,
                 signature=signature,
             )
-
-            # 防止重复点击“显示坐标系”后注册多个监听器
             self._remove_camera_aware_coordinate_observers()
-
             self._add_camera_aware_coordinate_observer(
                 "InteractionEvent"
             )
-
             self._render()
-
             return True
-
         except Exception as exc:
             print("=" * 60)
             print("显示动态坐标系失败：")
@@ -1318,22 +2397,18 @@ class PyVistaRenderer:
     def hide_coordinate_axes(self):
         """
         隐藏坐标系并停止监听相机。
-        不影响压力场、井、裂缝。
+        不影响压力场、井、裂缝等其他 actor。
         """
-
         self.cache[
             "camera_aware_coordinate_enabled"
         ] = False
-
         self._remove_camera_aware_coordinate_observers()
-
         for actor in self.cache.get(
             "fixed_coordinate_axis_actors",
             [],
         ) or []:
             if actor is None:
                 continue
-
             try:
                 actor.visibility = False
             except Exception:
@@ -1341,22 +2416,22 @@ class PyVistaRenderer:
                     actor.SetVisibility(False)
                 except Exception:
                     pass
-
-        label_actor = self.cache.get(
-            "fixed_coordinate_label_actor"
-        )
-
-        if label_actor is not None:
+        for actor in self.cache.get(
+            "fixed_coordinate_label_actors",
+            [],
+        ) or []:
+            if actor is None:
+                continue
             try:
-                label_actor.visibility = False
+                actor.visibility = False
             except Exception:
                 try:
-                    label_actor.SetVisibility(False)
+                    actor.SetVisibility(False)
                 except Exception:
                     pass
-
-        self.cache["fixed_coordinate_visible"] = False
-
+        self.cache[
+            "fixed_coordinate_visible"
+        ] = False
         self._render()
 
 
@@ -1365,24 +2440,14 @@ class PyVistaRenderer:
         clear_axes=True,
     ):
         """
-        完全关闭动态坐标系。
-
-        clear_axes=True：
-            删除坐标系 actor。
-
-        clear_axes=False：
-            只停止监听，保留当前显示结果。
+        完全关闭动态三面坐标系。
         """
-
         self.cache[
             "camera_aware_coordinate_enabled"
         ] = False
-
         self._remove_camera_aware_coordinate_observers()
-
         if clear_axes:
             self._clear_fixed_coordinate_axes()
-
         self._render()
 
 
@@ -1467,28 +2532,27 @@ class PyVistaRenderer:
             "time_playback_scalar_bar": None,
             "time_playback_surface": None,
             "time_playback_source_cell_ids": None,
-
             "time_playback_steps": None,
             "time_playback_values": None,
-
             "time_playback_property": None,
             "time_playback_scalar_name": None,
             "time_playback_scalar_bar_title": None,
-
             "time_playback_mode": None,
             "time_playback_axis": None,
             "time_playback_layer_index": None,
-
             "time_playback_current_index": -1,
             "time_playback_clim": None,
             "time_playback_selected_cell_ids": None,
 
-            #动态三面坐标系
+            # 动态三面坐标系
             "fixed_coordinate_axis_actors": [],
             "fixed_coordinate_label_actor": None,
+            "fixed_coordinate_label_actors": [],
+            "fixed_coordinate_label_specs": [],
+            "fixed_coordinate_label_layout_signature": None,
             "fixed_coordinate_bounds": None,
             "fixed_coordinate_visible": False,
-
+            "fixed_coordinate_hidden_axis": None,
             "camera_aware_coordinate_enabled": False,
             "camera_aware_coordinate_signature": None,
             "camera_aware_coordinate_observers": [],
@@ -1985,46 +3049,11 @@ class PyVistaRenderer:
 
         self.setup_camera(sim_data)
         self._render()
-
+    
+    #裂缝旧接口
     def render_fractures(self, sim_data):
-        self._remove_actor_list(self.cache["fracture_actors"])
-        self.cache["fracture_actors"] = []
-
-        if not sim_data.fractures:
-            return
-
-        for fracture in sim_data.fractures:
-            frac_points = fracture["points"]
-            if len(frac_points) >= 3:
-                points = np.array(frac_points, dtype=float)
-                polygon = pv.PolyData(points)
-                polygon.faces = np.array([len(frac_points), *range(len(frac_points))], dtype=np.int32)
-
-                actor = self.plotter.add_mesh(
-                    polygon,
-                    color=(0.72, 0.38, 0.38),
-                    opacity=0.85,
-                    show_edges=False,
-                    edge_color=(0.54, 0.29, 0.29),
-                    line_width=1.0,
-                    render=False,
-                )
-                self.cache["fracture_actors"].append(actor)
-
-                edge_lines = []
-                for index in range(len(frac_points)):
-                    edge_lines.append(pv.Line(frac_points[index], frac_points[(index + 1) % len(frac_points)]))
-                if edge_lines:
-                    edge_actor = self.plotter.add_mesh(
-                        pv.MultiBlock(edge_lines),
-                        color=(0.54, 0.29, 0.29),
-                        line_width=1.5,
-                        render=False,
-                    )
-                    self.cache["fracture_actors"].append(edge_actor)
-
-        self._render()
-
+        self.render_corner_fractures(sim_data)
+ 
     def create_grid_lines(self, sim_data):
         self._remove_actor(self.cache["grid_lines_actor"])
         self.cache["grid_lines_actor"] = None
@@ -2582,80 +3611,88 @@ class PyVistaRenderer:
 
     #不处理裂缝数据，直接渲染
     def render_corner_fractures(self, sim_data):
-        self._remove_actor_list(self.cache["fracture_actors"])
+
+        self._remove_actor_list(
+            self.cache["fracture_actors"]
+        )
         self.cache["fracture_actors"] = []
 
         if not sim_data.fractures:
             return
 
-        grid_min_x = grid_min_y = grid_min_z = 0.0
-        grid_max_x = sim_data.grid_info.get("Lx", 1000.0)
-        grid_max_y = sim_data.grid_info.get("Ly", 500.0)
-        grid_max_z = sim_data.grid_info.get("Lz", 100.0)
-
         for fracture in sim_data.fractures:
+            frac_points = fracture.get("points", []) or []
 
-            # =========================================================
-            # 裂缝类型判断
-            # is_hydraulic:
-            #   1 -> 人工裂缝
-            #   0 -> 天然裂缝
-            # =========================================================
-            is_hydraulic = int(fracture.get("is_hydraulic", 0)) == 1 or fracture.get("type") == "hydraulic"
-
-            if is_hydraulic:
-                # 人工裂缝
-                frac_color = (0.72, 0.38, 0.38)
-                edge_color = (0.54, 0.29, 0.29)
-                ambient = 0.85
-                diffuse = 0.35
-                specular = 0.45
-            else:
-                # 天然裂缝
-                frac_color = (0.0, 0.25, 0.4)
-                edge_color = (0.0, 0.15, 0.25)
-                ambient = 0.85
-                diffuse = 0.65
-                specular = 0.10
-
-            all_pts = [list(pt) for pt in fracture["points"]]
-
-            margin = 1.0
-            out_of_bounds = False
-            for pt in all_pts:
-                if not (
-                    grid_min_x - margin <= pt[0] <= grid_max_x + margin
-                    and grid_min_y - margin <= pt[1] <= grid_max_y + margin
-                    and grid_min_z - margin <= pt[2] <= grid_max_z + margin
-                ):
-                    out_of_bounds = True
-                    break
-            if out_of_bounds:
+            if len(frac_points) < 3:
                 continue
 
-            points = np.array(all_pts, dtype=float)
+            # -----------------------------------------------------
+            # 裂缝类型判断
+            # -----------------------------------------------------
+            is_hydraulic = (
+                int(fracture.get("is_hydraulic", 0)) == 1
+                or fracture.get("type") == "hydraulic"
+            )
+
+            if is_hydraulic:
+                # 人工裂缝：红色
+                frac_color = (0.72, 0.38, 0.38)
+                edge_color = (0.54, 0.29, 0.29)
+            else:
+                # 天然裂缝：深蓝色
+                frac_color = (0.0, 0.25, 0.4)
+                edge_color = (0.0, 0.15, 0.25)
+
+            points = np.array(
+                frac_points,
+                dtype=float,
+            )
+
             polygon = pv.PolyData(points)
+
             polygon.faces = np.array(
-                [len(all_pts), *range(len(all_pts))],
-                dtype=np.int32
+                [len(frac_points), *range(len(frac_points))],
+                dtype=np.int32,
             )
 
             actor = self.plotter.add_mesh(
                 polygon,
                 color=frac_color,
-                edge_color=edge_color,
-                opacity=0.92,
+                opacity=0.999,
                 show_edges=False,
-                line_width=1.5,
-                lighting=True,
-                smooth_shading=True,
-                ambient=ambient,
-                diffuse=diffuse,
-                specular=specular,
-                specular_power=20,
+                edge_color=edge_color,
+                line_width=1.0,
                 render=False,
             )
+
             self.cache["fracture_actors"].append(actor)
+
+            edge_lines = []
+
+            for index in range(len(frac_points)):
+                start_point = frac_points[index]
+                end_point = frac_points[
+                    (index + 1) % len(frac_points)
+                ]
+
+                edge_lines.append(
+                    pv.Line(
+                        start_point,
+                        end_point,
+                    )
+                )
+
+            if edge_lines:
+                edge_actor = self.plotter.add_mesh(
+                    pv.MultiBlock(edge_lines),
+                    color=edge_color,
+                    line_width=0,
+                    render=False,
+                )
+
+                self.cache["fracture_actors"].append(
+                    edge_actor
+                )
 
         self._render()
 
@@ -2664,76 +3701,241 @@ class PyVistaRenderer:
         self.cache["fracture_actors"] = []
         self._render()
 
-    #渲染井
+    #井
+    def set_parsed_well_data(self, well_data):
+        """
+        保存 uniform_parser.parse_wells() 返回的井数据。
+        """
+        if not isinstance(well_data, dict):
+            print("[WellRender] 设置井数据失败：well_data 不是 dict。")
+            self._parsed_well_data = None
+            return
+        wells = well_data.get("wells", [])
+        if not isinstance(wells, list):
+            print("[WellRender] 设置井数据失败：well_data 中没有 wells 列表。")
+            self._parsed_well_data = None
+            return
+
+        self._parsed_well_data = well_data
+        print(
+            f"[WellRender] 已保存解析井数据：{len(wells)} 口井"
+        )
+
+    # =====================================================================
+    # 渲染井
+    #
+    # 数据来源：
+    # uniform_parser.parse_wells() 返回的 well_data
+    # =====================================================================
+
     def render_wells(self, sim_data):
-        self._remove_actor_list(self.cache["well_actors"])
+        """
+        根据 parse_wells() 返回的 JSON/dict 直接渲染真实井轨迹。
+        井轨迹数据来自 self._parsed_well_data。
+        """
+        self._remove_actor_list(
+            self.cache["well_actors"]
+        )
         self.cache["well_actors"] = []
-
-        if not getattr(sim_data, "fractures", None):
+        # -------------------------------------------------------------
+        # 1. 获取 parse_wells() 保存的数据
+        # -------------------------------------------------------------
+        # 模拟完成后，优先从当前 sim_data 获取 parser 解析出的井 JSON。
+        well_data = getattr(
+            sim_data,
+            "parsed_well_data",
+            None,
+        )
+        # 以后做“模拟前井预览”时，仍可通过 set_parsed_well_data() 使用这个备用入口。
+        if not isinstance(well_data, dict):
+            well_data = getattr(
+                self,
+                "_parsed_well_data",
+                None,
+            )
+        if not isinstance(well_data, dict):
+            print(
+                "[WellRender] 当前没有井数据。"
+            )
+            print(
+                "[WellRender] 请先调用："
+                "renderer.set_parsed_well_data(well_data)"
+            )
+            self._render()
+            return
+        wells = well_data.get(
+            "wells",
+            [],
+        )
+        if not isinstance(wells, list) or not wells:
+            print(
+                "[WellRender] well_data 中没有可渲染的井。"
+            )
+            self._render()
             return
 
-        centers = []
-
-        grid_min_x = grid_min_y = grid_min_z = 0.0
-        grid_max_x = sim_data.grid_info.get("Lx", 1000.0)
-        grid_max_y = sim_data.grid_info.get("Ly", 500.0)
-        grid_max_z = sim_data.grid_info.get("Lz", 100.0)
-
-        for frac in sim_data.fractures:
-
-            if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
+        rendered_count = 0
+        # -------------------------------------------------------------
+        # 2. 每口井单独绘制
+        # -------------------------------------------------------------
+        for well in wells:
+            if not isinstance(well, dict):
                 continue
 
-            all_pts = np.array(frac["points"], dtype=float)
-            if len(all_pts) < 3:  
-                continue
+            well_name = str(
+                well.get(
+                    "well_name",
+                    "Unknown",
+                )
+            ).strip()
 
-            margin = 1.0
-            out_of_bounds = False
-            for pt in all_pts:
-                if not (
-                    grid_min_x - margin <= pt[0] <= grid_max_x + margin
-                    and grid_min_y - margin <= pt[1] <= grid_max_y + margin
-                    and grid_min_z - margin <= pt[2] <= grid_max_z + margin
+            raw_track = well.get(
+                "track",
+                [],
+            )
+            if not isinstance(raw_track, list):
+                continue
+            # ---------------------------------------------------------
+            # 3. 从 track 中提取真实 XYZ 坐标
+            #
+            # track 每项格式：
+            # {
+            #     "md_m": ...,
+            #     "x_m": ...,
+            #     "y_m": ...,
+            #     "z_m": ...
+            # }
+            # ---------------------------------------------------------
+            valid_points = []
+            for point in raw_track:
+                if not isinstance(point, dict):
+                    continue
+
+                try:
+                    md = float(
+                        point["md_m"]
+                    )
+                    x = float(
+                        point["x_m"]
+                    )
+                    y = float(
+                        point["y_m"]
+                    )
+                    z = float(
+                        point["z_m"]
+                    )
+                except (
+                    KeyError,
+                    TypeError,
+                    ValueError,
                 ):
-                    out_of_bounds = True
-                    break
-            if out_of_bounds:
+                    continue
+
+                if not np.isfinite(
+                    [md, x, y, z]
+                ).all():
+                    continue
+                valid_points.append(
+                    (
+                        md,
+                        np.array(
+                            [x, y, z],
+                            dtype=float,
+                        ),
+                    )
+                )
+            if len(valid_points) < 2:
+                print(
+                    f"[WellRender] {well_name} "
+                    "有效轨迹点少于 2 个，跳过。"
+                )
                 continue
-
-            real_center = np.mean(all_pts, axis=0)
-            centers.append(real_center)
-
-        if len(centers) < 2:
-            return
-
-        centers = np.array(centers)
-        sorted_idx = np.argsort(centers[:, 0])
-        ordered_centers = centers[sorted_idx]
-
-        segments = [
-            (ordered_centers[i].tolist(), ordered_centers[i+1].tolist())
-            for i in range(len(ordered_centers)-1)
-        ]
-
-        well_line = self._polydata_from_line_segments(segments)
-        if well_line is not None:
+            # ---------------------------------------------------------
+            # 4. 按 md_m 排序
+            #
+            # parse_wells 本身已经排过序；
+            # 这里再排一次，避免数据被外部修改后出错。
+            # ---------------------------------------------------------
+            valid_points.sort(
+                key=lambda item: item[0]
+            )
+            ordered_points = []
+            for _, xyz in valid_points:
+                if not ordered_points:
+                    ordered_points.append(
+                        xyz
+                    )
+                    continue
+                # 过滤连续重复点，防止出现零长度 tube
+                if np.linalg.norm(
+                    xyz - ordered_points[-1]
+                ) > 1e-8:
+                    ordered_points.append(
+                        xyz
+                    )
+            if len(ordered_points) < 2:
+                print(
+                    f"[WellRender] {well_name} "
+                    "去重后轨迹点少于 2 个，跳过。"
+                )
+                continue
+            # ---------------------------------------------------------
+            # 5. 相邻轨迹点连接成线段
+            # ---------------------------------------------------------
+            segments = [
+                (
+                    ordered_points[index].tolist(),
+                    ordered_points[index + 1].tolist(),
+                )
+                for index in range(
+                    len(ordered_points) - 1
+                )
+            ]
+            well_line = self._polydata_from_line_segments(
+                segments
+            )
+            if well_line is None:
+                continue
+            # ---------------------------------------------------------
+            # 6. 生成井筒 tube
+            #
+            # radius=2.0 只是视觉显示半径，
+            # 不是实际井径，不影响任何模拟数据。
+            # ---------------------------------------------------------
+            well_tube = well_line.tube(
+                radius=2.0,
+                n_sides=16,
+                capping=True,
+            )
             actor = self.plotter.add_mesh(
-                well_line.tube(radius=2.0),
-                color=(0.31, 0.35, 0.40),
-                opacity=1.0,
+                well_tube,
+                color=(0.08, 0.24, 0.62),
+                opacity=0.999,
                 lighting=True,
                 ambient=0.9,
                 diffuse=1.0,
-                render=False
+                render=False,
             )
-            self.cache["well_actors"].append(actor)
-
+            self.cache["well_actors"].append(
+                actor
+            )
+            rendered_count += 1
+            print(
+                f"[WellRender] 已渲染井：{well_name}，"
+                f"轨迹点数={len(ordered_points)}"
+            )
+        print(
+            f"[WellRender] 井渲染完成："
+            f"{rendered_count}/{len(wells)} 口井"
+        )
         self._render()
 
     def hide_wells(self):
-        self._remove_actor_list(self.cache["well_actors"])
+        self._remove_actor_list(
+            self.cache["well_actors"]
+        )
         self.cache["well_actors"] = []
+
         self._render()
 
     def render_corner_wells(self, sim_data):
@@ -6510,9 +7712,6 @@ class PyVistaRenderer:
 
         self._render()
 
-
-
-
     def _get_current_model_bounds(self):
         """
         获取当前模型的空间范围。
@@ -6632,6 +7831,12 @@ class PyVistaRenderer:
 
         self.plotter.camera_position = camera_position
         self.plotter.reset_camera_clipping_range()
+        if self.cache.get(
+            "camera_aware_coordinate_enabled",
+            False,
+        ):
+            self._update_camera_aware_coordinate_axes()
+
         self._render()
 
 
@@ -10669,4 +11874,3415 @@ class PyVistaRenderer:
                 "magnify_2d_active",
                 False,
             )
+        )
+
+
+
+
+
+
+
+
+    # =========================================================
+    # K 层真实三维上表面等值线：基础依赖函数
+    # =========================================================
+
+    def _get_k_surface_contour_property_config(
+        self,
+        property_name,
+    ):
+        """
+        cell_geometry_with_pressure 属性列：
+
+        28: Pressure
+        29: Kx
+        30: Ky
+        31: Kz
+        32: Phi
+        33: Sw
+        """
+
+        name = str(property_name).strip()
+
+        config_map = {
+            "Pressure": {
+                "column": 28,
+                "scalar_name": "Pressure",
+            },
+            "P": {
+                "column": 28,
+                "scalar_name": "Pressure",
+            },
+            "Kx": {
+                "column": 29,
+                "scalar_name": "Kx",
+            },
+            "Ky": {
+                "column": 30,
+                "scalar_name": "Ky",
+            },
+            "Kz": {
+                "column": 31,
+                "scalar_name": "Kz",
+            },
+            "Phi": {
+                "column": 32,
+                "scalar_name": "Phi",
+            },
+            "Porosity": {
+                "column": 32,
+                "scalar_name": "Phi",
+            },
+            "Sw": {
+                "column": 33,
+                "scalar_name": "Sw",
+            },
+        }
+
+        if name not in config_map:
+            print("=" * 60)
+            print(
+                "[K Surface Contour] 不支持属性：",
+                property_name,
+            )
+            print(
+                "[K Surface Contour] 支持属性："
+                "Pressure / P / Kx / Ky / Kz / "
+                "Phi / Porosity / Sw"
+            )
+            print("=" * 60)
+            return None
+
+        return config_map[name]
+
+
+    def _get_hexahedron_top_face_ids(
+        self,
+        pts8,
+    ):
+        """
+        从一个 HEXAHEDRON 的 6 个面中，
+        找平均 Z 最大的面，作为这个 leaf cell 的上表面。
+
+        返回：
+            list[int]，长度为 4。
+        """
+
+        pts8 = np.asarray(
+            pts8,
+            dtype=np.float64,
+        )
+
+        if pts8.shape != (8, 3):
+            return None
+
+        face_table = [
+            [0, 1, 2, 3],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ]
+
+        best_face_ids = None
+        best_mean_z = -np.inf
+
+        for face_ids in face_table:
+            mean_z = float(
+                np.mean(
+                    pts8[face_ids, 2]
+                )
+            )
+
+            if mean_z > best_mean_z:
+                best_mean_z = mean_z
+                best_face_ids = face_ids
+
+        return best_face_ids
+
+
+    def _build_k_layer_top_faces(
+        self,
+        sim_data,
+        property_name,
+        k_layer,
+    ):
+        """
+        提取当前 K 层所有 leaf cell 的真实上表面。
+        """
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            print(
+                "[K Surface Contour] "
+                "cell_geometry_with_pressure 不存在。"
+            )
+            return None, None, None, None
+
+        cell_data = np.asarray(
+            cell_data,
+            dtype=np.float64,
+        )
+
+        if (
+            cell_data.ndim != 2
+            or cell_data.shape[0] == 0
+        ):
+            print(
+                "[K Surface Contour] "
+                "cell_geometry_with_pressure 为空。"
+            )
+            return None, None, None, None
+
+        config = self._get_k_surface_contour_property_config(
+            property_name
+        )
+
+        if config is None:
+            return None, None, None, None
+
+        property_column = int(
+            config["column"]
+        )
+
+        if cell_data.shape[1] <= property_column:
+            print(
+                "[K Surface Contour] "
+                f"属性列不存在：column={property_column}, "
+                f"当前列数={cell_data.shape[1]}"
+            )
+            return None, None, None, None
+
+        try:
+            row_indices = self._get_layer_row_indices_by_parent_id(
+                sim_data=sim_data,
+                axis="k",
+                layer_index=int(k_layer),
+                cell_data=cell_data,
+            )
+        except Exception as exc:
+            print("=" * 60)
+            print("[K Surface Contour] K 层 leaf cell 筛选失败：")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+            return None, None, None, None
+
+        row_indices = np.asarray(
+            row_indices,
+            dtype=np.int64,
+        )
+
+        if row_indices.size == 0:
+            print(
+                f"[K Surface Contour] K={k_layer} 没有 leaf cell。"
+            )
+            return None, None, None, None
+
+        selected_rows = cell_data[
+            row_indices
+        ]
+
+        selected_values = selected_rows[
+            :,
+            property_column,
+        ].astype(
+            np.float64
+        )
+
+        valid_mask = np.isfinite(
+            selected_values
+        )
+
+        selected_rows = selected_rows[
+            valid_mask
+        ]
+
+        selected_values = selected_values[
+            valid_mask
+        ]
+
+        if selected_rows.shape[0] == 0:
+            print(
+                f"[K Surface Contour] K={k_layer} 没有有效属性值。"
+            )
+            return None, None, None, None
+
+        face_points = []
+        face_values = []
+
+        vertex_xy = []
+        vertex_values = []
+
+        skipped_count = 0
+
+        for row, value in zip(
+            selected_rows,
+            selected_values,
+        ):
+            try:
+                pts8 = np.asarray(
+                    row[4:28],
+                    dtype=np.float64,
+                ).reshape(8, 3)
+            except Exception:
+                skipped_count += 1
+                continue
+
+            if not np.all(
+                np.isfinite(pts8)
+            ):
+                skipped_count += 1
+                continue
+
+            top_face_ids = self._get_hexahedron_top_face_ids(
+                pts8
+            )
+
+            if top_face_ids is None:
+                skipped_count += 1
+                continue
+
+            top4 = pts8[
+                top_face_ids
+            ].copy()
+
+            if top4.shape != (4, 3):
+                skipped_count += 1
+                continue
+
+            face_points.append(
+                top4
+            )
+
+            face_values.append(
+                float(value)
+            )
+
+            for point in top4:
+                vertex_xy.append([
+                    float(point[0]),
+                    float(point[1]),
+                ])
+
+                vertex_values.append(
+                    float(value)
+                )
+
+        if len(face_points) < 2:
+            print(
+                "[K Surface Contour] "
+                "有效上表面 face 数量不足。"
+            )
+            return None, None, None, None
+
+        print(
+            "[K Surface Contour] "
+            f"K={k_layer}, "
+            f"top_faces={len(face_points)}, "
+            f"skipped={skipped_count}"
+        )
+
+        return (
+            np.asarray(
+                face_points,
+                dtype=np.float64,
+            ),
+            np.asarray(
+                face_values,
+                dtype=np.float64,
+            ),
+            np.asarray(
+                vertex_xy,
+                dtype=np.float64,
+            ),
+            np.asarray(
+                vertex_values,
+                dtype=np.float64,
+            ),
+        )
+
+
+    def _merge_k_surface_duplicate_xy_samples(
+        self,
+        xy_samples,
+        value_samples,
+        decimals=7,
+    ):
+        """
+        合并相同 XY 坐标的顶点样本。
+
+        多个 leaf cell 共用一个顶点时，
+        属性值取平均，避免插值时出现重复散点。
+        """
+
+        if xy_samples is None:
+            return None, None
+
+        if value_samples is None:
+            return None, None
+
+        xy_samples = np.asarray(
+            xy_samples,
+            dtype=np.float64,
+        )
+
+        value_samples = np.asarray(
+            value_samples,
+            dtype=np.float64,
+        )
+
+        if xy_samples.shape[0] == 0:
+            return None, None
+
+        if xy_samples.shape[0] != value_samples.shape[0]:
+            print(
+                "[K Surface Contour] "
+                "XY 样本数与属性样本数不一致。"
+            )
+            return None, None
+
+        rounded_xy = np.round(
+            xy_samples,
+            decimals=int(decimals),
+        )
+
+        unique_xy, inverse = np.unique(
+            rounded_xy,
+            axis=0,
+            return_inverse=True,
+        )
+
+        counts = np.bincount(
+            inverse
+        ).astype(
+            np.float64
+        )
+
+        value_sum = np.bincount(
+            inverse,
+            weights=value_samples,
+        )
+
+        merged_values = value_sum / np.maximum(
+            counts,
+            1.0,
+        )
+
+        return (
+            unique_xy.astype(
+                np.float64
+            ),
+            merged_values.astype(
+                np.float64
+            ),
+        )
+
+
+    def _build_k_surface_projection_data(
+        self,
+        face_points,
+    ):
+        """
+        为“将 contour XY 点投影回真实 top face”建立查询结构。
+        """
+
+        try:
+            from scipy.spatial import cKDTree
+        except Exception:
+            print(
+                "[K Surface Contour] 缺少 SciPy。"
+                "请在 oil 环境中执行：pip install scipy"
+            )
+            return None
+
+        if face_points is None:
+            return None
+
+        face_points = np.asarray(
+            face_points,
+            dtype=np.float64,
+        )
+
+        if (
+            face_points.ndim != 3
+            or face_points.shape[1:] != (4, 3)
+            or face_points.shape[0] == 0
+        ):
+            print(
+                "[K Surface Contour] "
+                "face_points 格式无效。"
+            )
+            return None
+
+        face_centers_xy = np.mean(
+            face_points[:, :, :2],
+            axis=1,
+        )
+
+        try:
+            face_tree = cKDTree(
+                face_centers_xy
+            )
+        except Exception as exc:
+            print(
+                "[K Surface Contour] KDTree 创建失败：",
+                exc,
+            )
+            return None
+
+        return {
+            "face_points": face_points,
+            "face_tree": face_tree,
+        }
+
+
+    def _get_xy_triangle_z(
+        self,
+        x,
+        y,
+        triangle,
+        tolerance=1e-8,
+    ):
+        """
+        判断 XY 点是否落在三角形的 XY 投影范围内。
+        """
+        triangle = np.asarray(
+            triangle,
+            dtype=np.float64,
+        )
+
+        if triangle.shape != (3, 3):
+            return None
+
+        x0, y0, z0 = triangle[0]
+        x1, y1, z1 = triangle[1]
+        x2, y2, z2 = triangle[2]
+
+        denominator = (
+            (y1 - y2) * (x0 - x2)
+            + (x2 - x1) * (y0 - y2)
+        )
+
+        if abs(denominator) < 1e-15:
+            return None
+
+        w0 = (
+            (y1 - y2) * (x - x2)
+            + (x2 - x1) * (y - y2)
+        ) / denominator
+
+        w1 = (
+            (y2 - y0) * (x - x2)
+            + (x0 - x2) * (y - y2)
+        ) / denominator
+
+        w2 = 1.0 - w0 - w1
+
+        if (
+            w0 < -tolerance
+            or w1 < -tolerance
+            or w2 < -tolerance
+        ):
+            return None
+
+        z = (
+            w0 * z0
+            + w1 * z1
+            + w2 * z2
+        )
+
+        return float(z)
+
+
+    def _project_xy_to_k_surface(
+        self,
+        x,
+        y,
+        projection_data,
+        initial_candidates=24,
+    ):
+        """
+        将一个 XY 坐标投影回当前 K 层的真实 top face。
+        """
+        if projection_data is None:
+            return None
+
+        face_points = projection_data.get(
+            "face_points"
+        )
+
+        face_tree = projection_data.get(
+            "face_tree"
+        )
+
+        if face_points is None or face_tree is None:
+            return None
+
+        n_faces = int(
+            face_points.shape[0]
+        )
+
+        if n_faces == 0:
+            return None
+
+        candidate_count = min(
+            max(
+                1,
+                int(initial_candidates),
+            ),
+            n_faces,
+        )
+
+        while True:
+            _, face_ids = face_tree.query(
+                [float(x), float(y)],
+                k=candidate_count,
+            )
+
+            face_ids = np.atleast_1d(
+                face_ids
+            )
+
+            best_z = None
+
+            for face_id in face_ids:
+                face = face_points[
+                    int(face_id)
+                ]
+
+                z_a = self._get_xy_triangle_z(
+                    x=float(x),
+                    y=float(y),
+                    triangle=face[[0, 1, 2]],
+                )
+
+                z_b = self._get_xy_triangle_z(
+                    x=float(x),
+                    y=float(y),
+                    triangle=face[[0, 2, 3]],
+                )
+
+                candidate_zs = [
+                    z
+                    for z in (
+                        z_a,
+                        z_b,
+                    )
+                    if z is not None
+                ]
+
+                if len(candidate_zs) == 0:
+                    continue
+
+                current_z = max(
+                    candidate_zs
+                )
+
+                if (
+                    best_z is None
+                    or current_z > best_z
+                ):
+                    best_z = current_z
+
+            if best_z is not None:
+                return float(best_z)
+
+            if candidate_count >= n_faces:
+                break
+
+            candidate_count = min(
+                n_faces,
+                candidate_count * 2,
+            )
+
+        return None
+
+
+    def _get_k_surface_grid_resolution(
+        self,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        target_resolution,
+    ):
+        """
+        按当前 K 层 XY 长宽比生成规则二维计算网格大小。
+        """
+
+        x_span = max(
+            float(x_max - x_min),
+            1e-12,
+        )
+
+        y_span = max(
+            float(y_max - y_min),
+            1e-12,
+        )
+
+        target_resolution = int(
+            max(
+                80,
+                min(
+                    int(target_resolution),
+                    260,
+                ),
+            )
+        )
+
+        if x_span >= y_span:
+            nx = target_resolution
+            ny = int(
+                round(
+                    target_resolution
+                    * y_span
+                    / x_span
+                )
+            )
+        else:
+            ny = target_resolution
+            nx = int(
+                round(
+                    target_resolution
+                    * x_span
+                    / y_span
+                )
+            )
+
+        nx = max(
+            60,
+            min(nx, 260),
+        )
+
+        ny = max(
+            60,
+            min(ny, 260),
+        )
+
+        return int(nx), int(ny)
+
+
+    def _build_k_surface_contour_compute_mesh(
+        self,
+        xy_samples,
+        value_samples,
+        projection_data,
+        scalar_name,
+        target_resolution=160,
+    ):
+        """
+        建立“仅用于计算 contour”的连续二维三角网格。
+        """
+        try:
+            from scipy.interpolate import LinearNDInterpolator
+        except Exception:
+            print(
+                "[K Surface Contour] 缺少 SciPy。"
+                "请执行：pip install scipy"
+            )
+            return None
+
+        if xy_samples is None:
+            return None
+
+        if value_samples is None:
+            return None
+
+        xy_samples = np.asarray(
+            xy_samples,
+            dtype=np.float64,
+        )
+
+        value_samples = np.asarray(
+            value_samples,
+            dtype=np.float64,
+        )
+
+        if xy_samples.shape[0] < 4:
+            return None
+
+        x_min = float(
+            np.min(xy_samples[:, 0])
+        )
+
+        x_max = float(
+            np.max(xy_samples[:, 0])
+        )
+
+        y_min = float(
+            np.min(xy_samples[:, 1])
+        )
+
+        y_max = float(
+            np.max(xy_samples[:, 1])
+        )
+
+        if np.isclose(x_min, x_max):
+            return None
+
+        if np.isclose(y_min, y_max):
+            return None
+
+        nx, ny = self._get_k_surface_grid_resolution(
+            x_min=x_min,
+            x_max=x_max,
+            y_min=y_min,
+            y_max=y_max,
+            target_resolution=target_resolution,
+        )
+
+        x_axis = np.linspace(
+            x_min,
+            x_max,
+            nx,
+            dtype=np.float64,
+        )
+
+        y_axis = np.linspace(
+            y_min,
+            y_max,
+            ny,
+            dtype=np.float64,
+        )
+
+        x_grid, y_grid = np.meshgrid(
+            x_axis,
+            y_axis,
+            indexing="ij",
+        )
+
+        try:
+            interpolator = LinearNDInterpolator(
+                xy_samples,
+                value_samples,
+                fill_value=np.nan,
+            )
+
+            value_grid = interpolator(
+                x_grid,
+                y_grid,
+            )
+
+        except Exception as exc:
+            print(
+                "[K Surface Contour] 属性插值失败：",
+                exc,
+            )
+            return None
+
+        value_grid = np.asarray(
+            value_grid,
+            dtype=np.float64,
+        )
+
+        valid_mask = np.isfinite(
+            value_grid
+        )
+
+        # 只保留真实 top surface 覆盖范围内的格点。
+        # 这样 contour 不会跑到模型外部。
+        for i in range(x_grid.shape[0]):
+            for j in range(x_grid.shape[1]):
+                if not valid_mask[i, j]:
+                    continue
+
+                z = self._project_xy_to_k_surface(
+                    x=float(x_grid[i, j]),
+                    y=float(y_grid[i, j]),
+                    projection_data=projection_data,
+                )
+
+                if z is None:
+                    valid_mask[i, j] = False
+                    value_grid[i, j] = np.nan
+
+        point_ids = -np.ones(
+            x_grid.shape,
+            dtype=np.int64,
+        )
+
+        points = []
+        point_values = []
+
+        point_id = 0
+
+        for i in range(x_grid.shape[0]):
+            for j in range(x_grid.shape[1]):
+                if not valid_mask[i, j]:
+                    continue
+
+                point_ids[i, j] = point_id
+
+                points.append([
+                    float(x_grid[i, j]),
+                    float(y_grid[i, j]),
+                    0.0,
+                ])
+
+                point_values.append(
+                    float(value_grid[i, j])
+                )
+
+                point_id += 1
+
+        if len(points) < 4:
+            print(
+                "[K Surface Contour] "
+                "连续 contour 计算点数量不足。"
+            )
+            return None
+
+        faces = []
+
+        for i in range(
+            x_grid.shape[0] - 1
+        ):
+            for j in range(
+                x_grid.shape[1] - 1
+            ):
+                p00 = point_ids[i, j]
+                p10 = point_ids[i + 1, j]
+                p11 = point_ids[i + 1, j + 1]
+                p01 = point_ids[i, j + 1]
+
+                if (
+                    p00 < 0
+                    or p10 < 0
+                    or p11 < 0
+                    or p01 < 0
+                ):
+                    continue
+
+                faces.extend([
+                    3,
+                    int(p00),
+                    int(p10),
+                    int(p11),
+
+                    3,
+                    int(p00),
+                    int(p11),
+                    int(p01),
+                ])
+
+        if len(faces) == 0:
+            print(
+                "[K Surface Contour] "
+                "连续 contour 计算三角面为空。"
+            )
+            return None
+
+        try:
+            compute_mesh = pv.PolyData(
+                np.asarray(
+                    points,
+                    dtype=np.float64,
+                ),
+                np.asarray(
+                    faces,
+                    dtype=np.int64,
+                ),
+            )
+
+            compute_mesh.point_data[
+                scalar_name
+            ] = np.asarray(
+                point_values,
+                dtype=np.float64,
+            )
+
+            return compute_mesh
+
+        except Exception as exc:
+            print(
+                "[K Surface Contour] "
+                "连续 contour 计算 mesh 创建失败：",
+                exc,
+            )
+            return None
+
+
+    def _project_contour_mesh_to_k_surface(
+        self,
+        contour_mesh,
+        projection_data,
+        sim_data,
+        z_offset_ratio=1e-5,
+        minimum_z_offset=0.005,
+    ):
+        """
+        把 contour 的所有点投影回真实 K 层上表面。
+
+        最终点坐标：
+            (x, y, z_top_surface + offset)
+        """
+
+        if contour_mesh is None:
+            return None
+
+        if contour_mesh.n_points == 0:
+            return None
+
+        try:
+            bounds = self.get_corner_model_bounds(
+                sim_data
+            )
+        except Exception:
+            bounds = None
+
+        if bounds is None:
+            model_span = 1.0
+        else:
+            xmin, xmax, ymin, ymax, zmin, zmax = [
+                float(value)
+                for value in bounds
+            ]
+
+            model_span = max(
+                abs(xmax - xmin),
+                abs(ymax - ymin),
+                abs(zmax - zmin),
+                1.0,
+            )
+
+        z_offset = max(
+            model_span * float(z_offset_ratio),
+            float(minimum_z_offset),
+        )
+
+        projected_mesh = contour_mesh.copy(
+            deep=True
+        )
+
+        points = np.asarray(
+            projected_mesh.points,
+            dtype=np.float64,
+        ).copy()
+
+        failed_count = 0
+
+        for point_index in range(
+            points.shape[0]
+        ):
+            x = float(points[point_index, 0])
+            y = float(points[point_index, 1])
+
+            z = self._project_xy_to_k_surface(
+                x=x,
+                y=y,
+                projection_data=projection_data,
+            )
+
+            if z is None:
+                failed_count += 1
+                continue
+
+            points[
+                point_index,
+                2,
+            ] = float(z) + z_offset
+
+        projected_mesh.points = points
+
+        if failed_count > 0:
+            print(
+                "[K Surface Contour] "
+                f"有 {failed_count} 个 contour 点没有找到 top face，"
+                "已保留原始位置。"
+            )
+
+        return projected_mesh
+
+
+    def _get_nice_contour_step(
+        self,
+        scalar_min,
+        scalar_max,
+        target_count=6,
+    ):
+        """
+        计算更适合显示的等值距。
+        """
+        scalar_min = float(scalar_min)
+        scalar_max = float(scalar_max)
+
+        value_range = scalar_max - scalar_min
+
+        if value_range <= 0.0:
+            return None
+
+        target_count = max(
+            2,
+            int(target_count),
+        )
+
+        raw_step = value_range / float(
+            target_count + 1
+        )
+
+        if raw_step <= 0.0:
+            return None
+
+        exponent = np.floor(
+            np.log10(raw_step)
+        )
+
+        base = 10.0 ** exponent
+        normalized = raw_step / base
+
+        if normalized <= 1.0:
+            nice_value = 1.0
+        elif normalized <= 2.0:
+            nice_value = 2.0
+        elif normalized <= 5.0:
+            nice_value = 5.0
+        else:
+            nice_value = 10.0
+
+        return float(
+            nice_value * base
+        )
+
+
+    def _build_k_surface_contour_levels(
+        self,
+        scalar_min,
+        scalar_max,
+        n_levels=6,
+        contour_interval=None,
+        manual_levels=None,
+    ):
+        """
+        contour levels 优先级：
+
+        1. manual_levels
+        2. contour_interval
+        3. n_levels 自动生成整齐刻度
+        """
+
+        scalar_min = float(scalar_min)
+        scalar_max = float(scalar_max)
+
+        if scalar_max <= scalar_min:
+            return np.empty(
+                0,
+                dtype=np.float64,
+            )
+
+        # ---------------------------------------------------------
+        # 1. 用户手动指定具体 levels
+        # ---------------------------------------------------------
+        if manual_levels is not None:
+            values = np.asarray(
+                manual_levels,
+                dtype=np.float64,
+            )
+
+            values = values[
+                np.isfinite(values)
+            ]
+
+            values = values[
+                (values > scalar_min)
+                & (values < scalar_max)
+            ]
+
+            return np.unique(
+                np.sort(values)
+            )
+
+        # ---------------------------------------------------------
+        # 2. 用户指定固定等值距
+        # ---------------------------------------------------------
+        if contour_interval is not None:
+            try:
+                step = abs(
+                    float(contour_interval)
+                )
+            except Exception:
+                step = None
+
+            if step is not None and step > 0.0:
+                start = np.ceil(
+                    scalar_min / step
+                ) * step
+
+                end = np.floor(
+                    scalar_max / step
+                ) * step
+
+                values = np.arange(
+                    start,
+                    end + step * 0.25,
+                    step,
+                    dtype=np.float64,
+                )
+
+                values = values[
+                    (values > scalar_min)
+                    & (values < scalar_max)
+                ]
+
+                return np.unique(
+                    np.round(
+                        values,
+                        decimals=12,
+                    )
+                )
+
+        # ---------------------------------------------------------
+        # 3. 根据 n_levels 自动生成整齐刻度
+        # ---------------------------------------------------------
+        step = self._get_nice_contour_step(
+            scalar_min=scalar_min,
+            scalar_max=scalar_max,
+            target_count=n_levels,
+        )
+
+        if step is None:
+            return np.empty(
+                0,
+                dtype=np.float64,
+            )
+
+        start = np.ceil(
+            scalar_min / step
+        ) * step
+
+        end = np.floor(
+            scalar_max / step
+        ) * step
+
+        values = np.arange(
+            start,
+            end + step * 0.25,
+            step,
+            dtype=np.float64,
+        )
+
+        values = values[
+            (values > scalar_min)
+            & (values < scalar_max)
+        ]
+
+        if values.size == 0:
+            count = max(
+                2,
+                int(n_levels),
+            )
+
+            values = np.linspace(
+                scalar_min,
+                scalar_max,
+                count + 2,
+                dtype=np.float64,
+            )[1:-1]
+
+        return np.unique(
+            np.round(
+                values,
+                decimals=12,
+            )
+        )
+
+
+    def _format_k_surface_contour_value(
+        self,
+        value,
+        contour_interval=None,
+    ):
+        """
+        根据等值距自动确定标签的小数位数。
+        """
+
+        value = float(value)
+
+        if contour_interval is None:
+            contour_interval = abs(value)
+
+        try:
+            contour_interval = abs(
+                float(contour_interval)
+            )
+        except Exception:
+            contour_interval = 1.0
+
+        if contour_interval >= 1.0:
+            decimals = 0
+        elif contour_interval >= 0.1:
+            decimals = 1
+        elif contour_interval >= 0.01:
+            decimals = 2
+        elif contour_interval >= 0.001:
+            decimals = 3
+        else:
+            decimals = 4
+
+        text = f"{value:.{decimals}f}"
+
+        if float(text) == 0.0:
+            text = text.replace(
+                "-",
+                "",
+            )
+
+        return text
+
+    # =========================================================
+    # K 层真实三维上表面等值线
+    # =========================================================
+    def _iter_contour_polylines(
+        self,
+        line_mesh,
+    ):
+        """
+        将 PolyData 中的 lines 解析成多个独立 polyline 点数组。
+        """
+
+        if line_mesh is None:
+            return []
+
+        if line_mesh.n_points == 0:
+            return []
+
+        lines = np.asarray(
+            line_mesh.lines,
+            dtype=np.int64,
+        )
+
+        if lines.size == 0:
+            return []
+
+        all_points = np.asarray(
+            line_mesh.points,
+            dtype=np.float64,
+        )
+
+        result = []
+        cursor = 0
+
+        while cursor < lines.size:
+            point_count = int(
+                lines[cursor]
+            )
+
+            cursor += 1
+
+            if point_count < 2:
+                cursor += point_count
+                continue
+
+            point_ids = lines[
+                cursor:cursor + point_count
+            ]
+
+            cursor += point_count
+
+            if point_ids.size < 2:
+                continue
+
+            points = all_points[
+                point_ids
+            ].copy()
+
+            if points.shape[0] >= 2:
+                result.append(points)
+
+        return result
+
+
+    def _get_polyline_length(
+        self,
+        points,
+    ):
+        """
+        计算 polyline 总长度。
+        """
+
+        points = np.asarray(
+            points,
+            dtype=np.float64,
+        )
+
+        if points.shape[0] < 2:
+            return 0.0
+
+        segment_vectors = np.diff(
+            points,
+            axis=0,
+        )
+
+        segment_lengths = np.linalg.norm(
+            segment_vectors,
+            axis=1,
+        )
+
+        return float(
+            np.sum(segment_lengths)
+        )
+
+
+    def _get_polyline_point_and_tangent_at_distance(
+        self,
+        points,
+        target_distance,
+    ):
+        """
+        根据弧长距离，从 polyline 上取一个点和该点切线方向。
+
+        返回：
+            point:   [3]
+            tangent: [3]
+            actual_distance
+        """
+
+        points = np.asarray(
+            points,
+            dtype=np.float64,
+        )
+
+        if points.shape[0] < 2:
+            return None, None, None
+
+        segment_vectors = np.diff(
+            points,
+            axis=0,
+        )
+
+        segment_lengths = np.linalg.norm(
+            segment_vectors,
+            axis=1,
+        )
+
+        total_length = float(
+            np.sum(segment_lengths)
+        )
+
+        if total_length <= 1e-12:
+            return None, None, None
+
+        target_distance = float(
+            np.clip(
+                target_distance,
+                0.0,
+                total_length,
+            )
+        )
+
+        accumulated = 0.0
+
+        for index, segment_length in enumerate(
+            segment_lengths
+        ):
+            segment_length = float(
+                segment_length
+            )
+
+            next_accumulated = accumulated + segment_length
+
+            if (
+                target_distance <= next_accumulated
+                or index == len(segment_lengths) - 1
+            ):
+                ratio = (
+                    target_distance - accumulated
+                ) / max(
+                    segment_length,
+                    1e-12,
+                )
+
+                point = (
+                    points[index]
+                    + ratio
+                    * (
+                        points[index + 1]
+                        - points[index]
+                    )
+                )
+
+                tangent = segment_vectors[
+                    index
+                ].copy()
+
+                tangent_norm = float(
+                    np.linalg.norm(tangent)
+                )
+
+                if tangent_norm <= 1e-12:
+                    return point, None, target_distance
+
+                tangent = tangent / tangent_norm
+
+                return point, tangent, target_distance
+
+            accumulated = next_accumulated
+
+        return None, None, None
+
+
+    def _split_polyline_with_gap(
+        self,
+        points,
+        center_distance,
+        gap_length,
+    ):
+        """
+        在一条 polyline 的中间切出一个缺口。
+
+        用于把 contour 数值嵌入到等值线中，而不是把文字标在线旁边。
+
+        返回：
+            [
+                line_part_1,
+                line_part_2,
+            ]
+
+        某一部分过短时会自动舍弃。
+        """
+
+        points = np.asarray(
+            points,
+            dtype=np.float64,
+        )
+
+        if points.shape[0] < 2:
+            return [points]
+
+        total_length = self._get_polyline_length(
+            points
+        )
+
+        if total_length <= 1e-12:
+            return [points]
+
+        center_distance = float(
+            np.clip(
+                center_distance,
+                0.0,
+                total_length,
+            )
+        )
+
+        gap_length = max(
+            0.0,
+            float(gap_length),
+        )
+
+        # 文字太长时，最多只占总线长的 45%
+        max_gap = total_length * 0.45
+
+        gap_length = min(
+            gap_length,
+            max_gap,
+        )
+
+        if gap_length <= 1e-12:
+            return [points]
+
+        gap_start = max(
+            0.0,
+            center_distance - gap_length * 0.5,
+        )
+
+        gap_end = min(
+            total_length,
+            center_distance + gap_length * 0.5,
+        )
+
+        start_point, _, _ = (
+            self._get_polyline_point_and_tangent_at_distance(
+                points,
+                gap_start,
+            )
+        )
+
+        end_point, _, _ = (
+            self._get_polyline_point_and_tangent_at_distance(
+                points,
+                gap_end,
+            )
+        )
+
+        if start_point is None or end_point is None:
+            return [points]
+
+        segment_vectors = np.diff(
+            points,
+            axis=0,
+        )
+
+        segment_lengths = np.linalg.norm(
+            segment_vectors,
+            axis=1,
+        )
+
+        first_part = []
+        second_part = []
+
+        accumulated = 0.0
+
+        for index, segment_length in enumerate(
+            segment_lengths
+        ):
+            segment_length = float(
+                segment_length
+            )
+
+            next_accumulated = accumulated + segment_length
+
+            p0 = points[index]
+            p1 = points[index + 1]
+
+            # 缺口前的线段
+            if accumulated < gap_start:
+                if len(first_part) == 0:
+                    first_part.append(
+                        p0.copy()
+                    )
+
+                if next_accumulated <= gap_start:
+                    first_part.append(
+                        p1.copy()
+                    )
+                else:
+                    first_part.append(
+                        start_point.copy()
+                    )
+
+            # 缺口后的线段
+            if next_accumulated > gap_end:
+                if accumulated < gap_end:
+                    second_part.append(
+                        end_point.copy()
+                    )
+
+                second_part.append(
+                    p1.copy()
+                )
+
+            accumulated = next_accumulated
+
+        result = []
+
+        if len(first_part) >= 2:
+            result.append(
+                np.asarray(
+                    first_part,
+                    dtype=np.float64,
+                )
+            )
+
+        if len(second_part) >= 2:
+            result.append(
+                np.asarray(
+                    second_part,
+                    dtype=np.float64,
+                )
+            )
+
+        return result
+
+
+    def _build_polyline_mesh(
+        self,
+        polyline_list,
+    ):
+        """
+        把多个独立 polyline 点序列重新组装成一个 PolyData。
+        """
+
+        valid_lines = []
+
+        for points in polyline_list:
+            if points is None:
+                continue
+
+            points = np.asarray(
+                points,
+                dtype=np.float64,
+            )
+
+            if points.shape[0] < 2:
+                continue
+
+            valid_lines.append(points)
+
+        if len(valid_lines) == 0:
+            return None
+
+        all_points = []
+        line_connectivity = []
+
+        point_offset = 0
+
+        for points in valid_lines:
+            count = int(
+                points.shape[0]
+            )
+
+            all_points.append(points)
+
+            line_connectivity.append(
+                count
+            )
+
+            line_connectivity.extend(
+                range(
+                    point_offset,
+                    point_offset + count,
+                )
+            )
+
+            point_offset += count
+
+        try:
+            mesh = pv.PolyData(
+                np.vstack(all_points),
+                lines=np.asarray(
+                    line_connectivity,
+                    dtype=np.int64,
+                ),
+            )
+
+            return mesh
+
+        except Exception as exc:
+            print(
+                "[K Surface Contour] "
+                "Polyline mesh build failed:",
+                exc,
+            )
+            return None
+
+
+    def _get_surface_normal_at_xy(
+        self,
+        x,
+        y,
+        projection_data,
+        initial_candidates=24,
+    ):
+        """
+        获取指定 XY 点所在真实 top face 的法线。
+
+        返回：
+            normal: [3]
+            若找不到对应面，返回 None。
+        """
+
+        if projection_data is None:
+            return None
+
+        face_points = projection_data.get(
+            "face_points"
+        )
+
+        face_tree = projection_data.get(
+            "face_tree"
+        )
+
+        if face_points is None or face_tree is None:
+            return None
+
+        n_faces = int(
+            face_points.shape[0]
+        )
+
+        if n_faces == 0:
+            return None
+
+        candidate_count = min(
+            max(
+                1,
+                int(initial_candidates),
+            ),
+            n_faces,
+        )
+
+        while True:
+            _, face_ids = face_tree.query(
+                [float(x), float(y)],
+                k=candidate_count,
+            )
+
+            face_ids = np.atleast_1d(
+                face_ids
+            )
+
+            for face_id in face_ids:
+                face = face_points[
+                    int(face_id)
+                ]
+
+                tri_a = face[[0, 1, 2]]
+                tri_b = face[[0, 2, 3]]
+
+                z_a = self._get_xy_triangle_z(
+                    x,
+                    y,
+                    tri_a,
+                )
+
+                current_triangle = None
+
+                if z_a is not None:
+                    current_triangle = tri_a
+                else:
+                    z_b = self._get_xy_triangle_z(
+                        x,
+                        y,
+                        tri_b,
+                    )
+
+                    if z_b is not None:
+                        current_triangle = tri_b
+
+                if current_triangle is None:
+                    continue
+
+                edge_1 = (
+                    current_triangle[1]
+                    - current_triangle[0]
+                )
+
+                edge_2 = (
+                    current_triangle[2]
+                    - current_triangle[0]
+                )
+
+                normal = np.cross(
+                    edge_1,
+                    edge_2,
+                )
+
+                normal_length = float(
+                    np.linalg.norm(normal)
+                )
+
+                if normal_length <= 1e-12:
+                    continue
+
+                normal = normal / normal_length
+
+                # K 层上表面标签默认朝外、朝上
+                if normal[2] < 0.0:
+                    normal = -normal
+
+                return normal
+
+            if candidate_count >= n_faces:
+                break
+
+            candidate_count = min(
+                n_faces,
+                candidate_count * 2,
+            )
+
+        return None
+
+
+    def _get_model_reference_span(
+        self,
+        sim_data,
+    ):
+        """
+        获取模型最大尺寸，用于计算文字大小、偏移距离。
+        """
+
+        bounds = self.get_corner_model_bounds(
+            sim_data
+        )
+
+        if bounds is None:
+            return 1.0
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        return max(
+            abs(xmax - xmin),
+            abs(ymax - ymin),
+            abs(zmax - zmin),
+            1.0,
+        )
+
+
+    def _build_surface_text_mesh(
+        self,
+        text,
+        anchor_point,
+        tangent,
+        surface_normal,
+        text_height,
+        text_lift,
+    ):
+        """
+        创建贴在真实 K 层上表面的 3D 文本。
+
+        文本局部坐标：
+            X：沿等值线切线方向
+            Y：位于上表面内、垂直于等值线
+            Z：沿表面法线方向
+
+        返回：
+            text_mesh
+            text_width
+        """
+
+        try:
+            raw_text = pv.Text3D(
+                str(text),
+                depth=0.0,
+            )
+        except Exception as exc:
+            print(
+                "[K Surface Contour] "
+                "pv.Text3D 创建失败：",
+                exc,
+            )
+            return None, 0.0
+
+        if raw_text is None:
+            return None, 0.0
+
+        if raw_text.n_points == 0:
+            return None, 0.0
+
+        raw_points = np.asarray(
+            raw_text.points,
+            dtype=np.float64,
+        ).copy()
+
+        xmin, xmax, ymin, ymax, zmin, zmax = raw_text.bounds
+
+        raw_width = max(
+            float(xmax - xmin),
+            1e-12,
+        )
+
+        raw_height = max(
+            float(ymax - ymin),
+            1e-12,
+        )
+
+        text_height = max(
+            float(text_height),
+            1e-8,
+        )
+
+        scale = text_height / raw_height
+
+        text_width = raw_width * scale
+
+        # 让文字在自身局部坐标中以中心为原点
+        local_center = np.array(
+            [
+                (xmin + xmax) * 0.5,
+                (ymin + ymax) * 0.5,
+                zmin,
+            ],
+            dtype=np.float64,
+        )
+
+        local_points = (
+            raw_points - local_center
+        ) * scale
+
+        tangent = np.asarray(
+            tangent,
+            dtype=np.float64,
+        ).copy()
+
+        normal = np.asarray(
+            surface_normal,
+            dtype=np.float64,
+        ).copy()
+
+        tangent_length = float(
+            np.linalg.norm(tangent)
+        )
+
+        normal_length = float(
+            np.linalg.norm(normal)
+        )
+
+        if tangent_length <= 1e-12:
+            return None, 0.0
+
+        if normal_length <= 1e-12:
+            return None, 0.0
+
+        tangent = tangent / tangent_length
+        normal = normal / normal_length
+
+        # 确保文字在模型局部 XY 上尽量保持统一阅读方向
+        #
+        # 这样从上方看时，文字不会因为 contour 切线方向反过来
+        # 而全部倒置。
+        if (
+            tangent[0] < 0.0
+            or (
+                abs(tangent[0]) < 1e-10
+                and tangent[1] < 0.0
+            )
+        ):
+            tangent = -tangent
+
+        in_plane_vertical = np.cross(
+            normal,
+            tangent,
+        )
+
+        vertical_length = float(
+            np.linalg.norm(in_plane_vertical)
+        )
+
+        if vertical_length <= 1e-12:
+            return None, 0.0
+
+        in_plane_vertical = (
+            in_plane_vertical
+            / vertical_length
+        )
+
+        # 将文字在当前曲面内旋转 180 度
+        tangent = -tangent
+        in_plane_vertical = -in_plane_vertical
+
+        anchor_point = np.asarray(
+            anchor_point,
+            dtype=np.float64,
+        )
+
+        world_points = (
+            anchor_point
+            + normal * float(text_lift)
+            + np.outer(
+                local_points[:, 0],
+                tangent,
+            )
+            + np.outer(
+                local_points[:, 1],
+                in_plane_vertical,
+            )
+            + np.outer(
+                local_points[:, 2],
+                normal,
+            )
+        )
+
+        text_mesh = raw_text.copy(
+            deep=True
+        )
+
+        text_mesh.points = world_points
+
+        return text_mesh, float(text_width)
+
+
+    def _prepare_one_level_contour_with_embedded_label(
+        self,
+        surface_line,
+        contour_value,
+        projection_data,
+        sim_data,
+        label_height_ratio=0.014,
+        label_gap_padding_ratio=0.25,
+        label_lift_ratio=2e-4,
+        minimum_label_lift=0.01,
+    ):
+        """
+        对单个 contour level：
+
+        1. 找最长的 contour polyline；
+        2. 在最长线上找到中部；
+        3. 在该处切开一个文字宽度对应的缺口；
+        4. 创建贴在真实曲面上的 3D Text3D；
+        5. 返回：
+        - 切开后的 contour line mesh
+        - 该 level 的 text mesh
+        """
+
+        if surface_line is None:
+            return None, None
+
+        if surface_line.n_points == 0:
+            return None, None
+
+        polyline_list = self._iter_contour_polylines(
+            surface_line
+        )
+
+        if len(polyline_list) == 0:
+            return surface_line, None
+
+        line_lengths = [
+            self._get_polyline_length(
+                points
+            )
+            for points in polyline_list
+        ]
+
+        longest_index = int(
+            np.argmax(line_lengths)
+        )
+
+        longest_line = polyline_list[
+            longest_index
+        ]
+
+        longest_length = float(
+            line_lengths[longest_index]
+        )
+
+        if longest_length <= 1e-12:
+            return surface_line, None
+
+        center_distance = longest_length * 0.5
+
+        anchor_point, tangent, _ = (
+            self._get_polyline_point_and_tangent_at_distance(
+                longest_line,
+                center_distance,
+            )
+        )
+
+        if anchor_point is None or tangent is None:
+            return surface_line, None
+
+        surface_normal = self._get_surface_normal_at_xy(
+            x=float(anchor_point[0]),
+            y=float(anchor_point[1]),
+            projection_data=projection_data,
+        )
+
+        if surface_normal is None:
+            return surface_line, None
+
+        model_span = self._get_model_reference_span(
+            sim_data
+        )
+
+        text_height = max(
+            model_span * float(
+                label_height_ratio
+            ),
+            0.5,
+        )
+
+        text_lift = max(
+            model_span * float(
+                label_lift_ratio
+            ),
+            float(minimum_label_lift),
+        )
+
+        label_text = self._format_k_surface_contour_value(
+            value=float(contour_value),
+            contour_interval=None,
+        )
+
+        text_mesh, text_width = self._build_surface_text_mesh(
+            text=label_text,
+            anchor_point=anchor_point,
+            tangent=tangent,
+            surface_normal=surface_normal,
+            text_height=text_height,
+            text_lift=text_lift,
+        )
+
+        if text_mesh is None:
+            return surface_line, None
+
+        # 文字两侧额外留一点空隙
+        gap_length = text_width * (
+            1.0
+            + float(
+                label_gap_padding_ratio
+            )
+        )
+
+        new_polyline_list = []
+
+        for index, points in enumerate(
+            polyline_list
+        ):
+            if index != longest_index:
+                new_polyline_list.append(
+                    points
+                )
+                continue
+
+            cut_parts = self._split_polyline_with_gap(
+                points=points,
+                center_distance=center_distance,
+                gap_length=gap_length,
+            )
+
+            new_polyline_list.extend(
+                cut_parts
+            )
+
+        cut_line_mesh = self._build_polyline_mesh(
+            new_polyline_list
+        )
+
+        if cut_line_mesh is None:
+            cut_line_mesh = surface_line
+
+        return cut_line_mesh, text_mesh
+
+
+    def clear_k_layer_top_contours(
+        self,
+        render=True,
+    ):
+        """
+        清除当前 K 层三维贴面等值线和嵌入式数值文字。
+        """
+
+        self._remove_actor(
+            self.cache.get(
+                "k_surface_contour_actor"
+            )
+        )
+
+        self._remove_actor(
+            self.cache.get(
+                "k_surface_contour_label_actor"
+            )
+        )
+
+        self.cache[
+            "k_surface_contour_actor"
+        ] = None
+
+        self.cache[
+            "k_surface_contour_label_actor"
+        ] = None
+
+        self.cache[
+            "k_surface_contour_surface"
+        ] = None
+
+        self.cache[
+            "k_surface_contour_info"
+        ] = None
+
+        if render:
+            self._render()
+
+
+    def set_k_layer_top_contours_visible(
+        self,
+        visible,
+    ):
+        """
+        同时控制等值线和嵌入式数值文字的显示。
+        """
+
+        visible = bool(visible)
+
+        for actor_key in (
+            "k_surface_contour_actor",
+            "k_surface_contour_label_actor",
+        ):
+            actor = self.cache.get(
+                actor_key
+            )
+
+            if actor is None:
+                continue
+
+            try:
+                actor.SetVisibility(
+                    visible
+                )
+            except Exception:
+                try:
+                    actor.visibility = visible
+                except Exception:
+                    pass
+
+        self._render()
+
+
+    def render_k_layer_top_contours(
+        self,
+        sim_data,
+        property_name="Pressure",
+        layer_index=0,
+        n_levels=6,
+        levels=None,
+        contour_interval=None,
+        target_resolution=160,
+        line_width=1.5,
+        color=(0.02, 0.02, 0.02),
+        opacity=1.0,
+        render_lines_as_tubes=False,
+        z_offset_ratio=1e-5,
+        minimum_z_offset=0.005,
+        show_labels=True,
+        label_height_ratio=0.014,
+        label_gap_padding_ratio=0.25,
+        label_text_color=(0.02, 0.02, 0.02),
+    ):
+        """
+        在当前 K 层真实上表面绘制三维贴面等值线。
+
+        与此前版本的区别：
+        - 标签是实际 3D Text3D 几何，不跟随屏幕旋转；
+        - 每个等值等级只在最长的一段线上标一次；
+        - 标注位置会切掉一段等值线，让文字嵌入线中；
+        - 数字和线一起贴在真实 K 层上表面。
+        """
+
+        self.clear_k_layer_top_contours(
+            render=False
+        )
+
+        # ---------------------------------------------------------
+        # 1. 提取当前 K 层真实 top face 与属性值
+        # ---------------------------------------------------------
+        (
+            face_points,
+            face_values,
+            vertex_xy,
+            vertex_values,
+        ) = self._build_k_layer_top_faces(
+            sim_data=sim_data,
+            property_name=property_name,
+            k_layer=layer_index,
+        )
+
+        if face_points is None:
+            return None
+
+        # ---------------------------------------------------------
+        # 2. 构建真实上表面投影器
+        # ---------------------------------------------------------
+        projection_data = self._build_k_surface_projection_data(
+            face_points=face_points
+        )
+
+        if projection_data is None:
+            return None
+
+        # ---------------------------------------------------------
+        # 3. 合并共享顶点属性
+        # ---------------------------------------------------------
+        xy_samples, value_samples = (
+            self._merge_k_surface_duplicate_xy_samples(
+                xy_samples=vertex_xy,
+                value_samples=vertex_values,
+            )
+        )
+
+        if (
+            xy_samples is None
+            or xy_samples.shape[0] < 4
+        ):
+            print(
+                "[K Surface Contour] "
+                "有效顶点 XY 样本不足。"
+            )
+            return None
+
+        config = self._get_k_surface_contour_property_config(
+            property_name
+        )
+
+        if config is None:
+            return None
+
+        scalar_name = config[
+            "scalar_name"
+        ]
+
+        # ---------------------------------------------------------
+        # 4. 构建连续 contour 计算面
+        #
+        # 这个面只用于生成连续 contour，
+        # 最终线与文字都会投影回真实 top surface。
+        # ---------------------------------------------------------
+        compute_mesh = self._build_k_surface_contour_compute_mesh(
+            xy_samples=xy_samples,
+            value_samples=value_samples,
+            projection_data=projection_data,
+            scalar_name=scalar_name,
+            target_resolution=target_resolution,
+        )
+
+        if compute_mesh is None:
+            print(
+                "[K Surface Contour] "
+                "连续 contour 计算面构建失败。"
+            )
+            return None
+
+        compute_values = np.asarray(
+            compute_mesh.point_data[
+                scalar_name
+            ],
+            dtype=np.float64,
+        )
+
+        compute_values = compute_values[
+            np.isfinite(compute_values)
+        ]
+
+        if compute_values.size == 0:
+            print(
+                "[K Surface Contour] "
+                "当前层没有有效连续属性值。"
+            )
+            return None
+
+        contour_min = float(
+            np.min(compute_values)
+        )
+
+        contour_max = float(
+            np.max(compute_values)
+        )
+
+        if np.isclose(
+            contour_min,
+            contour_max,
+        ):
+            print(
+                "[K Surface Contour] "
+                "当前层属性值没有变化，无法生成等值线。"
+            )
+            return None
+
+        # ---------------------------------------------------------
+        # 5. 构建较疏、规整的 contour levels
+        # ---------------------------------------------------------
+        contour_levels = self._build_k_surface_contour_levels(
+            scalar_min=contour_min,
+            scalar_max=contour_max,
+            n_levels=n_levels,
+            contour_interval=contour_interval,
+            manual_levels=levels,
+        )
+
+        if contour_levels.size == 0:
+            print(
+                "[K Surface Contour] "
+                "没有可绘制的 contour levels。"
+            )
+            return None
+
+        # ---------------------------------------------------------
+        # 6. 每个等值等级单独生成 contour
+        #
+        # 每个等级：
+        # - 先生成连续 contour
+        # - 再投影回真实 K 层上表面
+        # - 找最长线
+        # - 中间切开缺口
+        # - 在缺口中嵌入 3D 数值文字
+        # ---------------------------------------------------------
+        output_line_meshes = []
+        output_text_meshes = []
+        rendered_levels = []
+
+        for level in contour_levels:
+            try:
+                flat_line = compute_mesh.contour(
+                    isosurfaces=[
+                        float(level)
+                    ],
+                    scalars=scalar_name,
+                    preference="point",
+                )
+            except Exception as exc:
+                print(
+                    "[K Surface Contour] "
+                    f"level={level:.6g} contour 失败：",
+                    exc,
+                )
+                continue
+
+            if (
+                flat_line is None
+                or flat_line.n_points == 0
+                or flat_line.n_cells == 0
+            ):
+                continue
+
+            try:
+                flat_line = flat_line.strip()
+            except Exception:
+                pass
+
+            surface_line = self._project_contour_mesh_to_k_surface(
+                contour_mesh=flat_line,
+                projection_data=projection_data,
+                sim_data=sim_data,
+                z_offset_ratio=z_offset_ratio,
+                minimum_z_offset=minimum_z_offset,
+            )
+
+            if (
+                surface_line is None
+                or surface_line.n_points == 0
+                or surface_line.n_cells == 0
+            ):
+                continue
+
+            try:
+                surface_line = surface_line.strip()
+            except Exception:
+                pass
+
+            # -----------------------------------------------------
+            # 不显示标签：直接保留整条线
+            # -----------------------------------------------------
+            if not show_labels:
+                output_line_meshes.append(
+                    surface_line
+                )
+
+                rendered_levels.append(
+                    float(level)
+                )
+
+                continue
+
+            # -----------------------------------------------------
+            # 显示标签：
+            # 切开 contour 中部 + 嵌入真实 3D Text3D
+            # -----------------------------------------------------
+            line_with_gap, text_mesh = (
+                self._prepare_one_level_contour_with_embedded_label(
+                    surface_line=surface_line,
+                    contour_value=float(level),
+                    projection_data=projection_data,
+                    sim_data=sim_data,
+                    label_height_ratio=label_height_ratio,
+                    label_gap_padding_ratio=label_gap_padding_ratio,
+                )
+            )
+
+            if (
+                line_with_gap is not None
+                and line_with_gap.n_points > 0
+            ):
+                output_line_meshes.append(
+                    line_with_gap
+                )
+
+            if (
+                text_mesh is not None
+                and text_mesh.n_points > 0
+            ):
+                output_text_meshes.append(
+                    text_mesh
+                )
+
+            rendered_levels.append(
+                float(level)
+            )
+
+        if len(output_line_meshes) == 0:
+            print(
+                "[K Surface Contour] "
+                "没有生成可见等值线。"
+            )
+            return None
+
+        # ---------------------------------------------------------
+        # 7. 合并所有等值线
+        # ---------------------------------------------------------
+        try:
+            contour_mesh = pv.merge(
+                output_line_meshes,
+                merge_points=False,
+            )
+        except Exception:
+            contour_mesh = output_line_meshes[0]
+
+            for one_mesh in output_line_meshes[1:]:
+                contour_mesh = contour_mesh.merge(
+                    one_mesh,
+                    merge_points=False,
+                )
+
+        # ---------------------------------------------------------
+        # 8. 合并所有 3D 数值文字
+        # ---------------------------------------------------------
+        text_mesh = None
+
+        if len(output_text_meshes) > 0:
+            try:
+                text_mesh = pv.merge(
+                    output_text_meshes,
+                    merge_points=False,
+                )
+            except Exception:
+                text_mesh = output_text_meshes[0]
+
+                for one_mesh in output_text_meshes[1:]:
+                    text_mesh = text_mesh.merge(
+                        one_mesh,
+                        merge_points=False,
+                    )
+
+        # ---------------------------------------------------------
+        # 9. 绘制 contour actor
+        # ---------------------------------------------------------
+        try:
+            contour_actor = self.plotter.add_mesh(
+                contour_mesh,
+                color=color,
+                opacity=float(opacity),
+                line_width=max(
+                    1.0,
+                    float(line_width),
+                ),
+                lighting=False,
+                render_lines_as_tubes=bool(
+                    render_lines_as_tubes
+                ),
+                show_scalar_bar=False,
+                pickable=False,
+                render=False,
+            )
+
+            try:
+                contour_actor.SetPickable(False)
+            except Exception:
+                pass
+
+        except Exception as exc:
+            print(
+                "[K Surface Contour] "
+                "等值线 actor 创建失败：",
+                exc,
+            )
+            return None
+
+        # ---------------------------------------------------------
+        # 10. 绘制贴面 3D 数值文字 actor
+        # ---------------------------------------------------------
+        text_actor = None
+
+        if (
+            text_mesh is not None
+            and text_mesh.n_points > 0
+        ):
+            try:
+                text_actor = self.plotter.add_mesh(
+                    text_mesh,
+                    color=label_text_color,
+                    opacity=1.0,
+                    lighting=False,
+                    show_scalar_bar=False,
+                    pickable=False,
+                    render=False,
+                )
+
+                try:
+                    text_actor.SetPickable(False)
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                print(
+                    "[K Surface Contour] "
+                    "贴面等值线文字 actor 创建失败：",
+                    exc,
+                )
+
+        # ---------------------------------------------------------
+        # 11. 缓存
+        # ---------------------------------------------------------
+        self.cache[
+            "k_surface_contour_actor"
+        ] = contour_actor
+
+        self.cache[
+            "k_surface_contour_label_actor"
+        ] = text_actor
+
+        self.cache[
+            "k_surface_contour_surface"
+        ] = contour_mesh
+
+        self.cache[
+            "k_surface_contour_info"
+        ] = {
+            "property_name": str(
+                property_name
+            ),
+            "layer_index": int(
+                layer_index
+            ),
+            "levels": rendered_levels,
+            "requested_levels": contour_levels.tolist(),
+            "top_face_count": int(
+                face_points.shape[0]
+            ),
+            "contour_points": int(
+                contour_mesh.n_points
+            ),
+            "contour_cells": int(
+                contour_mesh.n_cells
+            ),
+            "label_count": int(
+                len(output_text_meshes)
+            ),
+            "target_resolution": int(
+                target_resolution
+            ),
+        }
+
+        print(
+            "[K Surface Contour] "
+            f"property={property_name}, "
+            f"K={layer_index}, "
+            f"rendered_levels={rendered_levels}, "
+            f"labels={len(output_text_meshes)}"
+        )
+
+        self._render()
+
+        return contour_actor
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # =====================================================================
+    # View All / Fit To View
+    #
+    # 功能：
+    # 1. 保持当前 2D / 3D 观察方向；
+    # 2. 不旋转模型；
+    # 3. 自动移动相机焦点到模型中心；
+    # 4. 自动调整缩放或相机距离；
+    # 5. 让整个模型显示在当前窗口内；
+    # 6. 模型与窗口边缘留白由 VIEW_ALL_PADDING 固定控制；
+    # =====================================================================
+
+    def _is_valid_bounds(self, bounds):
+        """
+        判断 bounds 是否有效。
+
+        bounds 格式：
+        (xmin, xmax, ymin, ymax, zmin, zmax)
+        """
+        if bounds is None:
+            return False
+
+        try:
+            if len(bounds) != 6:
+                return False
+
+            values = [float(v) for v in bounds]
+
+            if not np.all(np.isfinite(values)):
+                return False
+
+            xmin, xmax, ymin, ymax, zmin, zmax = values
+
+            if xmax < xmin:
+                return False
+
+            if ymax < ymin:
+                return False
+
+            if zmax < zmin:
+                return False
+
+            return True
+
+        except Exception:
+            return False
+
+
+    def _merge_bounds(self, bounds_list):
+        """
+        合并多个 bounds，得到一个整体模型范围。
+        """
+        valid_bounds = [
+            bounds
+            for bounds in bounds_list
+            if self._is_valid_bounds(bounds)
+        ]
+
+        if not valid_bounds:
+            return None
+
+        xmin = min(float(bounds[0]) for bounds in valid_bounds)
+        xmax = max(float(bounds[1]) for bounds in valid_bounds)
+
+        ymin = min(float(bounds[2]) for bounds in valid_bounds)
+        ymax = max(float(bounds[3]) for bounds in valid_bounds)
+
+        zmin = min(float(bounds[4]) for bounds in valid_bounds)
+        zmax = max(float(bounds[5]) for bounds in valid_bounds)
+
+        return (
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            zmin,
+            zmax,
+        )
+
+
+    def _get_actor_bounds(self, actor):
+        """
+        获取一个可见 Actor 的 bounds。
+
+        若 actor 不可见、无效或不支持 bounds，则返回 None。
+        """
+        if actor is None:
+            return None
+
+        try:
+            if hasattr(actor, "visibility"):
+                if not bool(actor.visibility):
+                    return None
+        except Exception:
+            pass
+
+        try:
+            if hasattr(actor, "GetVisibility"):
+                if not bool(actor.GetVisibility()):
+                    return None
+        except Exception:
+            pass
+
+        try:
+            bounds = actor.bounds
+
+            if self._is_valid_bounds(bounds):
+                return tuple(float(v) for v in bounds)
+
+        except Exception:
+            pass
+
+        try:
+            bounds = actor.GetBounds()
+
+            if self._is_valid_bounds(bounds):
+                return tuple(float(v) for v in bounds)
+
+        except Exception:
+            pass
+
+        return None
+
+
+    def _collect_visible_model_actor_bounds(self):
+
+        ignored_key_words = [
+            "scalar_bar",
+            "fixed_coordinate",
+            "selection_",
+            "measure_",
+            "cell_pick",
+            "magnify",
+            "contour_label",
+            "contour_info",
+        ]
+
+        bounds_list = []
+
+        for key, value in self.cache.items():
+            key_lower = str(key).lower()
+
+            if any(
+                word in key_lower
+                for word in ignored_key_words
+            ):
+                continue
+
+            # actor 列表，例如 fracture_actors、well_actors
+            if isinstance(value, (list, tuple)):
+                for actor in value:
+                    actor_bounds = self._get_actor_bounds(actor)
+
+                    if actor_bounds is not None:
+                        bounds_list.append(actor_bounds)
+
+                continue
+
+            # 单 actor
+            actor_bounds = self._get_actor_bounds(value)
+
+            if actor_bounds is not None:
+                bounds_list.append(actor_bounds)
+
+        return bounds_list
+
+
+    def _get_fit_view_bounds(self, sim_data=None):
+        """
+        获取 View All 应使用的整体模型范围。
+
+        优先级：
+        1. sim_data 中角点网格真实范围；
+        2. 当前 2D 模式保存的完整世界范围；
+        3. 当前窗口内可见模型 Actor 的范围；
+        4. renderer 中可见对象的总范围。
+        """
+        candidate_bounds = []
+
+        if sim_data is not None:
+            try:
+                model_bounds = self.get_corner_model_bounds(
+                    sim_data
+                )
+
+                if self._is_valid_bounds(model_bounds):
+                    candidate_bounds.append(model_bounds)
+
+            except Exception:
+                pass
+
+        magnify_bounds = self.cache.get(
+            "magnify_2d_world_bounds"
+        )
+
+        if self._is_valid_bounds(magnify_bounds):
+            candidate_bounds.append(magnify_bounds)
+
+        actor_bounds = self._collect_visible_model_actor_bounds()
+
+        candidate_bounds.extend(actor_bounds)
+
+        merged_bounds = self._merge_bounds(candidate_bounds)
+
+        if merged_bounds is not None:
+            return merged_bounds
+
+        try:
+            renderer_bounds = self.renderer.ComputeVisiblePropBounds()
+
+            if self._is_valid_bounds(renderer_bounds):
+                return tuple(
+                    float(v)
+                    for v in renderer_bounds
+                )
+
+        except Exception:
+            pass
+
+        return None
+
+
+    def _get_render_window_aspect_ratio(self):
+
+        width = 1
+        height = 1
+
+        try:
+            render_window = self.plotter.ren_win
+
+            if render_window is not None:
+                size = render_window.GetSize()
+
+                if size is not None and len(size) >= 2:
+                    width = max(int(size[0]), 1)
+                    height = max(int(size[1]), 1)
+
+        except Exception:
+            pass
+
+        return float(width) / float(height)
+
+
+    def _bounds_to_corners(self, bounds):
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(v)
+            for v in bounds
+        ]
+
+        return np.asarray(
+            [
+                [xmin, ymin, zmin],
+                [xmin, ymin, zmax],
+                [xmin, ymax, zmin],
+                [xmin, ymax, zmax],
+                [xmax, ymin, zmin],
+                [xmax, ymin, zmax],
+                [xmax, ymax, zmin],
+                [xmax, ymax, zmax],
+            ],
+            dtype=np.float64,
+        )
+
+
+    def _normalize_vector(self, vector, fallback=None):
+
+        vector = np.asarray(
+            vector,
+            dtype=np.float64,
+        )
+
+        length = float(np.linalg.norm(vector))
+
+        if length > 1e-12:
+            return vector / length
+
+        if fallback is None:
+            return np.array(
+                [0.0, 0.0, 1.0],
+                dtype=np.float64,
+            )
+
+        fallback = np.asarray(
+            fallback,
+            dtype=np.float64,
+        )
+
+        fallback_length = float(
+            np.linalg.norm(fallback)
+        )
+
+        if fallback_length > 1e-12:
+            return fallback / fallback_length
+
+        return np.array(
+            [0.0, 0.0, 1.0],
+            dtype=np.float64,
+        )
+
+
+    def _get_current_camera_basis(self):
+
+        position, focal_point, view_up = (
+            self.plotter.camera_position
+        )
+
+        position = np.asarray(
+            position,
+            dtype=np.float64,
+        )
+
+        focal_point = np.asarray(
+            focal_point,
+            dtype=np.float64,
+        )
+
+        view_up = self._normalize_vector(
+            view_up,
+            fallback=(0.0, 0.0, 1.0),
+        )
+
+        backward = self._normalize_vector(
+            position - focal_point,
+            fallback=(1.0, 1.0, 1.0),
+        )
+
+        forward = -backward
+
+        right = np.cross(forward, view_up)
+
+        if np.linalg.norm(right) < 1e-12:
+            right = np.cross(
+                forward,
+                np.array([0.0, 0.0, 1.0]),
+            )
+
+        if np.linalg.norm(right) < 1e-12:
+            right = np.cross(
+                forward,
+                np.array([0.0, 1.0, 0.0]),
+            )
+
+        right = self._normalize_vector(
+            right,
+            fallback=(1.0, 0.0, 0.0),
+        )
+
+        up = np.cross(right, forward)
+
+        up = self._normalize_vector(
+            up,
+            fallback=view_up,
+        )
+
+        return {
+            "position": position,
+            "focal_point": focal_point,
+            "backward": backward,
+            "forward": forward,
+            "right": right,
+            "up": up,
+        }
+
+
+    def _fit_parallel_camera_to_bounds(
+        self,
+        bounds,
+    ):
+
+        if not self._is_valid_bounds(bounds):
+            return False
+
+        camera_basis = self._get_current_camera_basis()
+
+        position = camera_basis["position"]
+        focal_point = camera_basis["focal_point"]
+        backward = camera_basis["backward"]
+        right = camera_basis["right"]
+        up = camera_basis["up"]
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(v)
+            for v in bounds
+        ]
+
+        model_center = np.array(
+            [
+                (xmin + xmax) * 0.5,
+                (ymin + ymax) * 0.5,
+                (zmin + zmax) * 0.5,
+            ],
+            dtype=np.float64,
+        )
+
+        corners = self._bounds_to_corners(bounds)
+
+        relative_corners = corners - model_center
+
+        horizontal_extent = float(
+            np.max(
+                np.abs(relative_corners @ right)
+            )
+        )
+
+        vertical_extent = float(
+            np.max(
+                np.abs(relative_corners @ up)
+            )
+        )
+
+        aspect_ratio = self._get_render_window_aspect_ratio()
+
+        required_half_height = max(
+            vertical_extent,
+            horizontal_extent / max(
+                aspect_ratio,
+                1e-12,
+            ),
+            1e-6,
+        )
+
+        required_half_height *= VIEW_ALL_PADDING
+
+        old_distance = float(
+            np.linalg.norm(position - focal_point)
+        )
+
+        if old_distance < 1e-6:
+            dx = xmax - xmin
+            dy = ymax - ymin
+            dz = zmax - zmin
+
+            old_distance = max(
+                dx,
+                dy,
+                dz,
+                1.0,
+            ) * 2.0
+
+        cam = self.plotter.camera
+
+        new_position = model_center + backward * old_distance
+
+        self.plotter.camera_position = (
+            tuple(float(v) for v in new_position),
+            tuple(float(v) for v in model_center),
+            tuple(float(v) for v in up),
+        )
+
+        cam.parallel_projection = True
+        cam.parallel_scale = float(required_half_height)
+
+        try:
+            self.plotter.reset_camera_clipping_range()
+        except Exception:
+            pass
+
+        return True
+
+
+    def _fit_perspective_camera_to_bounds(
+        self,
+        bounds,
+    ):
+
+        if not self._is_valid_bounds(bounds):
+            return False
+
+        camera_basis = self._get_current_camera_basis()
+
+        backward = camera_basis["backward"]
+        right = camera_basis["right"]
+        up = camera_basis["up"]
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(v)
+            for v in bounds
+        ]
+
+        model_center = np.array(
+            [
+                (xmin + xmax) * 0.5,
+                (ymin + ymax) * 0.5,
+                (zmin + zmax) * 0.5,
+            ],
+            dtype=np.float64,
+        )
+
+        corners = self._bounds_to_corners(bounds)
+
+        cam = self.plotter.camera
+
+        view_angle = float(
+            getattr(cam, "view_angle", 30.0)
+        )
+
+        view_angle = max(
+            min(view_angle, 170.0),
+            1.0,
+        )
+
+        vertical_half_angle = math.radians(
+            view_angle * 0.5
+        )
+
+        vertical_tangent = math.tan(
+            vertical_half_angle
+        )
+
+        vertical_tangent = max(
+            vertical_tangent,
+            1e-6,
+        )
+
+        aspect_ratio = self._get_render_window_aspect_ratio()
+
+        horizontal_tangent = (
+            vertical_tangent
+            * max(aspect_ratio, 1e-6)
+        )
+
+        required_distance = 0.0
+
+        for corner in corners:
+            relative = corner - model_center
+
+            horizontal = abs(
+                float(np.dot(relative, right))
+            )
+
+            vertical = abs(
+                float(np.dot(relative, up))
+            )
+
+            depth_offset = float(
+                np.dot(relative, backward)
+            )
+
+            distance_for_corner = depth_offset + max(
+                horizontal / horizontal_tangent,
+                vertical / vertical_tangent,
+                1e-6,
+            )
+
+            required_distance = max(
+                required_distance,
+                distance_for_corner,
+            )
+
+        required_distance *= VIEW_ALL_PADDING
+
+        dx = xmax - xmin
+        dy = ymax - ymin
+        dz = zmax - zmin
+
+        minimum_distance = max(
+            dx,
+            dy,
+            dz,
+            1.0,
+        ) * 0.1
+
+        required_distance = max(
+            required_distance,
+            minimum_distance,
+        )
+
+        new_position = (
+            model_center
+            + backward * required_distance
+        )
+
+        self.plotter.camera_position = (
+            tuple(float(v) for v in new_position),
+            tuple(float(v) for v in model_center),
+            tuple(float(v) for v in up),
+        )
+
+        try:
+            self.plotter.reset_camera_clipping_range()
+        except Exception:
+            pass
+
+        return True
+
+
+    def fit_view_all(
+        self,
+        sim_data=None,
+    ):
+        """
+        View All
+
+        功能：
+        - 保持当前视角；
+        - 不改变模型旋转；
+        - 保持当前 2D 或 3D 模式；
+        - 自动居中；
+        - 自动缩放；
+        - 让整个模型显示在画面中；
+        - 留白比例固定为 VIEW_ALL_PADDING。
+
+        参数：
+            sim_data：
+                当前模型的模拟数据。
+                有 sim_data 时，优先使用角点网格真实范围。
+        """
+        try:
+            bounds = self._get_fit_view_bounds(
+                sim_data=sim_data
+            )
+
+            if not self._is_valid_bounds(bounds):
+                print(
+                    "[View All] 无法获取有效模型范围。"
+                )
+                return False
+
+            cam = self.plotter.camera
+
+            is_parallel = bool(
+                getattr(
+                    cam,
+                    "parallel_projection",
+                    False,
+                )
+            )
+
+            if is_parallel:
+                success = self._fit_parallel_camera_to_bounds(
+                    bounds=bounds,
+                )
+
+            else:
+                success = self._fit_perspective_camera_to_bounds(
+                    bounds=bounds,
+                )
+
+            if not success:
+                return False
+
+            if self.cache.get(
+                "camera_aware_coordinate_enabled",
+                False,
+            ):
+                signature = (
+                    self._get_camera_aware_coordinate_signature(
+                        bounds
+                    )
+                )
+
+                self.create_fixed_3d_coordinate_axes(
+                    bounds=bounds,
+                    approx_divisions=COORDINATE_APPROX_DIVISIONS,
+                    signature=signature,
+                )
+
+            self._render()
+
+            return True
+
+        except Exception as exc:
+            print("=" * 60)
+            print("[View All] 执行失败：")
+            print(type(exc).__name__, exc)
+            print("=" * 60)
+
+            return False
+
+
+    def fit_view_all_3d(
+        self,
+        sim_data=None,
+    ):
+        """
+        3D 窗口专用 View All。
+        """
+        return self.fit_view_all(
+            sim_data=sim_data,
+        )
+
+
+    def fit_view_all_2d(
+        self,
+        sim_data=None,
+    ):
+        """
+        2D 窗口专用 View All。
+        """
+        return self.fit_view_all(
+            sim_data=sim_data,
         )

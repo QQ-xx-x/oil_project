@@ -10,7 +10,10 @@ from PyQt5.QtWidgets import (
 )
 
 from ..data_models import SimulationData
-from ..simulation_runner import _corner_point_grid_from_dataset, _tag_case_dataset_fractures
+from ..simulation_runner import (
+    _corner_point_grid_from_dataset,
+    _normalize_parsed_wells_z_to_grid,
+)
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
 from .icon_registry import semantic_icon_kind
@@ -740,6 +743,7 @@ class ProjectShell(QWidget):
 
     def _handle_simulation_finished(self, sim_data, result_path):
         self._ensure_corner_point_grid_for_slice(sim_data)
+        self._attach_parsed_wells_to_sim_data(sim_data)
         self._augment_corner_visual_layers(sim_data)
         self.result_store.run_status = "done"
         self.result_store.simulation_data = sim_data
@@ -778,6 +782,62 @@ class ProjectShell(QWidget):
             f"{corner_grid.nx} x {corner_grid.ny} x {corner_grid.nz}"
         )
 
+    def _attach_parsed_wells_to_sim_data(self, sim_data):
+        dataset_path = (
+            getattr(
+                self.project_state,
+                "case_dataset_path",
+                "",
+            )
+            or ""
+        )
+        if not dataset_path or not os.path.isdir(dataset_path):
+            self.message_log.append_message(
+                "[井渲染] 当前没有有效的 CaseDataset 路径，无法加载井轨迹。"
+            )
+            return
+        try:
+            dataset = load_case_dataset(
+                dataset_path,
+                strict=False,
+            )
+        except (
+            CaseDatasetReadError,
+            ValueError,
+            OSError,
+        ) as exc:
+            self.message_log.append_message(
+                f"[井渲染] 读取 CaseDataset 失败：{exc}"
+            )
+            return
+        well_data = getattr(
+            dataset,
+            "wells",
+            None,
+        )
+        if not isinstance(well_data, dict):
+            self.message_log.append_message(
+                "[井渲染] 当前 Dataset 中没有解析后的井数据。"
+            )
+            return
+        wells = well_data.get(
+            "wells",
+            [],
+        )
+        if not isinstance(wells, list) or not wells:
+            self.message_log.append_message(
+                "[井渲染] 当前 Dataset 中没有可渲染的井轨迹。"
+            )
+            return
+        well_data = _normalize_parsed_wells_z_to_grid(
+            well_data,
+            dataset,
+        )
+        sim_data.parsed_well_data = well_data
+        self.message_log.append_message(
+            f"[井渲染] 已附加 {len(wells)} 口真实井轨迹到本次模拟结果。"
+        )
+
     def _handle_simulation_failed(self, message):
         self.result_store.run_status = "failed"
         self.message_log.append_message(f"[运行] {message}")
@@ -793,13 +853,6 @@ class ProjectShell(QWidget):
         params = self._last_simulation_params or {}
         fractures = getattr(sim_data, "fractures", []) or []
         self._apply_corner_origin_offset(sim_data, fractures)
-        dataset_path = getattr(self.project_state, "case_dataset_path", "") or ""
-        if dataset_path:
-            try:
-                dataset = load_case_dataset(dataset_path, strict=False)
-                _tag_case_dataset_fractures(sim_data, dataset)
-            except Exception as exc:
-                self.message_log.append_message(f"[诊断] 裂缝类型标记失败：{exc}")
         natural_count = int(params.get("num_fracs", 0) or 0)
         region_count = int(params.get("region_num_fracs", 0) or 0)
         hydraulic_count = int(params.get("hf_count", 0) or 0)
@@ -813,27 +866,6 @@ class ProjectShell(QWidget):
                 frac_id = int(frac.get("id", index))
             except (TypeError, ValueError):
                 frac_id = index
-
-            existing_type = str(frac.get("type") or "").lower()
-            has_explicit_type = (
-                existing_type in {"natural", "hydraulic", "region"}
-                or "is_hydraulic" in frac
-            )
-            if has_explicit_type:
-                existing_hydraulic = (
-                    existing_type == "hydraulic"
-                    or int(frac.get("is_hydraulic", 0) or 0) == 1
-                )
-                frac["type"] = "hydraulic" if existing_hydraulic else (existing_type or "natural")
-                frac["is_hydraulic"] = 1 if existing_hydraulic else 0
-                if existing_hydraulic:
-                    points = frac.get("points", []) or []
-                    if points:
-                        hydraulic_centers.append(tuple(
-                            sum(float(point[axis]) for point in points) / len(points)
-                            for axis in range(3)
-                        ))
-                continue
 
             is_region = region_start <= frac_id < hydraulic_start
             is_hydraulic = hydraulic_start <= frac_id < hydraulic_end
