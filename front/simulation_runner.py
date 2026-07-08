@@ -350,7 +350,7 @@ def run_case_dataset_simulation(params):
 
     result = sim.runSimulation()
     result_params = _case_dataset_result_params(params, dataset)
-    sim_data = _collect_case_data_simulation_result(sim, result, result_params)
+    sim_data = _collect_case_data_simulation_result(sim, result, result_params, dataset)
     sim_data.corner_point_grid = _corner_point_grid_from_dataset(dataset.grid)
     return sim_data
 
@@ -837,6 +837,114 @@ def _dfn_arrays(dfn_payload, z_transform=None):
     )
 
 
+def _dataset_dfn_fracture_ids(dataset):
+    dfn_payload = getattr(dataset, 'dfn', None) or {}
+    fractures = dfn_payload.get('fractures') or [] if isinstance(dfn_payload, dict) else []
+    ids = []
+    for index, fracture in enumerate(fractures):
+        if not isinstance(fracture, dict):
+            continue
+        frac_id = fracture.get('fracture_id', fracture.get('id', index))
+        try:
+            ids.append(int(frac_id))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _parsed_well_hydraulic_fracture_metadata(dataset, natural_ids):
+    wells_data = getattr(dataset, 'wells', None) or {}
+    wells = wells_data.get('wells') or [] if isinstance(wells_data, dict) else []
+    next_global_id = (max(natural_ids) + 1) if natural_ids else 0
+    input_to_global = {}
+    metadata_by_global = {}
+    ordered_metadata = []
+
+    for well in wells:
+        if not isinstance(well, dict):
+            continue
+        well_name = well.get('well_name')
+        for comp in well.get('completion_definitions') or []:
+            if not isinstance(comp, dict):
+                continue
+            is_fractured = bool(comp.get('is_fractured'))
+            connects_fracture = bool(comp.get('connect_fracture')) or comp.get('connection_target') == 'fracture'
+            if not (is_fractured and connects_fracture):
+                continue
+            try:
+                input_frac_id = int(comp.get('frac_id', comp.get('input_frac_id', -1)))
+            except (TypeError, ValueError):
+                input_frac_id = -1
+            if input_frac_id < 0:
+                continue
+
+            is_new_input_frac = input_frac_id not in input_to_global
+            if is_new_input_frac:
+                input_to_global[input_frac_id] = next_global_id
+                next_global_id += 1
+            global_id = input_to_global[input_frac_id]
+            metadata = {
+                'type': 'hydraulic',
+                'is_hydraulic': 1,
+                'source': 'well_completion',
+                'input_frac_id': input_frac_id,
+                'global_frac_id': global_id,
+                'well_name': comp.get('well_name') or well_name,
+                'comp_id': comp.get('comp_id'),
+            }
+            metadata_by_global[global_id] = metadata
+            if is_new_input_frac:
+                ordered_metadata.append(metadata)
+
+    return metadata_by_global, ordered_metadata
+
+
+def _tag_case_dataset_fractures(sim_data, dataset):
+    if dataset is None or not getattr(sim_data, 'fractures', None):
+        return
+
+    natural_ids = _dataset_dfn_fracture_ids(dataset)
+    natural_id_set = set(natural_ids)
+    hydraulic_by_id, hydraulic_by_order = _parsed_well_hydraulic_fracture_metadata(
+        dataset,
+        natural_ids,
+    )
+    natural_count = len(natural_ids)
+    hydraulic_order_index = 0
+
+    for index, fracture in enumerate(sim_data.fractures):
+        try:
+            frac_id = int(fracture.get('id', index))
+        except (TypeError, ValueError):
+            frac_id = index
+
+        if frac_id in hydraulic_by_id:
+            fracture.update(hydraulic_by_id[frac_id])
+            continue
+
+        existing_type = str(fracture.get('type') or '').lower()
+        existing_hydraulic = int(fracture.get('is_hydraulic', 0) or 0) == 1
+        if existing_type == 'hydraulic' or existing_hydraulic:
+            fracture['type'] = 'hydraulic'
+            fracture['is_hydraulic'] = 1
+            continue
+
+        if frac_id in natural_id_set or index < natural_count:
+            fracture.setdefault('source', 'dfn')
+            fracture['type'] = fracture.get('type') or 'natural'
+            fracture['is_hydraulic'] = int(fracture.get('is_hydraulic', 0) or 0)
+            continue
+
+        if hydraulic_order_index < len(hydraulic_by_order):
+            fracture.update(hydraulic_by_order[hydraulic_order_index])
+            hydraulic_order_index += 1
+            continue
+
+        fracture.setdefault('source', 'unknown')
+        fracture.setdefault('type', 'natural')
+        fracture['is_hydraulic'] = int(fracture.get('is_hydraulic', 0) or 0)
+
+
 def _array_float64(values):
     return np.ascontiguousarray(values, dtype=np.float64)
 
@@ -925,7 +1033,7 @@ def run_case_data_simulation(params):
     _apply_parsed_wells(sim, params, dataset_for_wells)
 
     result = sim.runSimulation()
-    return _collect_case_data_simulation_result(sim, result, params)
+    return _collect_case_data_simulation_result(sim, result, params, dataset_for_wells)
 
 
 def _legacy_apply_case_data_grid_file(sim, params):
@@ -1066,7 +1174,7 @@ def _apply_case_data_solver_parameters(sim, params):
         sim.setSimulationParameters(float(params.get('simulation_time', 100.0)))
 
 
-def _collect_case_data_simulation_result(sim, result, params):
+def _collect_case_data_simulation_result(sim, result, params, dataset=None):
     nx = int(params.get('nx', 0))
     ny = int(params.get('ny', 0))
     nz = int(params.get('nz', 0))
@@ -1137,6 +1245,7 @@ def _collect_case_data_simulation_result(sim, result, params):
         except Exception as exc:
             print(f"WARNING: getPermeabilityZSteps failed: {exc}", flush=True)
     sim_data.has_dual_porosity = bool(params.get('enable_dual_porosity', False))
+    _tag_case_dataset_fractures(sim_data, dataset)
     return sim_data
 
 

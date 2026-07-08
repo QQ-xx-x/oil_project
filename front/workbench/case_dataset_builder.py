@@ -71,6 +71,14 @@ class CaseDatasetBuildError(ValueError):
     """CaseData 标准数据包无法构建时抛出。"""
 
 
+MATRIX_PERMEABILITY_FILE_KEYS = frozenset((
+    "matrix_kx_file",
+    "matrix_ky_file",
+    "matrix_kz_file",
+))
+MATRIX_PERMEABILITY_SCALE = 1.0 / 1000.0
+
+
 def build_case_dataset(case_data_path, output_dir, include_raw=True,
                        null_value=DEFAULT_NULL_VALUE, model_config=None):
     """把 CaseData 和其引用文件保存为标准 case_dataset 目录。
@@ -318,6 +326,10 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
 
         dtype = np.int8 if file_key == "actnum_file" else np.float64
         values_array = np.asarray(values, dtype=dtype)
+        transform = None
+        if dtype == np.float64:
+            values_array, transform = _apply_property_transform(
+                file_key, values_array, null_value)
         arrays[array_key] = values_array
         mask_key = f"{MASK_PREFIX}{array_key}_valid"
         valid_mask = _build_valid_mask(values_array, active_mask, null_value)
@@ -338,6 +350,7 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
             null_value,
             expected_count,
             mask_key,
+            transform,
         )
 
     _set_check(
@@ -390,6 +403,21 @@ def _should_parse_property_file(file_key, model_config=None):
     return True
 
 
+def _apply_property_transform(file_key, values, null_value):
+    if file_key not in MATRIX_PERMEABILITY_FILE_KEYS:
+        return values, None
+
+    transformed = values.astype(np.float64, copy=True)
+    null_mask = np.isclose(transformed, float(null_value))
+    transformed[~null_mask] *= MATRIX_PERMEABILITY_SCALE
+    return transformed, {
+        "kind": "scale",
+        "scale": MATRIX_PERMEABILITY_SCALE,
+        "applied_to": "non_null_values",
+        "reason": "matrix permeability input divided by 1000",
+    }
+
+
 def _build_valid_mask(values, active_mask, null_value):
     valid = ~np.isclose(values.astype(np.float64), float(null_value))
     if active_mask is None:
@@ -401,11 +429,11 @@ def _build_valid_mask(values, active_mask, null_value):
 
 
 def _array_summary(file_key, path, values, valid_mask, null_value,
-                   expected_count, mask_key):
+                   expected_count, mask_key, transform=None):
     float_values = values.astype(np.float64)
     null_mask = np.isclose(float_values, float(null_value))
     valid_values = float_values[valid_mask]
-    return {
+    summary = {
         "source_key": file_key,
         "source_path": os.path.abspath(path),
         "saved_key": PROPERTY_ARRAYS[file_key],
@@ -419,6 +447,9 @@ def _array_summary(file_key, path, values, valid_mask, null_value,
         "min_valid": _safe_float(np.min(valid_values)) if len(valid_values) else None,
         "max_valid": _safe_float(np.max(valid_values)) if len(valid_values) else None,
     }
+    if transform:
+        summary["transform"] = transform
+    return summary
 
 
 def _parse_dfn_payload(files, validation):

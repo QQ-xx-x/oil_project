@@ -37,6 +37,31 @@ def _group_fracture_vertices(vertices):
     return [fracture for fracture in grouped if len(fracture.get('points', [])) >= 3]
 
 
+def _fracture_to_dict(fracture):
+    """Serialize a fracture while preserving visualization metadata."""
+    if isinstance(fracture, dict):
+        payload = {
+            key: value
+            for key, value in fracture.items()
+            if key != 'points'
+        }
+        points = fracture.get('points', [])
+    else:
+        payload = {'id': getattr(fracture, 'id', None)}
+        points = getattr(fracture, 'points', [])
+    payload['id'] = payload.get('id')
+    payload['points'] = [list(point) for point in points]
+    return payload
+
+
+def _fracture_from_dict(fracture):
+    """Deserialize a fracture and keep type/source fields intact."""
+    payload = dict(fracture or {})
+    payload['id'] = payload.get('id')
+    payload['points'] = [tuple(point) for point in payload.get('points', [])]
+    return payload
+
+
 class OutputCapture:
     """捕获C++输出并重定向到Qt界面"""
     def __init__(self, callback):
@@ -329,13 +354,7 @@ class SimulationData:
             'stress_field': [list(point) for point in self.stress_field],
             'grid_lines': [list(line) for line in self.grid_lines],
             'interpolated_pressure': [list(point) for point in self.interpolated_pressure],
-            'fractures': [
-                {
-                    'id': fracture.get('id'),
-                    'points': [list(point) for point in fracture.get('points', [])]
-                }
-                for fracture in self.fractures
-            ],
+            'fractures': [_fracture_to_dict(fracture) for fracture in self.fractures],
             'wells': list(self.wells),
             'corner_point_grid': self.corner_point_grid.to_dict() if self.corner_point_grid else None,
             'cell_geometry_with_pressure': cell_geom_list,
@@ -366,10 +385,7 @@ class SimulationData:
             tuple(point) for point in payload.get('interpolated_pressure', [])
         ]
         self.fractures = [
-            {
-                'id': fracture.get('id'),
-                'points': [tuple(point) for point in fracture.get('points', [])]
-            }
+            _fracture_from_dict(fracture)
             for fracture in payload.get('fractures', [])
         ]
         self.wells = list(payload.get('wells', []))
