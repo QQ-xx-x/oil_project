@@ -7,24 +7,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-
-"""def get_bright_jet_cmap():
-    from matplotlib.colors import LinearSegmentedColormap
-    bright_jet_colors = [
-        (0.0, 0.0, 0.4),   
-        (0.0, 0.0, 0.6),   # 深蓝
-        (0.0, 0.2, 0.8),   # 中蓝
-        (0.0, 0.6, 1.0),   # 亮蓝
-        (0.0, 1.0, 1.0),   # 青
-        (0.2, 1.0, 0.4),   # 绿青
-        (0.8, 1.0, 0.2),   # 黄绿
-        (1.0, 1.0, 0.0),   # 黄
-        (1.0, 0.6, 0.0),   # 橙
-        (1.0, 0.1, 0.0),   # 橙红
-        
-    ]
-    return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=512)"""
-
 def get_bright_jet_cmap():
     from matplotlib.colors import LinearSegmentedColormap
     bright_jet_colors = [
@@ -129,6 +111,12 @@ class PyVistaRenderer:
         }
 
         self.camera_direction_locked = False
+        # 静态属性预览渲染器
+        from .pyvista_static_property_preview import StaticPropertyPreviewRenderer
+        self.static_property_preview = StaticPropertyPreviewRenderer(self)
+        # 几何预览渲染器
+        from .pyvista_geometry_preview import GeometryPreviewRenderer
+        self.geometry_preview = GeometryPreviewRenderer(self)
 
 
     #箭头
@@ -193,7 +181,6 @@ class PyVistaRenderer:
         删除当前坐标系的网格、刻度线、边框和文字。
         不移除相机监听器。
         """
-
         self._remove_actor_list(
             self.cache.get(
                 "fixed_coordinate_axis_actors",
@@ -350,10 +337,6 @@ class PyVistaRenderer:
         vmax,
         step,
     ):
-        """
-        根据真实模型坐标范围生成刻度。
-        最小值与最大值一定保留。
-        """
         vmin = float(vmin)
         vmax = float(vmax)
         step = float(step)
@@ -385,17 +368,11 @@ class PyVistaRenderer:
 
     @staticmethod
     def _format_fixed_coordinate_value(value):
-        """
-        格式化刻度数值。
-        """
         value = float(value)
-
         if abs(value) < 1e-8:
             return "0"
-
         if abs(value - round(value)) < 1e-8:
             return f"{round(value):.0f}"
-
         return (
             f"{value:.3f}"
             .rstrip("0")
@@ -411,9 +388,6 @@ class PyVistaRenderer:
         line_width=1.0,
         opacity=0.65,
     ):
-        """
-        添加坐标轴线、边框线、网格线或刻度短线。
-        """
         start = np.asarray(
             start_point,
             dtype=np.float64,
@@ -455,9 +429,6 @@ class PyVistaRenderer:
         label_point,
         text,
     ):
-        """
-        保存一个刻度标签规格。
-        """
         label_specs.append(
             {
                 "axis_point": tuple(
@@ -483,9 +454,6 @@ class PyVistaRenderer:
         color=(0.12, 0.12, 0.12),
         line_width=1.2,
     ):
-        """
-        添加一条刻度短线，并保存对应文字标签。
-        """
         self._add_fixed_coordinate_line(
             axis_point,
             tick_end_point,
@@ -493,7 +461,6 @@ class PyVistaRenderer:
             line_width=line_width,
             opacity=1.0,
         )
-
         self._append_fixed_coordinate_label_spec(
             label_specs=label_specs,
             axis_point=axis_point,
@@ -615,11 +582,7 @@ class PyVistaRenderer:
         self,
         label_specs,
     ):
-        """
-        根据当前屏幕投影，按文字对齐方式分组。
-        """
         groups = {}
-
         for index, spec in enumerate(
             label_specs
         ):
@@ -799,24 +762,11 @@ class PyVistaRenderer:
 
 
     def get_corner_model_bounds(self, sim_data):
-        """
-        获取当前完整工程模型的总范围。
-
-        包含：
-        1. 角点网格 cell_geometry_with_pressure；
-        2. 天然裂缝、人工裂缝的所有 points；
-        3. 真实井轨迹所有 x_m / y_m / z_m 点。
-
-        保留原函数名称，外部调用方式不变。
-        """
 
         point_groups = []
 
         def append_valid_points(points):
-            """
-            将一组 XYZ 点加入范围计算。
-            自动过滤空数据、非法数据、NaN、inf。
-            """
+
             if points is None:
                 return
 
@@ -861,11 +811,6 @@ class PyVistaRenderer:
                 points_array
             )
 
-        # ---------------------------------------------------------
-        # 1. 角点网格范围
-        # cell_geometry_with_pressure:
-        # 4:28 = 8 个角点 * XYZ
-        # ---------------------------------------------------------
         cell_data = getattr(
             sim_data,
             "cell_geometry_with_pressure",
@@ -902,11 +847,6 @@ class PyVistaRenderer:
             ):
                 pass
 
-        # ---------------------------------------------------------
-        # 2. 裂缝范围
-        # 同时包含天然裂缝和人工裂缝。
-        # 每个 fracture 的 points 即当前裂缝渲染使用的顶点。
-        # ---------------------------------------------------------
         fractures = getattr(
             sim_data,
             "fractures",
@@ -931,13 +871,6 @@ class PyVistaRenderer:
                     )
                 )
 
-        # ---------------------------------------------------------
-        # 3. 真实井轨迹范围
-        #
-        # 与 render_wells() 保持一致：
-        # 优先 sim_data.parsed_well_data，
-        # 没有时回退 self._parsed_well_data。
-        # ---------------------------------------------------------
         well_data = getattr(
             sim_data,
             "parsed_well_data",
@@ -954,8 +887,6 @@ class PyVistaRenderer:
                 None,
             )
 
-        # 井 tube 的视觉半径。
-        # 当前 render_wells() 使用 tube(radius=2.0)。
         well_tube_radius = 2.0
 
         well_min_x = None
@@ -1168,10 +1099,6 @@ class PyVistaRenderer:
             )
         )
 
-        # ---------------------------------------------------------
-        # 井的实际显示是 tube(radius=2.0)。
-        # 坐标系范围要把井筒实体而非仅井轨迹中心线包进去。
-        # ---------------------------------------------------------
         if well_min_x is not None:
             xmin = min(
                 xmin,
@@ -1925,13 +1852,6 @@ class PyVistaRenderer:
 
         # =========================================================
         # 左右两侧 Z 轴刻度与数字
-        #
-        # 普通斜视图：
-        #     Z 刻度沿 X 方向外移。
-        #
-        # 左视图 / 右视图：
-        #     X 是屏幕深度方向。
-        #     Z 刻度和数字必须改为沿 Y 方向外移。
         # =========================================================
         if show_z_axis:
             for z in z_ticks:
@@ -2397,7 +2317,6 @@ class PyVistaRenderer:
     def hide_coordinate_axes(self):
         """
         隐藏坐标系并停止监听相机。
-        不影响压力场、井、裂缝等其他 actor。
         """
         self.cache[
             "camera_aware_coordinate_enabled"
@@ -2562,6 +2481,31 @@ class PyVistaRenderer:
             "magnify_2d_dragging": False,
             "magnify_2d_world_bounds": None,
             "magnify_2d_start_xy": None,
+
+            # 折线垂向剖面
+            "fence_section_drawing": False,
+            "fence_section_finished": False,
+            "fence_section_sim_data": None,
+            "fence_section_property": "Pressure",
+            "fence_section_scalar_name": None,
+            "fence_section_bounds": None,
+            "fence_section_grid": None,
+            "fence_section_points": [],
+            "fence_section_observer_ids": [],
+            "fence_section_path_mesh": None,
+            "fence_section_path_actor": None,
+            "fence_section_preview_mesh": None,
+            "fence_section_preview_actor": None,
+            "fence_section_point_actors": [],
+            "fence_section_actor": None,
+            "fence_section_data": None,
+            "fence_section_scalar_bar": None,
+            "fence_section_scalar_bar_title": None,
+            "fence_section_last_info": None,
+            "fence_section_last_click_time": None,
+            "fence_section_last_click_display": None,
+            "fence_section_previous_camera_locked": None,
+            "fence_section_context_actor_states": [],
         }
 
     def _render(self):
@@ -2887,6 +2831,19 @@ class PyVistaRenderer:
 
         self._remove_actor(self.cache.get("time_playback_actor"))
 
+        if hasattr(self, "disable_vertical_fence_section"):
+            self.disable_vertical_fence_section(
+                clear_result=True,
+                render=False,
+            )
+        
+        # 清除静态属性预览渲染器
+        if hasattr(self, "static_property_preview") and self.static_property_preview is not None:
+            self.static_property_preview.clear(render_now=False)
+        # 清除几何预览渲染器
+        if hasattr(self, "geometry_preview") and self.geometry_preview is not None:
+            self.geometry_preview.clear_all(render_now=False)
+
         self.disable_camera_aware_coordinate_axes(clear_axes=True)
         
         self.deactivate_2d_magnify(
@@ -2912,7 +2869,7 @@ class PyVistaRenderer:
             "fill_mesh": None,
         }
         self._render()
-    # ========================================================================
+
 
     def _remove_actor(self, actor):
         if actor is None:
@@ -3797,14 +3754,6 @@ class PyVistaRenderer:
                 continue
             # ---------------------------------------------------------
             # 3. 从 track 中提取真实 XYZ 坐标
-            #
-            # track 每项格式：
-            # {
-            #     "md_m": ...,
-            #     "x_m": ...,
-            #     "y_m": ...,
-            #     "z_m": ...
-            # }
             # ---------------------------------------------------------
             valid_points = []
             for point in raw_track:
@@ -3852,9 +3801,6 @@ class PyVistaRenderer:
                 continue
             # ---------------------------------------------------------
             # 4. 按 md_m 排序
-            #
-            # parse_wells 本身已经排过序；
-            # 这里再排一次，避免数据被外部修改后出错。
             # ---------------------------------------------------------
             valid_points.sort(
                 key=lambda item: item[0]
@@ -3898,9 +3844,6 @@ class PyVistaRenderer:
                 continue
             # ---------------------------------------------------------
             # 6. 生成井筒 tube
-            #
-            # radius=2.0 只是视觉显示半径，
-            # 不是实际井径，不影响任何模拟数据。
             # ---------------------------------------------------------
             well_tube = well_line.tube(
                 radius=2.0,
@@ -7233,12 +7176,9 @@ class PyVistaRenderer:
             layer_index=k_layer
         )
 
-
-
     # =====================================================================
     # 阈值过滤
     # =====================================================================
-
     def render_threshold_property_field(
         self,
         sim_data,
@@ -7322,9 +7262,6 @@ class PyVistaRenderer:
 
         # =========================================================
         # 2. 记录筛选网格线当前显示状态
-        #
-        # 初次阈值渲染时默认 True。
-        # 用户通过按钮关闭后，再次筛选会保持关闭。
         # =========================================================
         threshold_grid_visible = bool(
             self.cache.get(
@@ -7632,7 +7569,6 @@ class PyVistaRenderer:
             print("=" * 60)
             print("\n")
 
-
     # =====================================================================
     # 阈值过滤网格线显示 / 隐藏
     # =====================================================================
@@ -7876,16 +7812,6 @@ class PyVistaRenderer:
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
             return
 
-        # =========================================================
-        # 1. 选择渗透率方向
-        # 数据结构：
-        # 28 P
-        # 29 Kx
-        # 30 Ky
-        # 31 Kz
-        # 32 Phi
-        # 33 Sw
-        # =========================================================
         direction = str(direction).lower()
 
         perm_config = {
@@ -7960,7 +7886,6 @@ class PyVistaRenderer:
 
             # =========================================================
             # 3. 读取 Kx / Ky / Kz
-            # 颜色条范围和压力场一样：当前属性全场 min/max
             # =========================================================
             perm_values = cell_data[:, col].astype(np.float32)
 
@@ -7979,7 +7904,6 @@ class PyVistaRenderer:
 
             # =========================================================
             # 4. 构建 UnstructuredGrid
-            # 和压力场 render_corner_pressure_field 的逻辑保持一致
             # =========================================================
             all_points = []
             cells = []
@@ -8018,7 +7942,6 @@ class PyVistaRenderer:
 
             # =========================================================
             # 5. 渲染渗透率场
-            # 参数模仿压力场
             # =========================================================
             actor = self.plotter.add_mesh(
                 surface,
@@ -8116,19 +8039,6 @@ class PyVistaRenderer:
     ):
         """
         渲染 Kx / Ky / Kz 的 I/J/K 分层结果。
-
-        perm_direction:
-            "x" -> Kx，第 29 列
-            "y" -> Ky，第 30 列
-            "z" -> Kz，第 31 列
-
-        axis:
-            "i" -> 固定 i，显示 I 方向剖面
-            "j" -> 固定 j，显示 J 方向剖面
-            "k" -> 固定 k，显示 K 层平面
-
-        layer_index:
-            层号，从 0 开始。
         """
 
         if not sim_data.corner_point_grid:
@@ -8139,13 +8049,6 @@ class PyVistaRenderer:
 
         # =========================================================
         # 1. 渗透率方向配置
-        # 数据结构：
-        # 28 P
-        # 29 Kx
-        # 30 Ky
-        # 31 Kz
-        # 32 Phi
-        # 33 Sw
         # =========================================================
         perm_direction = str(perm_direction).lower()
 
@@ -8827,16 +8730,6 @@ class PyVistaRenderer:
     ):
         """
         构建用于 cell picking 的 UnstructuredGrid。
-
-        axis=None：
-            构建全场拾取网格。
-
-        axis="i" / "j" / "k"：
-            只构建当前逻辑 I/J/K 层的拾取网格。
-
-        分层筛选规则：
-            根据 leaf 对应的 parent_id 推导逻辑 I/J/K，
-            不再通过粗网格的 AABB 包围盒筛选。
         """
 
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
@@ -14136,14 +14029,7 @@ class PyVistaRenderer:
     ):
         """
         在当前 K 层真实上表面绘制三维贴面等值线。
-
-        与此前版本的区别：
-        - 标签是实际 3D Text3D 几何，不跟随屏幕旋转；
-        - 每个等值等级只在最长的一段线上标一次；
-        - 标注位置会切掉一段等值线，让文字嵌入线中；
-        - 数字和线一起贴在真实 K 层上表面。
         """
-
         self.clear_k_layer_top_contours(
             render=False
         )
@@ -14208,9 +14094,6 @@ class PyVistaRenderer:
 
         # ---------------------------------------------------------
         # 4. 构建连续 contour 计算面
-        #
-        # 这个面只用于生成连续 contour，
-        # 最终线与文字都会投影回真实 top surface。
         # ---------------------------------------------------------
         compute_mesh = self._build_k_surface_contour_compute_mesh(
             xy_samples=xy_samples,
@@ -14283,13 +14166,6 @@ class PyVistaRenderer:
 
         # ---------------------------------------------------------
         # 6. 每个等值等级单独生成 contour
-        #
-        # 每个等级：
-        # - 先生成连续 contour
-        # - 再投影回真实 K 层上表面
-        # - 找最长线
-        # - 中间切开缺口
-        # - 在缺口中嵌入 3D 数值文字
         # ---------------------------------------------------------
         output_line_meshes = []
         output_text_meshes = []
@@ -14560,39 +14436,6 @@ class PyVistaRenderer:
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # =====================================================================
     # View All / Fit To View
     #
@@ -14763,12 +14606,6 @@ class PyVistaRenderer:
     def _get_fit_view_bounds(self, sim_data=None):
         """
         获取 View All 应使用的整体模型范围。
-
-        优先级：
-        1. sim_data 中角点网格真实范围；
-        2. 当前 2D 模式保存的完整世界范围；
-        3. 当前窗口内可见模型 Actor 的范围；
-        4. renderer 中可见对象的总范围。
         """
         candidate_bounds = []
 
@@ -15186,20 +15023,6 @@ class PyVistaRenderer:
     ):
         """
         View All
-
-        功能：
-        - 保持当前视角；
-        - 不改变模型旋转；
-        - 保持当前 2D 或 3D 模式；
-        - 自动居中；
-        - 自动缩放；
-        - 让整个模型显示在画面中；
-        - 留白比例固定为 VIEW_ALL_PADDING。
-
-        参数：
-            sim_data：
-                当前模型的模拟数据。
-                有 sim_data 时，优先使用角点网格真实范围。
         """
         try:
             bounds = self._get_fit_view_bounds(
@@ -15286,3 +15109,2469 @@ class PyVistaRenderer:
         return self.fit_view_all(
             sim_data=sim_data,
         )
+
+
+
+
+    # =========================================================
+    # 折线垂向剖面 / Vertical Fence Section
+    #
+    # 操作方式：
+    #
+    # 1. enable_vertical_fence_section(sim_data, "Pressure")
+    #
+    # 2. 自动切到俯视图；
+    #
+    # 3. 左键单击：
+    #    依次加入路径点 P1 -> P2 -> P3 ...
+    #
+    # 4. 双击左键：
+    #    当前路径结束；
+    #    最后一个点自动作为 End；
+    #    生成沿路径、沿 Z 方向贯穿模型的竖向折线剖面。
+    #
+    # 注意：
+    #
+    # 本功能只使用每个点的 XY 坐标。
+    #
+    # 即使用户点击的几个点原始 Z 不一样，
+    # 也不会生成一张倾斜平面，
+    # 而是按每一个 XY 线段向 Z 方向拉通，
+    # 形成“折线幕布式 / Fence Section”剖面。
+    # =========================================================
+
+    def _get_fence_section_interactor(self):
+
+        try:
+            interactor = self.plotter.iren.interactor
+            if interactor is not None:
+                return interactor
+        except Exception:
+            pass
+
+        try:
+            interactor = self.vtk_widget.iren.interactor
+            if interactor is not None:
+                return interactor
+        except Exception:
+            pass
+
+        return None
+
+
+    def _remove_fence_section_observers(self):
+        """
+        移除折线垂向剖面注册的鼠标事件。
+        """
+        observer_ids = self.cache.get(
+            "fence_section_observer_ids",
+            [],
+        ) or []
+
+        interactor = self._get_fence_section_interactor()
+
+        if interactor is not None:
+            for observer_id in observer_ids:
+                if observer_id is None:
+                    continue
+
+                try:
+                    interactor.RemoveObserver(observer_id)
+                except Exception:
+                    try:
+                        interactor.remove_observer(observer_id)
+                    except Exception:
+                        pass
+
+        self.cache["fence_section_observer_ids"] = []
+
+
+    @staticmethod
+    def _fence_get_actor_opacity(actor):
+        """
+        获取 actor 当前透明度。
+        """
+        if actor is None:
+            return None
+
+        try:
+            return float(actor.prop.opacity)
+        except Exception:
+            pass
+
+        try:
+            return float(
+                actor.GetProperty().GetOpacity()
+            )
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _fence_set_actor_opacity(actor, opacity):
+        """
+        设置 actor 透明度。
+        """
+        if actor is None or opacity is None:
+            return
+
+        try:
+            actor.prop.opacity = float(opacity)
+            return
+        except Exception:
+            pass
+
+        try:
+            actor.GetProperty().SetOpacity(
+                float(opacity)
+            )
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _fence_get_actor_visible(actor):
+        """
+        获取 actor 可见状态。
+        """
+        if actor is None:
+            return None
+
+        try:
+            return bool(actor.visibility)
+        except Exception:
+            pass
+
+        try:
+            return bool(
+                actor.GetVisibility()
+            )
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _fence_set_actor_visible(actor, visible):
+        """
+        设置 actor 可见状态。
+        """
+        if actor is None or visible is None:
+            return
+
+        try:
+            actor.visibility = bool(visible)
+            return
+        except Exception:
+            pass
+
+        try:
+            actor.SetVisibility(
+                bool(visible)
+            )
+        except Exception:
+            pass
+
+
+    def _restore_fence_section_context(self):
+        """
+        恢复进入剖面功能前，
+        压力场 / 孔隙度 / 渗透率等外部模型 actor 的透明度。
+        """
+        states = self.cache.get(
+            "fence_section_context_actor_states",
+            [],
+        ) or []
+
+        for state in states:
+            actor = state.get("actor")
+
+            self._fence_set_actor_opacity(
+                actor,
+                state.get("opacity"),
+            )
+
+            self._fence_set_actor_visible(
+                actor,
+                state.get("visible"),
+            )
+
+        self.cache[
+            "fence_section_context_actor_states"
+        ] = []
+
+
+    def _make_fence_section_context_transparent(self):
+
+        self._restore_fence_section_context()
+
+        actor_keys = (
+            "pressure_field_actor",
+            "sw_field_actor",
+            "phi_field_actor",
+            "perm_field_actor",
+            "threshold_actor",
+            "time_playback_actor",
+
+            "layer_pressure_actor",
+            "layer_sw_actor",
+            "layer_phi_actor",
+            "layer_perm_actor",
+        )
+
+        states = []
+
+        for key in actor_keys:
+            actor = self.cache.get(key)
+
+            if actor is None:
+                continue
+
+            opacity = self._fence_get_actor_opacity(actor)
+            visible = self._fence_get_actor_visible(actor)
+
+            states.append(
+                {
+                    "actor": actor,
+                    "opacity": opacity,
+                    "visible": visible,
+                }
+            )
+
+            if opacity is not None:
+                self._fence_set_actor_opacity(
+                    actor,
+                    min(float(opacity), 0.18),
+                )
+
+        self.cache[
+            "fence_section_context_actor_states"
+        ] = states
+
+
+    def _get_fence_section_property_config(
+        self,
+        property_name,
+    ):
+        config = self._get_pick_property_config(
+            property_name
+        )
+
+        if config is None:
+            return None
+
+        name = str(property_name).strip()
+
+        scalar_name_map = {
+            "Pressure": "Pressure",
+            "P": "Pressure",
+
+            "Kx": "Kx",
+            "Ky": "Ky",
+            "Kz": "Kz",
+
+            "Phi": "Phi",
+            "Porosity": "Phi",
+
+            "Sw": "Sw",
+        }
+
+        scalar_name = scalar_name_map.get(name)
+
+        if scalar_name is None:
+            return None
+
+        return {
+            "column": int(config["column"]),
+            "title": str(
+                config.get(
+                    "title",
+                    scalar_name,
+                )
+            ),
+            "unit": str(
+                config.get(
+                    "unit",
+                    "",
+                )
+            ),
+            "scalar_name": scalar_name,
+        }
+
+
+    def _get_fence_section_grid_bounds(
+        self,
+        sim_data,
+    ):
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            return None
+
+        try:
+            cell_data = np.asarray(
+                cell_data,
+                dtype=np.float64,
+            )
+        except Exception:
+            return None
+
+        if (
+            cell_data.ndim != 2
+            or cell_data.shape[0] == 0
+            or cell_data.shape[1] < 28
+        ):
+            return None
+
+        try:
+            points = cell_data[
+                :,
+                4:28,
+            ].reshape(
+                -1,
+                3,
+            )
+        except Exception:
+            return None
+
+        valid_mask = np.isfinite(
+            points
+        ).all(
+            axis=1
+        )
+
+        points = points[
+            valid_mask
+        ]
+
+        if points.shape[0] == 0:
+            return None
+
+        xmin = float(
+            np.min(points[:, 0])
+        )
+        xmax = float(
+            np.max(points[:, 0])
+        )
+
+        ymin = float(
+            np.min(points[:, 1])
+        )
+        ymax = float(
+            np.max(points[:, 1])
+        )
+
+        zmin = float(
+            np.min(points[:, 2])
+        )
+        zmax = float(
+            np.max(points[:, 2])
+        )
+
+        if (
+            xmax <= xmin
+            or ymax <= ymin
+            or zmax < zmin
+        ):
+            return None
+
+        return (
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            zmin,
+            zmax,
+        )
+
+
+    @staticmethod
+    def _fence_safe_clim(values):
+
+        values = np.asarray(
+            values,
+            dtype=np.float64,
+        )
+
+        values = values[
+            np.isfinite(values)
+        ]
+
+        if values.size == 0:
+            return None
+
+        vmin = float(
+            np.min(values)
+        )
+        vmax = float(
+            np.max(values)
+        )
+
+        if abs(vmax - vmin) <= 1e-12:
+            delta = (
+                abs(vmin) * 0.01
+                if abs(vmin) > 1e-12
+                else 1.0
+            )
+
+            vmin -= delta
+            vmax += delta
+
+        return [
+            vmin,
+            vmax,
+        ]
+
+
+    def _fence_overlay_z(self):
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        if bounds is None:
+            return 0.0
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        span = max(
+            xmax - xmin,
+            ymax - ymin,
+            zmax - zmin,
+            1.0,
+        )
+
+        return float(
+            zmax + span * 0.002
+        )
+
+
+    def _fence_marker_radius(self):
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        if bounds is None:
+            return 1.0
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        span = max(
+            xmax - xmin,
+            ymax - ymin,
+            zmax - zmin,
+            1.0,
+        )
+
+        return float(
+            span * 0.004
+        )
+
+
+    @staticmethod
+    def _fence_make_polyline(points):
+
+        if points is None or len(points) < 2:
+            return None
+
+        point_array = np.asarray(
+            points,
+            dtype=np.float64,
+        )
+
+        if (
+            point_array.ndim != 2
+            or point_array.shape[1] != 3
+        ):
+            return None
+
+        mesh = pv.PolyData()
+
+        mesh.points = point_array
+
+        mesh.lines = np.hstack(
+            [
+                np.array(
+                    [len(point_array)],
+                    dtype=np.int64,
+                ),
+                np.arange(
+                    len(point_array),
+                    dtype=np.int64,
+                ),
+            ]
+        )
+
+        return mesh
+
+
+    def _clear_fence_section_preview(
+        self,
+        render=False,
+    ):
+        """
+        删除鼠标移动预览线。
+        """
+        self._remove_actor(
+            self.cache.get(
+                "fence_section_preview_actor"
+            )
+        )
+
+        self.cache[
+            "fence_section_preview_actor"
+        ] = None
+
+        self.cache[
+            "fence_section_preview_mesh"
+        ] = None
+
+        if render:
+            self._render()
+
+
+    def _clear_fence_section_path_overlay(
+        self,
+        render=False,
+    ):
+
+        self._remove_actor(
+            self.cache.get(
+                "fence_section_path_actor"
+            )
+        )
+
+        self._remove_actor_list(
+            self.cache.get(
+                "fence_section_point_actors",
+                [],
+            )
+        )
+
+        self.cache[
+            "fence_section_path_actor"
+        ] = None
+
+        self.cache[
+            "fence_section_path_mesh"
+        ] = None
+
+        self.cache[
+            "fence_section_point_actors"
+        ] = []
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        if render:
+            self._render()
+
+
+    def _update_fence_section_path_overlay(self):
+
+        self._clear_fence_section_path_overlay(
+            render=False,
+        )
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        if not points:
+            self._render()
+            return
+
+        z_overlay = self._fence_overlay_z()
+
+        draw_points = [
+            (
+                float(point[0]),
+                float(point[1]),
+                float(z_overlay),
+            )
+            for point in points
+        ]
+
+        path_mesh = self._fence_make_polyline(
+            draw_points
+        )
+
+        if path_mesh is not None:
+            path_actor = self.plotter.add_mesh(
+                path_mesh,
+                color=(1.0, 0.82, 0.08),
+                line_width=3.0,
+                opacity=1.0,
+                lighting=False,
+                render=False,
+                pickable=False,
+            )
+
+            try:
+                path_actor.SetPickable(False)
+            except Exception:
+                pass
+
+            self.cache[
+                "fence_section_path_mesh"
+            ] = path_mesh
+
+            self.cache[
+                "fence_section_path_actor"
+            ] = path_actor
+
+        marker_radius = self._fence_marker_radius()
+
+        is_finished = bool(
+            self.cache.get(
+                "fence_section_finished",
+                False,
+            )
+        )
+
+        marker_actors = []
+
+        for index, point in enumerate(draw_points):
+            if index == 0:
+                color = (
+                    0.15,
+                    1.00,
+                    0.22,
+                )
+
+            elif (
+                is_finished
+                and index == len(draw_points) - 1
+            ):
+                color = (
+                    1.00,
+                    0.15,
+                    0.10,
+                )
+
+            else:
+                color = (
+                    1.00,
+                    0.82,
+                    0.08,
+                )
+
+            sphere = pv.Sphere(
+                radius=marker_radius,
+                center=point,
+                theta_resolution=16,
+                phi_resolution=16,
+            )
+
+            marker_actor = self.plotter.add_mesh(
+                sphere,
+                color=color,
+                opacity=1.0,
+                lighting=False,
+                render=False,
+                pickable=False,
+            )
+
+            try:
+                marker_actor.SetPickable(False)
+            except Exception:
+                pass
+
+            marker_actors.append(
+                marker_actor
+            )
+
+        self.cache[
+            "fence_section_point_actors"
+        ] = marker_actors
+
+        self._render()
+
+
+    def _update_fence_section_preview(
+        self,
+        current_point,
+    ):
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        if not points or current_point is None:
+            self._render()
+            return
+
+        z_overlay = self._fence_overlay_z()
+
+        start = (
+            float(points[-1][0]),
+            float(points[-1][1]),
+            float(z_overlay),
+        )
+
+        end = (
+            float(current_point[0]),
+            float(current_point[1]),
+            float(z_overlay),
+        )
+
+        if np.linalg.norm(
+            np.asarray(end)
+            - np.asarray(start)
+        ) <= 1e-9:
+            self._render()
+            return
+
+        mesh = self._fence_make_polyline(
+            [
+                start,
+                end,
+            ]
+        )
+
+        if mesh is None:
+            return
+
+        actor = self.plotter.add_mesh(
+            mesh,
+            color=(0.94, 0.94, 0.94),
+            line_width=1.5,
+            opacity=0.85,
+            lighting=False,
+            render=False,
+            pickable=False,
+        )
+
+        try:
+            actor.SetPickable(False)
+        except Exception:
+            pass
+
+        self.cache[
+            "fence_section_preview_mesh"
+        ] = mesh
+
+        self.cache[
+            "fence_section_preview_actor"
+        ] = actor
+
+        self._render()
+
+
+    def _get_fence_section_display_point(self):
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        interactor = self._get_fence_section_interactor()
+
+        if bounds is None or interactor is None:
+            return None
+
+        try:
+            display_x, display_y = (
+                interactor.GetEventPosition()
+            )
+        except Exception:
+            return None
+
+        point = self.display_to_world_xy(
+            display_x=float(display_x),
+            display_y=float(display_y),
+            world_bounds=bounds,
+        )
+
+        if point is None:
+            return None
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        span = max(
+            xmax - xmin,
+            ymax - ymin,
+            zmax - zmin,
+            1.0,
+        )
+
+        tolerance = span * 1e-7
+
+        px, py, _ = point
+
+        if (
+            px < xmin - tolerance
+            or px > xmax + tolerance
+            or py < ymin - tolerance
+            or py > ymax + tolerance
+        ):
+            return None
+
+        return np.asarray(
+            [
+                float(px),
+                float(py),
+                float(zmax),
+            ],
+            dtype=np.float64,
+        )
+
+
+    def _is_new_fence_section_point(
+        self,
+        point,
+    ):
+
+        if point is None:
+            return False
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        if not points:
+            return True
+
+        last_point = np.asarray(
+            points[-1],
+            dtype=np.float64,
+        )
+
+        point = np.asarray(
+            point,
+            dtype=np.float64,
+        )
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        if bounds is None:
+            return True
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        span = max(
+            xmax - xmin,
+            ymax - ymin,
+            zmax - zmin,
+            1.0,
+        )
+
+        tolerance = span * 1e-7
+
+        distance = float(
+            np.linalg.norm(
+                point[:2]
+                - last_point[:2]
+            )
+        )
+
+        return distance > tolerance
+
+
+    def _append_fence_section_point(
+        self,
+        point,
+    ):
+        """
+        将一个有效 XY 控制点加入路径。
+        """
+        if not self._is_new_fence_section_point(
+            point
+        ):
+            return False
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        points.append(
+            np.asarray(
+                point,
+                dtype=np.float64,
+            )
+        )
+
+        self.cache[
+            "fence_section_points"
+        ] = points
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        self._update_fence_section_path_overlay()
+
+        print(
+            "[Vertical Fence Section] "
+            f"point {len(points)} selected: "
+            f"x={point[0]:.3f}, "
+            f"y={point[1]:.3f}"
+        )
+
+        return True
+
+
+    def _emit_fence_section_info(
+        self,
+        text,
+    ):
+
+        if not text:
+            return
+
+        self.cache[
+            "fence_section_last_info"
+        ] = str(text)
+
+        print(text)
+
+        try:
+            if hasattr(
+                self.view,
+                "show_fence_section_info",
+            ):
+                self.view.show_fence_section_info(
+                    text
+                )
+
+            elif hasattr(
+                self.view,
+                "set_status_message",
+            ):
+                self.view.set_status_message(
+                    text
+                )
+
+        except Exception:
+            pass
+
+
+    def _on_fence_section_left_button_press(
+        self,
+        obj,
+        event,
+    ):
+
+        if not self.cache.get(
+            "fence_section_drawing",
+            False,
+        ):
+            return
+
+        interactor = self._get_fence_section_interactor()
+
+        if interactor is None:
+            return
+
+        try:
+            display_x, display_y = (
+                interactor.GetEventPosition()
+            )
+        except Exception:
+            return
+
+        now = time.monotonic()
+
+        previous_time = self.cache.get(
+            "fence_section_last_click_time"
+        )
+
+        previous_display = self.cache.get(
+            "fence_section_last_click_display"
+        )
+
+        is_double_click = False
+
+        if (
+            previous_time is not None
+            and previous_display is not None
+        ):
+            dt = float(
+                now - previous_time
+            )
+
+            dp = float(
+                np.linalg.norm(
+                    np.asarray(
+                        [
+                            display_x,
+                            display_y,
+                        ],
+                        dtype=np.float64,
+                    )
+                    - np.asarray(
+                        previous_display,
+                        dtype=np.float64,
+                    )
+                )
+            )
+
+            is_double_click = (
+                dt <= 0.45
+                and dp <= 6.0
+            )
+
+        point = self._get_fence_section_display_point()
+
+        if point is not None:
+            self._append_fence_section_point(
+                point
+            )
+
+        self.cache[
+            "fence_section_last_click_time"
+        ] = now
+
+        self.cache[
+            "fence_section_last_click_display"
+        ] = (
+            float(display_x),
+            float(display_y),
+        )
+
+        if is_double_click:
+            self.complete_vertical_fence_section()
+
+
+    def _on_fence_section_mouse_move(
+        self,
+        obj,
+        event,
+    ):
+
+        if not self.cache.get(
+            "fence_section_drawing",
+            False,
+        ):
+            return
+
+        point = self._get_fence_section_display_point()
+
+        self._update_fence_section_preview(
+            point
+        )
+
+
+    def _clip_fence_section_half_space(
+        self,
+        dataset,
+        normal,
+        origin,
+        keep_positive,
+    ):
+
+        if dataset is None:
+            return None
+
+        try:
+            if dataset.n_points == 0:
+                return None
+        except Exception:
+            return None
+
+        normal = np.asarray(
+            normal,
+            dtype=np.float64,
+        )
+
+        origin = np.asarray(
+            origin,
+            dtype=np.float64,
+        )
+
+        candidates = []
+
+        for invert in (
+            False,
+            True,
+        ):
+            try:
+                clipped = dataset.clip(
+                    normal=normal.tolist(),
+                    origin=origin.tolist(),
+                    invert=bool(invert),
+                )
+            except Exception:
+                continue
+
+            if clipped is None:
+                continue
+
+            try:
+                if clipped.n_points == 0:
+                    continue
+
+                points = np.asarray(
+                    clipped.points,
+                    dtype=np.float64,
+                )
+            except Exception:
+                continue
+
+            projection = (
+                points
+                - origin.reshape(1, 3)
+            ) @ normal
+
+            if projection.size == 0:
+                continue
+
+            if keep_positive:
+                violation = max(
+                    0.0,
+                    -float(
+                        np.min(projection)
+                    ),
+                )
+            else:
+                violation = max(
+                    0.0,
+                    float(
+                        np.max(projection)
+                    ),
+                )
+
+            try:
+                cell_count = int(
+                    clipped.n_cells
+                )
+            except Exception:
+                cell_count = 0
+
+            candidates.append(
+                (
+                    float(violation),
+                    -cell_count,
+                    clipped,
+                )
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: (
+                item[0],
+                item[1],
+            )
+        )
+
+        return candidates[0][2]
+
+
+    def _slice_grid_on_fence_segment(
+        self,
+        grid,
+        start_point,
+        end_point,
+    ):
+
+        if grid is None:
+            return None
+
+        start = np.asarray(
+            start_point,
+            dtype=np.float64,
+        ).copy()
+
+        end = np.asarray(
+            end_point,
+            dtype=np.float64,
+        ).copy()
+
+        # 路径只看 XY。
+        start[2] = 0.0
+        end[2] = 0.0
+
+        vector = end - start
+
+        length = float(
+            np.linalg.norm(
+                vector[:2]
+            )
+        )
+
+        if length <= 1e-9:
+            return None
+
+        tangent = np.asarray(
+            [
+                vector[0] / length,
+                vector[1] / length,
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+
+        # 平面法向与路径段垂直，
+        # 且位于 XY 平面中。
+        plane_normal = np.asarray(
+            [
+                -tangent[1],
+                tangent[0],
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        if bounds is None:
+            return None
+
+        zmid = (
+            float(bounds[4])
+            + float(bounds[5])
+        ) * 0.5
+
+        plane_origin = np.asarray(
+            [
+                (start[0] + end[0]) * 0.5,
+                (start[1] + end[1]) * 0.5,
+                zmid,
+            ],
+            dtype=np.float64,
+        )
+
+        try:
+            section = grid.slice(
+                normal=plane_normal.tolist(),
+                origin=plane_origin.tolist(),
+            )
+        except Exception as exc:
+            print(
+                "[Vertical Fence Section] "
+                "slice failed:",
+                exc,
+            )
+            return None
+
+        if section is None:
+            return None
+
+        try:
+            if section.n_points == 0:
+                return None
+        except Exception:
+            return None
+
+        # 保留：
+        # dot(P - start, tangent) >= 0
+        start_origin = np.asarray(
+            [
+                start[0],
+                start[1],
+                zmid,
+            ],
+            dtype=np.float64,
+        )
+
+        section = self._clip_fence_section_half_space(
+            dataset=section,
+            normal=tangent,
+            origin=start_origin,
+            keep_positive=True,
+        )
+
+        if section is None:
+            return None
+
+        # 保留：
+        # dot(P - end, tangent) <= 0
+        end_origin = np.asarray(
+            [
+                end[0],
+                end[1],
+                zmid,
+            ],
+            dtype=np.float64,
+        )
+
+        section = self._clip_fence_section_half_space(
+            dataset=section,
+            normal=tangent,
+            origin=end_origin,
+            keep_positive=False,
+        )
+
+        if section is None:
+            return None
+
+        try:
+            if (
+                section.n_points == 0
+                or section.n_cells == 0
+            ):
+                return None
+        except Exception:
+            return None
+
+        return section
+
+
+    @staticmethod
+    def _merge_fence_section_blocks(
+        blocks,
+    ):
+        """
+        合并多个线段的切片结果。
+        """
+        valid_blocks = []
+
+        for block in blocks:
+            if block is None:
+                continue
+
+            try:
+                if (
+                    block.n_points == 0
+                    or block.n_cells == 0
+                ):
+                    continue
+            except Exception:
+                continue
+
+            valid_blocks.append(
+                block
+            )
+
+        if not valid_blocks:
+            return None
+
+        merged = valid_blocks[0]
+
+        for block in valid_blocks[1:]:
+            try:
+                merged = merged.merge(
+                    block,
+                    merge_points=False,
+                )
+            except TypeError:
+                try:
+                    merged = merged.merge(
+                        block
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        return merged
+
+
+    def _get_fence_section_scalar_preference(
+        self,
+        dataset,
+        property_config,
+        sim_data,
+    ):
+
+        if dataset is None or property_config is None:
+            return None
+
+        scalar_name = property_config[
+            "scalar_name"
+        ]
+
+        try:
+            if scalar_name in dataset.cell_data:
+                return "cell"
+        except Exception:
+            pass
+
+        try:
+            if scalar_name in dataset.point_data:
+                return "point"
+        except Exception:
+            pass
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            return None
+
+        original_ids = None
+
+        for id_name in (
+            "OriginalRowIndex",
+            "vtkOriginalCellIds",
+            "vtkOriginalCellIds_",
+        ):
+            try:
+                if id_name in dataset.cell_data:
+                    original_ids = np.asarray(
+                        dataset.cell_data[id_name],
+                        dtype=np.int64,
+                    )
+                    break
+            except Exception:
+                pass
+
+        if original_ids is None:
+            return None
+
+        if len(original_ids) != dataset.n_cells:
+            return None
+
+        column = int(
+            property_config["column"]
+        )
+
+        try:
+            source_values = np.asarray(
+                cell_data[
+                    original_ids,
+                    column,
+                ],
+                dtype=np.float32,
+            )
+        except Exception:
+            return None
+
+        dataset.cell_data[
+            scalar_name
+        ] = source_values
+
+        return "cell"
+
+
+    def _clear_fence_section_scalar_bar(self):
+
+        title = self.cache.get(
+            "fence_section_scalar_bar_title"
+        )
+
+        if title:
+            try:
+                self.plotter.remove_scalar_bar(
+                    title=title,
+                    render=False,
+                )
+            except Exception:
+                pass
+
+        actor = self.cache.get(
+            "fence_section_scalar_bar"
+        )
+
+        if actor is not None:
+            try:
+                actor.SetVisibility(False)
+            except Exception:
+                try:
+                    actor.visibility = False
+                except Exception:
+                    pass
+
+        self.cache[
+            "fence_section_scalar_bar"
+        ] = None
+
+        self.cache[
+            "fence_section_scalar_bar_title"
+        ] = None
+
+
+    def _add_fence_section_scalar_bar(
+        self,
+        mesh_actor,
+        property_config,
+    ):
+        """
+        添加剖面专用颜色条。
+        """
+        self._clear_fence_section_scalar_bar()
+
+        title = property_config.get(
+            "title",
+            "Property",
+        )
+
+        unit = property_config.get(
+            "unit",
+            "",
+        )
+
+        if unit:
+            bar_title = (
+                f"Section: {title} ({unit})"
+            )
+        else:
+            bar_title = (
+                f"Section: {title}"
+            )
+
+        scalar_bar = None
+
+        kwargs = {
+            "title": bar_title,
+
+            # 与 Pressure / Sw / Phi / Permeability
+            "position_x": 0.02,
+            "position_y": 0.55,
+            "width": 0.08,
+            "height": 0.40,
+
+            "label_font_size": 14,
+            "title_font_size": 16,
+            "color": "#2f3640",
+            "vertical": True,
+            "render": False,
+        }
+        try:
+            mapper = getattr(
+                mesh_actor,
+                "mapper",
+                None,
+            )
+
+            if mapper is not None:
+                scalar_bar = self.plotter.add_scalar_bar(
+                    mapper=mapper,
+                    **kwargs,
+                )
+            else:
+                scalar_bar = self.plotter.add_scalar_bar(
+                    **kwargs,
+                )
+
+        except TypeError:
+            try:
+                scalar_bar = self.plotter.add_scalar_bar(
+                    **kwargs,
+                )
+            except Exception:
+                scalar_bar = None
+
+        except Exception:
+            scalar_bar = None
+
+        self.cache[
+            "fence_section_scalar_bar"
+        ] = scalar_bar
+
+        self.cache[
+            "fence_section_scalar_bar_title"
+        ] = bar_title
+
+
+    def _set_fence_section_result_camera(self):
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        bounds = self.cache.get(
+            "fence_section_bounds"
+        )
+
+        if len(points) < 2 or bounds is None:
+            return
+
+        valid_segments = []
+
+        for start, end in zip(
+            points[:-1],
+            points[1:],
+        ):
+            vector = (
+                np.asarray(
+                    end,
+                    dtype=np.float64,
+                )
+                - np.asarray(
+                    start,
+                    dtype=np.float64,
+                )
+            )
+
+            length = float(
+                np.linalg.norm(
+                    vector[:2]
+                )
+            )
+
+            if length > 1e-9:
+                valid_segments.append(
+                    (
+                        length,
+                        vector,
+                    )
+                )
+
+        if not valid_segments:
+            return
+
+        # 使用最长路径段作为主方向，
+        # 比取首尾点方向更稳定。
+        _, main_vector = max(
+            valid_segments,
+            key=lambda item: item[0],
+        )
+
+        tangent = main_vector[:2] / np.linalg.norm(
+            main_vector[:2]
+        )
+
+        side_normal = np.asarray(
+            [
+                -tangent[1],
+                tangent[0],
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+
+        points_xy = np.asarray(
+            [
+                [
+                    point[0],
+                    point[1],
+                ]
+                for point in points
+            ],
+            dtype=np.float64,
+        )
+
+        center_xy = np.mean(
+            points_xy,
+            axis=0,
+        )
+
+        xmin, xmax, ymin, ymax, zmin, zmax = [
+            float(value)
+            for value in bounds
+        ]
+
+        zmid = (
+            zmin + zmax
+        ) * 0.5
+
+        span = max(
+            xmax - xmin,
+            ymax - ymin,
+            zmax - zmin,
+            1.0,
+        )
+
+        distance = span * 2.2
+
+        camera_position = (
+            float(
+                center_xy[0]
+                + side_normal[0] * distance
+            ),
+            float(
+                center_xy[1]
+                + side_normal[1] * distance
+            ),
+            float(
+                zmid + span * 0.65
+            ),
+        )
+
+        focal_point = (
+            float(center_xy[0]),
+            float(center_xy[1]),
+            float(zmid),
+        )
+
+        try:
+            camera = self.plotter.camera
+
+            camera.parallel_projection = True
+
+            camera.parallel_scale = max(
+                zmax - zmin,
+                span * 0.80,
+            )
+
+            self.plotter.camera_position = (
+                camera_position,
+                focal_point,
+                (0.0, 0.0, 1.0),
+            )
+
+            self.plotter.reset_camera_clipping_range()
+
+        except Exception:
+            pass
+
+
+    def _render_vertical_fence_section(self):
+
+        sim_data = self.cache.get(
+            "fence_section_sim_data"
+        )
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        property_name = self.cache.get(
+            "fence_section_property",
+            "Pressure",
+        )
+
+        if sim_data is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "no simulation data."
+            )
+            return False
+
+        if len(points) < 2:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "at least two points are required."
+            )
+            return False
+
+        property_config = self._get_fence_section_property_config(
+            property_name
+        )
+
+        if property_config is None:
+            return False
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "cell_geometry_with_pressure is missing."
+            )
+            return False
+
+        try:
+            cell_data = np.asarray(
+                cell_data,
+                dtype=np.float64,
+            )
+        except Exception:
+            return False
+
+        column = int(
+            property_config["column"]
+        )
+
+        if (
+            cell_data.ndim != 2
+            or cell_data.shape[1] <= column
+        ):
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "requested property column is unavailable."
+            )
+            return False
+
+        grid = self.cache.get(
+            "fence_section_grid"
+        )
+
+        if grid is None:
+            grid = self._build_cell_pick_grid(
+                sim_data=sim_data,
+                axis=None,
+                layer_index=None,
+            )
+
+            self.cache[
+                "fence_section_grid"
+            ] = grid
+
+        if grid is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "failed to build corner-point grid."
+            )
+            return False
+
+        section_blocks = []
+
+        for start_point, end_point in zip(
+            points[:-1],
+            points[1:],
+        ):
+            section = self._slice_grid_on_fence_segment(
+                grid=grid,
+                start_point=start_point,
+                end_point=end_point,
+            )
+
+            if section is not None:
+                section_blocks.append(
+                    section
+                )
+
+        merged_section = self._merge_fence_section_blocks(
+            section_blocks
+        )
+
+        if merged_section is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "the selected path does not intersect any grid cell."
+            )
+            return False
+
+        scalar_preference = self._get_fence_section_scalar_preference(
+            dataset=merged_section,
+            property_config=property_config,
+            sim_data=sim_data,
+        )
+
+        if scalar_preference is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "property data was not preserved by the slice."
+            )
+            return False
+
+        scalar_name = property_config[
+            "scalar_name"
+        ]
+
+        clim = self._fence_safe_clim(
+            cell_data[
+                :,
+                column,
+            ]
+        )
+
+        if clim is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "all property values are invalid."
+            )
+            return False
+
+        self._remove_actor(
+            self.cache.get(
+                "fence_section_actor"
+            )
+        )
+
+        self.cache[
+            "fence_section_actor"
+        ] = None
+
+        self.cache[
+            "fence_section_data"
+        ] = None
+
+        self._clear_fence_section_scalar_bar()
+
+        try:
+            actor = self.plotter.add_mesh(
+                merged_section,
+                scalars=scalar_name,
+                preference=scalar_preference,
+                cmap=get_bright_jet_cmap(),
+                clim=clim,
+                opacity=1.0,
+                show_edges=True,
+                edge_color=(0.10, 0.10, 0.10),
+                line_width=0.7,
+                show_scalar_bar=False,
+                lighting=False,
+                smooth_shading=False,
+                interpolate_before_map=False,
+                render=False,
+                pickable=False,
+            )
+
+        except TypeError:
+            # 兼容旧版 PyVista。
+            actor = self.plotter.add_mesh(
+                merged_section,
+                scalars=scalar_name,
+                cmap=get_bright_jet_cmap(),
+                clim=clim,
+                opacity=1.0,
+                show_edges=True,
+                edge_color=(0.10, 0.10, 0.10),
+                line_width=0.7,
+                show_scalar_bar=False,
+                lighting=False,
+                smooth_shading=False,
+                interpolate_before_map=False,
+                render=False,
+            )
+
+        except Exception as exc:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                f"render failed: {type(exc).__name__}: {exc}"
+            )
+            return False
+
+        try:
+            actor.SetPickable(False)
+        except Exception:
+            pass
+
+        self.cache[
+            "fence_section_actor"
+        ] = actor
+
+        self.cache[
+            "fence_section_data"
+        ] = merged_section
+
+        self.cache[
+            "fence_section_scalar_name"
+        ] = scalar_name
+
+        self._add_fence_section_scalar_bar(
+            mesh_actor=actor,
+            property_config=property_config,
+        )
+
+        # 外部模型变透明，剖面保持不透明。
+        self._make_fence_section_context_transparent()
+
+        # 自动切换到便于观察剖面的角度。
+        self._set_fence_section_result_camera()
+
+        self._emit_fence_section_info(
+            "[Vertical Fence Section] "
+            f"completed: points={len(points)}, "
+            f"segments={len(section_blocks)}, "
+            f"property={property_config['title']}."
+        )
+
+        self._render()
+
+        return True
+
+
+    def enable_vertical_fence_section(
+        self,
+        sim_data,
+        property_name="Pressure",
+    ):
+
+        property_config = self._get_fence_section_property_config(
+            property_name
+        )
+
+        if property_config is None:
+            return False
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if cell_data is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "cell_geometry_with_pressure is missing."
+            )
+            return False
+
+        try:
+            cell_data = np.asarray(
+                cell_data,
+                dtype=np.float64,
+            )
+        except Exception:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "invalid cell_geometry_with_pressure."
+            )
+            return False
+
+        if (
+            cell_data.ndim != 2
+            or cell_data.shape[0] == 0
+            or cell_data.shape[1] < 34
+        ):
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "at least 34 columns are required."
+            )
+            return False
+
+        # 避免测距、Cell Picking、框选放大和剖面抢同一个左键事件。
+        self.disable_cell_info_picking(
+            clear_highlight=False,
+        )
+
+        self.disable_petrel_distance_measure(
+            clear_line=False,
+        )
+
+        self.deactivate_2d_magnify(
+            render=False,
+        )
+
+        # 如果上一次已经有剖面，先完整清理。
+        self.disable_vertical_fence_section(
+            clear_result=True,
+            render=False,
+        )
+
+        bounds = self._get_fence_section_grid_bounds(
+            sim_data
+        )
+
+        if bounds is None:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "grid bounds are unavailable."
+            )
+            return False
+
+        self.cache[
+            "fence_section_sim_data"
+        ] = sim_data
+
+        self.cache[
+            "fence_section_property"
+        ] = str(property_name).strip()
+
+        self.cache[
+            "fence_section_scalar_name"
+        ] = property_config[
+            "scalar_name"
+        ]
+
+        self.cache[
+            "fence_section_bounds"
+        ] = tuple(
+            float(value)
+            for value in bounds
+        )
+
+        self.cache[
+            "fence_section_grid"
+        ] = None
+
+        self.cache[
+            "fence_section_points"
+        ] = []
+
+        self.cache[
+            "fence_section_drawing"
+        ] = True
+
+        self.cache[
+            "fence_section_finished"
+        ] = False
+
+        self.cache[
+            "fence_section_last_info"
+        ] = None
+
+        self.cache[
+            "fence_section_last_click_time"
+        ] = None
+
+        self.cache[
+            "fence_section_last_click_display"
+        ] = None
+
+        self.cache[
+            "fence_section_previous_camera_locked"
+        ] = bool(
+            getattr(
+                self,
+                "camera_direction_locked",
+                False,
+            )
+        )
+
+        # 自动转到俯视图。
+        self.view_top()
+
+        # 选点阶段禁止旋转，保证点击一定落在 XY 平面。
+        self.lock_camera_direction(
+            True
+        )
+
+        interactor = self._get_fence_section_interactor()
+
+        if interactor is None:
+            self.cache[
+                "fence_section_drawing"
+            ] = False
+
+            self.lock_camera_direction(
+                self.cache.get(
+                    "fence_section_previous_camera_locked",
+                    False,
+                )
+            )
+
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "interactor is unavailable."
+            )
+
+            return False
+
+        observer_ids = []
+
+        try:
+            left_click_id = interactor.AddObserver(
+                "LeftButtonPressEvent",
+                self._on_fence_section_left_button_press,
+            )
+
+            mouse_move_id = interactor.AddObserver(
+                "MouseMoveEvent",
+                self._on_fence_section_mouse_move,
+            )
+
+            observer_ids = [
+                left_click_id,
+                mouse_move_id,
+            ]
+
+        except Exception as exc:
+            self.cache[
+                "fence_section_observer_ids"
+            ] = observer_ids
+
+            self._remove_fence_section_observers()
+
+            self.cache[
+                "fence_section_drawing"
+            ] = False
+
+            self.lock_camera_direction(
+                self.cache.get(
+                    "fence_section_previous_camera_locked",
+                    False,
+                )
+            )
+
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                f"observer registration failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            return False
+
+        self.cache[
+            "fence_section_observer_ids"
+        ] = observer_ids
+
+        self._emit_fence_section_info(
+            "[Vertical Fence Section] "
+            "drawing started. "
+            "Left-click to add points; "
+            "double-click to finish."
+        )
+
+        self._render()
+
+        return True
+
+
+    def complete_vertical_fence_section(self):
+
+        if not self.cache.get(
+            "fence_section_drawing",
+            False,
+        ):
+            return False
+
+        points = self.cache.get(
+            "fence_section_points",
+            [],
+        ) or []
+
+        if len(points) < 2:
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] "
+                "select at least two points before double-clicking."
+            )
+            return False
+
+        self._remove_fence_section_observers()
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        self.cache[
+            "fence_section_drawing"
+        ] = False
+
+        self.cache[
+            "fence_section_finished"
+        ] = True
+
+        previous_locked = self.cache.get(
+            "fence_section_previous_camera_locked",
+            False,
+        )
+
+        self.lock_camera_direction(
+            bool(previous_locked)
+        )
+
+        self._update_fence_section_path_overlay()
+
+        return self._render_vertical_fence_section()
+
+
+    def cancel_vertical_fence_section(
+        self,
+        render=True,
+    ):
+
+        was_drawing = bool(
+            self.cache.get(
+                "fence_section_drawing",
+                False,
+            )
+        )
+
+        self._remove_fence_section_observers()
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        if was_drawing:
+            previous_locked = self.cache.get(
+                "fence_section_previous_camera_locked",
+                False,
+            )
+
+            self.lock_camera_direction(
+                bool(previous_locked)
+            )
+
+        self.cache[
+            "fence_section_drawing"
+        ] = False
+
+        self.cache[
+            "fence_section_points"
+        ] = []
+
+        self.cache[
+            "fence_section_last_click_time"
+        ] = None
+
+        self.cache[
+            "fence_section_last_click_display"
+        ] = None
+
+        self._clear_fence_section_path_overlay(
+            render=False,
+        )
+
+        self._emit_fence_section_info(
+            "[Vertical Fence Section] "
+            "drawing cancelled."
+        )
+
+        if render:
+            self._render()
+
+
+    def clear_vertical_fence_section(
+        self,
+        render=True,
+    ):
+
+        self._remove_actor(
+            self.cache.get(
+                "fence_section_actor"
+            )
+        )
+
+        self.cache[
+            "fence_section_actor"
+        ] = None
+
+        self.cache[
+            "fence_section_data"
+        ] = None
+
+        self._clear_fence_section_scalar_bar()
+
+        self._clear_fence_section_path_overlay(
+            render=False,
+        )
+
+        self._restore_fence_section_context()
+
+        self.cache[
+            "fence_section_points"
+        ] = []
+
+        self.cache[
+            "fence_section_finished"
+        ] = False
+
+        self.cache[
+            "fence_section_scalar_name"
+        ] = None
+
+        self.cache[
+            "fence_section_last_info"
+        ] = None
+
+        if render:
+            self._render()
+
+
+    def disable_vertical_fence_section(
+        self,
+        clear_result=True,
+        render=True,
+    ):
+
+        was_drawing = bool(
+            self.cache.get(
+                "fence_section_drawing",
+                False,
+            )
+        )
+
+        self._remove_fence_section_observers()
+
+        self._clear_fence_section_preview(
+            render=False,
+        )
+
+        if was_drawing:
+            previous_locked = self.cache.get(
+                "fence_section_previous_camera_locked",
+                False,
+            )
+
+            self.lock_camera_direction(
+                bool(previous_locked)
+            )
+
+        self.cache[
+            "fence_section_drawing"
+        ] = False
+
+        self.cache[
+            "fence_section_last_click_time"
+        ] = None
+
+        self.cache[
+            "fence_section_last_click_display"
+        ] = None
+
+        if clear_result:
+            self.clear_vertical_fence_section(
+                render=False,
+            )
+
+            self.cache[
+                "fence_section_sim_data"
+            ] = None
+
+            self.cache[
+                "fence_section_bounds"
+            ] = None
+
+            self.cache[
+                "fence_section_grid"
+            ] = None
+
+            self.cache[
+                "fence_section_property"
+            ] = "Pressure"
+
+        if render:
+            self._render()
+
+
+    def set_vertical_fence_section_property(
+        self,
+        property_name,
+    ):
+
+        config = self._get_fence_section_property_config(
+            property_name
+        )
+
+        if config is None:
+            return False
+
+        self.cache[
+            "fence_section_property"
+        ] = str(property_name).strip()
+
+        self.cache[
+            "fence_section_scalar_name"
+        ] = config[
+            "scalar_name"
+        ]
+
+        if self.cache.get(
+            "fence_section_finished",
+            False,
+        ):
+            return self._render_vertical_fence_section()
+
+        return True
+
+
+    def is_vertical_fence_section_drawing(self):
+
+        return bool(
+            self.cache.get(
+                "fence_section_drawing",
+                False,
+            )
+        )
+
+
+    # 给 UI 调用的简短别名。
+    enable_fence_section = enable_vertical_fence_section
+    disable_fence_section = disable_vertical_fence_section
+    clear_fence_section = clear_vertical_fence_section
