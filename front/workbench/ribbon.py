@@ -341,6 +341,71 @@ class FileMenuPopup(QFrame):
         self.command_requested.emit(command)
 
 
+class MinimalCommandBar(QWidget):
+    command_requested = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("minimalCommandBar")
+        self.setFixedHeight(34)
+        self.file_menu = None
+        self._project_mode = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 8, 3)
+        layout.setSpacing(6)
+
+        self.file_button = QToolButton()
+        self.file_button.setObjectName("minimalFileButton")
+        self.file_button.setText("文件")
+        self.file_button.setIcon(painted_icon(_semantic_icon_kind("folder", "文件"), 18))
+        self.file_button.setIconSize(QSize(18, 18))
+        self.file_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.file_button.setFixedSize(74, 28)
+        self.file_button.clicked.connect(self._show_file_menu)
+        layout.addWidget(self.file_button)
+
+        self.run_button = QToolButton()
+        self.run_button.setObjectName("minimalRunButton")
+        self.run_button.setText("开始模拟")
+        self.run_button.setIcon(painted_icon(_semantic_icon_kind("monitor", "开始模拟"), 18))
+        self.run_button.setIconSize(QSize(18, 18))
+        self.run_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.run_button.setFixedSize(108, 28)
+        self.run_button.setToolTip("运行当前工程的模拟流程")
+        self.run_button.clicked.connect(
+            lambda checked=False: self.command_requested.emit("运行模拟"))
+        layout.addWidget(self.run_button)
+
+        layout.addStretch(1)
+        self.set_project_mode(False)
+
+    def set_project_mode(self, enabled):
+        self._project_mode = bool(enabled)
+        self.run_button.setEnabled(self._project_mode)
+        if self._project_mode:
+            self.run_button.setToolTip("运行当前工程的模拟流程")
+        else:
+            self.run_button.setToolTip("请先打开工程")
+        if self.file_menu is not None:
+            self.file_menu.set_project_mode(self._project_mode)
+
+    def refresh_recent_projects(self):
+        if self.file_menu is not None:
+            self.file_menu.refresh_recent_projects()
+
+    def _show_file_menu(self):
+        if self.file_menu is None:
+            self.file_menu = FileMenuPopup(self)
+            self.file_menu.command_requested.connect(self.command_requested)
+        self.file_menu.set_project_mode(self._project_mode)
+        self.file_menu.refresh_recent_projects()
+        menu_pos = self.file_button.mapToGlobal(self.file_button.rect().bottomLeft())
+        self.file_menu.move(menu_pos)
+        self.file_menu.show()
+        self.file_menu.raise_()
+
+
 class RibbonWidget(QTabWidget):
     command_requested = pyqtSignal(str)
 

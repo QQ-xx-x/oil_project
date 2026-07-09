@@ -17,7 +17,7 @@ from .project_file_manager import (
 from .project_shell import ProjectShell
 from .project_state import ProjectState
 from .recent_projects import add_recent_project
-from .ribbon import QuickAccessBar, RibbonWidget
+from .ribbon import MinimalCommandBar
 from .start_workspace import StartWorkspace
 
 
@@ -86,13 +86,9 @@ class WorkbenchWindow(QMainWindow):
         root_layout.setSpacing(0)
         self.setCentralWidget(root)
 
-        self.quick_access = QuickAccessBar()
-        self.quick_access.command_requested.connect(self._handle_command)
-        root_layout.addWidget(self.quick_access)
-
-        self.ribbon = RibbonWidget()
-        self.ribbon.command_requested.connect(self._handle_command)
-        root_layout.addWidget(self.ribbon)
+        self.command_bar = MinimalCommandBar()
+        self.command_bar.command_requested.connect(self._handle_command)
+        root_layout.addWidget(self.command_bar)
 
         self.pages = QStackedWidget()
         self.start_page = self._create_start_page()
@@ -225,7 +221,7 @@ class WorkbenchWindow(QMainWindow):
             return False
         self._mark_project_clean(shell)
         add_recent_project(saved_path, shell.project_state.project_name)
-        self.ribbon.refresh_recent_projects()
+        self.command_bar.refresh_recent_projects()
         shell.message_log.append_message(f"[工程] 已保存工程文件：{saved_path}")
         self.statusBar().showMessage(f"工程已保存：{saved_path}", 4500)
         return True
@@ -271,7 +267,7 @@ class WorkbenchWindow(QMainWindow):
         shell.message_log.append_message(f"[工程] 已加载工程文件：{path}")
         shell.log_project_references(validation)
         add_recent_project(path, project_state.project_name)
-        self.ribbon.refresh_recent_projects()
+        self.command_bar.refresh_recent_projects()
         has_packaged_result = bool(
             (getattr(project_state, "ui_state", {}) or {}).get("loaded_result_json_path"))
         if validation.get("ok"):
@@ -363,7 +359,7 @@ class WorkbenchWindow(QMainWindow):
         self.pages.addWidget(shell)
         self.pages.setCurrentWidget(shell)
         self.setWindowTitle("储层建模与模拟平台")
-        self.ribbon.set_project_mode(True)
+        self.command_bar.set_project_mode(True)
         message = f"[工程] 已打开 {name}，当前显示输入、结果和多窗口工作区。"
         shell.message_log.append_message(message)
         if module_key:
@@ -466,7 +462,7 @@ class WorkbenchWindow(QMainWindow):
         self.pages.removeWidget(shell)
         shell.deleteLater()
         self.pages.setCurrentWidget(self.start_page)
-        self.ribbon.set_project_mode(bool(self._project_shells()))
+        self.command_bar.set_project_mode(bool(self._project_shells()))
 
     def _project_shells(self):
         shells = []

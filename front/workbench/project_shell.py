@@ -24,9 +24,6 @@ from .model_config_dialog import (
     ensure_model_config_confirmed,
     model_config_summary,
 )
-from .navigation_trees import (
-    CasesTree, ModelsTree, ProcessesTree, TemplatesTree, WindowsTree,
-)
 from .project_state import ProjectState
 from .results_tree import ResultsTree
 from .simulation_service import WorkbenchSimulationService
@@ -42,7 +39,6 @@ LAZY_SIMULATION_DATA_KEYS = {
     "permeability_y_field",
     "permeability_z_field",
     "permeability_field",  # legacy alias for Kx
-    "layer_control",
 }
 
 
@@ -208,33 +204,25 @@ class ProjectShell(QWidget):
         self._autoload_result_path = ""
         self.setObjectName("projectShell")
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self.input_tree = InputTree(self.project_state)
         self.input_tree.module_selected.connect(self._handle_module_selected)
-        self.input_tree.module_checked.connect(self._handle_module_checked)
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
         self.input_tree.case_dataset_built.connect(self._handle_case_dataset_built)
         self.input_tree.result_requested.connect(self._handle_input_related_result_requested)
 
         self.results_tree = ResultsTree()
         self.results_tree.result_selected.connect(self._handle_result_selected)
-        self.results_tree.layer_checked.connect(self._handle_result_layer_checked)
 
         self.upper_tabs = DockTabPanel([
             ("输入", self.input_tree),
-            ("算例", CasesTree()),
-            ("模板", TemplatesTree()),
         ])
         self.lower_tabs = DockTabPanel([
-            ("流程", ProcessesTree()),
-            ("模型", ModelsTree()),
-            ("窗口", WindowsTree()),
             ("结果", self.results_tree),
         ])
-        self.lower_tabs.tab_widget.setCurrentIndex(3)
 
         left_splitter = QSplitter(Qt.Vertical)
         self.message_log = MessageLogPanel()
@@ -248,8 +236,7 @@ class ProjectShell(QWidget):
         self._report_discovered_results(prefix="[结果]")
         left_splitter.addWidget(self.upper_tabs)
         left_splitter.addWidget(self.lower_tabs)
-        left_splitter.addWidget(self.message_log)
-        left_splitter.setSizes([340, 325, 135])
+        left_splitter.setSizes([430, 430])
         left_splitter.setCollapsible(0, False)
         left_splitter.setCollapsible(1, False)
 
@@ -273,7 +260,15 @@ class ProjectShell(QWidget):
         main_splitter.addWidget(self.workspace)
         main_splitter.setSizes([450, 1350])
         main_splitter.setCollapsible(0, False)
-        layout.addWidget(main_splitter)
+
+        root_splitter = QSplitter(Qt.Vertical)
+        root_splitter.setObjectName("projectRootSplitter")
+        root_splitter.addWidget(main_splitter)
+        root_splitter.addWidget(self.message_log)
+        root_splitter.setSizes([820, 150])
+        root_splitter.setCollapsible(0, False)
+        root_splitter.setCollapsible(1, False)
+        layout.addWidget(root_splitter, 1)
         self.restore_ui_state()
         self._restore_packaged_simulation_result()
 
@@ -564,11 +559,6 @@ class ProjectShell(QWidget):
         self.message_log.append_message(f"[选择] 当前输入模块：{title}")
         self._show_status(f"当前输入模块：{title}")
 
-    def _handle_module_checked(self, key, title, checked):
-        state_text = "启用" if checked else "关闭"
-        self.message_log.append_message(f"[输入] {title} 已{state_text}")
-        self._show_status(f"{title} 已{state_text}")
-
     def _handle_parameters_saved(self, key, title, values):
         self.message_log.append_message(
             f"[参数] 已更新 {title}：{self._compact_values(values)}")
@@ -602,12 +592,6 @@ class ProjectShell(QWidget):
         return True
 
     def _handle_result_selected(self, key, title, view):
-        if key == "layer_control":
-            self.workspace.update_context(*self._result_context(key, title), "3d", key)
-            self._ensure_simulation_data_loaded()
-            self.message_log.append_message("[结果] 已激活图层控制")
-            self._show_status("当前查看结果图层控制")
-            return
         context_title, detail = self._result_context(key, title)
         if view == "chart":
             self._load_chart_data(key, title)
@@ -648,14 +632,6 @@ class ProjectShell(QWidget):
         self.message_log.append_message(f"[结果] 已按需加载 3D 模拟结果：{result_path}")
         return sim_data
 
-    def _handle_result_layer_checked(self, layer_key, title, checked):
-        if not layer_key:
-            return
-        self.workspace.set_layer_state(layer_key, checked)
-        state_text = "显示" if checked else "隐藏"
-        self.message_log.append_message(f"[图层] {title} 已{state_text}")
-        self._show_status(f"{title} 已{state_text}")
-
     def _result_context(self, key, title):
         contexts = {
             "pressure_field": (
@@ -694,9 +670,6 @@ class ProjectShell(QWidget):
             "pvt_curve": (
                 "当前图表：PVT 表曲线",
                 "图表窗口根据当前气相 PVT 参数显示 P-Z 曲线。"),
-            "layer_control": (
-                "结果图层控制",
-                "勾选图层节点可以控制三维窗口里的占位图层显示。"),
         }
         return contexts.get(
             key, (f"当前结果：{title}", "该结果节点后续接入真实模拟输出。"))

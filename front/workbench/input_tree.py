@@ -46,7 +46,6 @@ WR_CASE_KEYWORDS = {
 
 class InputTree(QTreeWidget):
     module_selected = pyqtSignal(str, str)
-    module_checked = pyqtSignal(str, str, bool)
     parameters_saved = pyqtSignal(str, str, dict)
     case_dataset_built = pyqtSignal(str, dict)
     result_requested = pyqtSignal(str)
@@ -72,7 +71,6 @@ class InputTree(QTreeWidget):
         self.setHeaderHidden(True)
         self.setExpandsOnDoubleClick(False)
         self.currentItemChanged.connect(self._emit_selection)
-        self.itemChanged.connect(self._store_check_state)
         self.itemDoubleClicked.connect(self._open_settings)
         self._populate()
         self.expandToDepth(0)
@@ -90,14 +88,6 @@ class InputTree(QTreeWidget):
             item.setToolTip(0, tooltip)
         if foreground:
             item.setForeground(0, QBrush(QColor(foreground)))
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        effective_checked = checked
-        if self.project_state is not None:
-            if key in getattr(self.project_state, "checked_items", {}):
-                effective_checked = self.project_state.is_checked(key, checked)
-            else:
-                self.project_state.set_checked(key, checked)
-        item.setCheckState(0, Qt.Checked if effective_checked else Qt.Unchecked)
         return item
 
     def _populate(self):
@@ -290,14 +280,6 @@ class InputTree(QTreeWidget):
         if field.get("source") in {"array", "dfn", "validation"}:
             return "#475467"
         return None
-
-    def _store_check_state(self, item, column):
-        if self._building or column != 0 or self.project_state is None:
-            return
-        key = item.data(0, KEY_ROLE)
-        checked = item.checkState(0) == Qt.Checked
-        self.project_state.set_checked(key, checked)
-        self.module_checked.emit(key, item.text(0), checked)
 
     def _emit_selection(self, current, previous):
         if current is None:

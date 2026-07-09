@@ -103,6 +103,38 @@ QFrame#quickAccessDivider {
     color: #b8bec9;
     margin: 3px 4px;
 }
+QWidget#minimalCommandBar {
+    background: #f1f3f8;
+    border-bottom: 1px solid #cbd0d9;
+    min-height: 34px;
+    max-height: 34px;
+}
+QToolButton#minimalFileButton {
+    background: #e0ad34;
+    border: 1px solid #bd8c20;
+    color: #1d2530;
+    padding: 3px 8px;
+    font-weight: bold;
+}
+QToolButton#minimalFileButton:hover {
+    background: #efc255;
+    border: 1px solid #a77b18;
+}
+QToolButton#minimalRunButton {
+    background: #ffffff;
+    border: 1px solid #bfc8d6;
+    color: #1f2d3d;
+    padding: 3px 10px;
+}
+QToolButton#minimalRunButton:hover {
+    background: #fff4cf;
+    border: 1px solid #d7ad4e;
+}
+QToolButton#minimalRunButton:disabled {
+    color: #9aa3af;
+    background: #edf0f5;
+    border: 1px solid #d4d9e2;
+}
 QToolButton {
     border: 1px solid transparent;
     background: transparent;
@@ -497,9 +529,12 @@ QTabWidget#leftDockTabs QTabBar::tab:selected {
 QTabWidget#leftDockTabs QTabBar::tab:hover {
     background: #f7fbff;
 }
+QTabWidget#workspaceTabs {
+    background: #e8edf2;
+}
 QTabWidget#workspaceTabs::pane {
     border: 1px solid #b9c1ce;
-    background: #ffffff;
+    background: #e8edf2;
 }
 QTabWidget#workspaceTabs QTabBar {
     background: #e8ebf1;
@@ -580,6 +615,49 @@ QComboBox#viewSelector, QComboBox#scaleSelector {
     border: 1px solid #bfc5cf;
     background: #ffffff;
     padding: 2px;
+}
+QFrame#viewContentFrame {
+    background: #e8edf2;
+}
+QFrame#layerControlPanel {
+    background: rgba(12, 16, 22, 190);
+    border: 1px solid rgba(190, 205, 220, 125);
+    border-radius: 3px;
+}
+QLabel#layerControlTitle {
+    color: #ffffff;
+    font-weight: bold;
+    padding-bottom: 2px;
+}
+QCheckBox#layerControlCheck {
+    color: #e8f1ff;
+    spacing: 6px;
+    min-height: 18px;
+}
+QCheckBox#layerControlCheck::indicator {
+    width: 13px;
+    height: 13px;
+}
+QFrame#productionCurveSelector {
+    background: #f7f8fa;
+    border-bottom: 1px solid #cbd0d8;
+}
+QFrame#productionCurveSelector QLabel,
+QFrame#productionCurveSelector QCheckBox {
+    color: #26313f;
+    background: transparent;
+}
+QFrame#productionCurveSelector QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+}
+QFrame#productionCurveSelector QComboBox,
+QFrame#productionCurveSelector QDoubleSpinBox {
+    min-height: 24px;
+    color: #26313f;
+    background: #ffffff;
+    border: 1px solid #bfc8d6;
+    padding: 2px 6px;
 }
 QSplitter::handle {
     background: #d8dce4;

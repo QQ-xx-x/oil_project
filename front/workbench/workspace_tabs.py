@@ -24,7 +24,7 @@ class WorkspaceTabs(QTabWidget):
         self.setMovable(True)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        self._counters = {"2d": 2, "3d": 1, "chart": 1}
+        self._counters = {"2d": 0, "3d": 0, "chart": 0}
         self._last_context = (
             "当前结果：三维视图",
             "在结果树中选择结果或图层后，这里显示对应占位视图。",
@@ -34,16 +34,10 @@ class WorkspaceTabs(QTabWidget):
         self._chart_data_by_key = {}
         self._layer_states = {}
 
-        self.two_d_primary = self._create_page("2d")
-        self.three_d = self._create_page("3d")
-        self.chart = self._create_page("chart")
-        self.two_d_secondary = self._create_page("2d")
-
-        self._add_page(self.two_d_primary, "2d", "2D窗口 1")
-        self._add_page(self.three_d, "3d", "3D窗口 1")
-        self._add_page(self.chart, "chart", "图表窗口 1")
-        self._add_page(self.two_d_secondary, "2d", "2D窗口 2")
-        self.setCurrentWidget(self.three_d)
+        self.two_d_primary = None
+        self.three_d = None
+        self.chart = None
+        self.two_d_secondary = None
 
         self.tabCloseRequested.connect(self.close_window)
         self.customContextMenuRequested.connect(self._show_tab_menu)
@@ -142,9 +136,6 @@ class WorkspaceTabs(QTabWidget):
 
     def close_window(self, index=None):
         index = self.currentIndex() if index is None else index
-        if self.count() <= 1:
-            self.workspace_message.emit("[窗口] 至少保留一个工作窗口")
-            return
         if index < 0:
             return
         title = self.tabText(index)
@@ -330,16 +321,33 @@ class WorkspaceTabs(QTabWidget):
 
     def _target_page_for_context(self, preferred_view, display_key):
         if preferred_view != "chart" or display_key not in {"production_curve", "history_matching"}:
-            return self._first_page_of_type(preferred_view)
+            page = self._first_page_of_type(preferred_view)
+            if page is not None:
+                return page
+            return self._create_context_window(preferred_view, display_key)
         page = self._first_special_chart_page(display_key)
         if page is not None:
             return page
+        self._counters["chart"] += 1
         page = self._create_page("chart", display_key)
         title = "历史拟合" if display_key == "history_matching" else "生产曲线"
+        self._apply_last_context(page)
         index = self._add_page(page, "chart", "生产曲线")
         self.setTabText(index, title)
         self._refresh_primary_references()
         self.workspace_message.emit(f"[窗口] 已新建{title}窗口")
+        return self.widget(index)
+
+    def _create_context_window(self, view_type, display_key=None):
+        if view_type not in {"2d", "3d", "chart"}:
+            return None
+        self._counters[view_type] += 1
+        title = self._title_for(view_type, self._counters[view_type])
+        page = self._create_page(view_type, display_key if view_type == "chart" else None)
+        self._apply_last_context(page)
+        index = self._add_page(page, view_type, title)
+        self._refresh_primary_references()
+        self.workspace_message.emit(f"[窗口] 已新建 {title}")
         return self.widget(index)
 
     def _first_special_chart_page(self, display_key):

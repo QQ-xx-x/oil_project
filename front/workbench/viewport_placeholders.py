@@ -5,7 +5,7 @@ import math
 
 from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
-from PyQt5.QtWidgets import QFileDialog, QFrame, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFileDialog, QCheckBox, QFrame, QLabel, QVBoxLayout, QWidget
 
 from .view_toolbar import ViewToolbar
 
@@ -18,7 +18,6 @@ THREE_D_RESULT_KEYS = {
     "permeability_y_field",
     "permeability_z_field",
     "permeability_field",  # legacy alias for Kx
-    "layer_control",
 }
 
 DISPLAY_KEY_TO_PROPERTY = {
@@ -230,7 +229,12 @@ class ThreeDViewport(QWidget):
 
     def set_simulation_data(self, sim_data):
         self.simulation_data = sim_data
-        if self._ensure_real_view():
+        if sim_data is None:
+            if self._real_view is not None:
+                self._real_view.hide()
+            self.update()
+            return
+        if sim_data is not None and self._ensure_real_view():
             self._restore_saved_visual_state()
         self.update()
 
@@ -1021,6 +1025,8 @@ class ThreeDViewport(QWidget):
 
     def _ensure_real_view(self):
         if self._real_renderer is not None:
+            if self._real_view is not None and not self._real_view.isVisible():
+                self._real_view.show()
             return True
         if self._real_view_error:
             return False
@@ -1238,6 +1244,10 @@ class ThreeDViewport(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        if self.simulation_data is None:
+            painter.fillRect(self.rect(), QColor("#e8edf2"))
+            painter.end()
+            return
         painter.fillRect(self.rect(), QColor("#050505"))
 
         style = RESULT_STYLES.get(self.display_key, RESULT_STYLES["pressure_field"])
@@ -1268,7 +1278,6 @@ class ThreeDViewport(QWidget):
 
         self._draw_color_bar(painter, style)
         self._draw_context(painter)
-        self._draw_layer_status(painter)
         self._draw_axis_glyph(painter)
         painter.end()
 
@@ -1843,6 +1852,62 @@ class ChartViewport(QWidget):
         return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
+class LayerControlPanel(QFrame):
+    layer_toggled = pyqtSignal(str, bool)
+
+    ITEMS = [
+        ("网格", "grid"),
+        ("网格加密区域", "grid_refinement"),
+        ("井轨迹", "well"),
+        ("天然裂缝", "natural_fractures"),
+        ("人工裂缝", "hydraulic_fractures"),
+        ("双重介质", "dual_porosity"),
+    ]
+
+    def __init__(self, layers=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("layerControlPanel")
+        self._checks = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title = QLabel("图层")
+        title.setObjectName("layerControlTitle")
+        layout.addWidget(title)
+
+        layer_state = dict(layers or {})
+        for text, key in self.ITEMS:
+            check = QCheckBox(text)
+            check.setObjectName("layerControlCheck")
+            check.setChecked(bool(layer_state.get(key, False)))
+            check.toggled.connect(
+                lambda enabled, layer_key=key: self.layer_toggled.emit(layer_key, enabled))
+            self._checks[key] = check
+            layout.addWidget(check)
+
+    def set_layer_state(self, layer_key, enabled):
+        check = self._checks.get(layer_key)
+        if check is None:
+            return
+        previous = check.blockSignals(True)
+        try:
+            check.setChecked(bool(enabled))
+        finally:
+            check.blockSignals(previous)
+
+    def set_layer_states(self, layers):
+        for layer_key, enabled in (layers or {}).items():
+            self.set_layer_state(layer_key, enabled)
+
+    def layer_label(self, layer_key):
+        for text, key in self.ITEMS:
+            if key == layer_key:
+                return text
+        return layer_key
+
+
 class ViewPage(QFrame):
     new_window_requested = pyqtSignal()
     clone_window_requested = pyqtSignal()
@@ -1863,6 +1928,7 @@ class ViewPage(QFrame):
         self.toolbar.clone_window_requested.connect(self.clone_window_requested)
         self.toolbar.close_window_requested.connect(self.close_window_requested)
         self._time_playback_timer = None
+        self.layer_control = None
         if view_type == "3d":
             self._time_playback_timer = QTimer(self)
             self._time_playback_timer.setInterval(800)
@@ -1877,7 +1943,49 @@ class ViewPage(QFrame):
             if hasattr(self.viewport, "interaction_message"):
                 self.viewport.interaction_message.connect(self.view_message.emit)
         layout.addWidget(self.toolbar)
-        layout.addWidget(viewport, 1)
+        self.viewport_container = QFrame()
+        self.viewport_container.setObjectName("viewContentFrame")
+        viewport_layout = QVBoxLayout(self.viewport_container)
+        viewport_layout.setContentsMargins(0, 0, 0, 0)
+        viewport_layout.setSpacing(0)
+        viewport_layout.addWidget(viewport, 1)
+        layout.addWidget(self.viewport_container, 1)
+        if view_type == "3d":
+            self.layer_control = LayerControlPanel(
+                getattr(self.viewport, "layers", {}), self.viewport_container)
+            self.layer_control.layer_toggled.connect(self._handle_layer_toggled)
+            self._sync_layer_control_visibility()
+            self.layer_control.raise_()
+            QTimer.singleShot(0, self._position_layer_control)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_layer_control()
+
+    def _position_layer_control(self):
+        if self.layer_control is None:
+            return
+        self._sync_layer_control_visibility()
+        if not self.layer_control.isVisible():
+            return
+        margin = 10
+        self.layer_control.adjustSize()
+        width = max(142, self.layer_control.sizeHint().width())
+        height = self.layer_control.sizeHint().height()
+        x = max(margin, self.viewport_container.width() - width - margin)
+        self.layer_control.setGeometry(x, margin, width, height)
+        self.layer_control.raise_()
+
+    def _sync_layer_control_visibility(self):
+        if self.layer_control is None:
+            return
+        self.layer_control.setVisible(True)
+
+    def _handle_layer_toggled(self, layer_key, enabled):
+        self.set_layer_state(layer_key, enabled, update_panel=False)
+        label = self.layer_control.layer_label(layer_key) if self.layer_control else layer_key
+        state_text = "显示" if enabled else "隐藏"
+        self.view_message.emit(f"[图层] {label} 已{state_text}")
 
     def _handle_tool_requested(self, command):
         export_path = None
@@ -2010,6 +2118,7 @@ class ViewPage(QFrame):
         self._stop_time_playback_timer()
         if hasattr(self.viewport, "set_context"):
             self.viewport.set_context(title, detail, display_key)
+        self._sync_layer_control_visibility()
         if self.view_type == "3d" and display_key:
             self.set_property_selection(display_key)
 
@@ -2020,13 +2129,17 @@ class ViewPage(QFrame):
             return self.toolbar.set_property_key(property_key, emit=False)
         return False
 
-    def set_layer_state(self, layer_key, enabled):
+    def set_layer_state(self, layer_key, enabled, update_panel=True):
         if hasattr(self.viewport, "set_layer_state"):
             self.viewport.set_layer_state(layer_key, enabled)
+        if update_panel and self.layer_control is not None:
+            self.layer_control.set_layer_state(layer_key, enabled)
 
     def set_simulation_data(self, sim_data):
         if hasattr(self.viewport, "set_simulation_data"):
             self.viewport.set_simulation_data(sim_data)
+        self._sync_layer_control_visibility()
+        self._position_layer_control()
 
     def set_chart_data(self, chart_key, data):
         if hasattr(self.viewport, "set_chart_data"):
@@ -2053,3 +2166,7 @@ class ViewPage(QFrame):
             self.toolbar.restore_ui_state(state.get("toolbar") or {})
         if hasattr(self.viewport, "restore_ui_state"):
             self.viewport.restore_ui_state(state.get("viewport") or {})
+        if self.layer_control is not None:
+            self.layer_control.set_layer_states(getattr(self.viewport, "layers", {}))
+            self._sync_layer_control_visibility()
+            self._position_layer_control()
