@@ -14,6 +14,7 @@ from ..simulation_runner import (
     _corner_point_grid_from_dataset,
     _normalize_parsed_wells_z_to_grid,
 )
+from .case_manager_panel import CaseManagerPanel
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
 from .icon_registry import semantic_icon_kind
@@ -190,6 +191,8 @@ class DockTabPanel(QFrame):
 
 
 class ProjectShell(QWidget):
+    command_requested = pyqtSignal(str)
+
     def __init__(self, project_name, project_state=None, project_root=None, parent=None):
         super().__init__(parent)
         self.project_name = project_name
@@ -208,6 +211,12 @@ class ProjectShell(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self.case_manager = CaseManagerPanel(self.project_state)
+        self.case_manager.command_requested.connect(self.command_requested.emit)
+        self.case_manager.case_selected.connect(self._handle_case_selected)
+        self.case_manager.case_created.connect(self._handle_case_created)
+        self.case_manager.cases_changed.connect(self._refresh_case_input_state)
+
         self.input_tree = InputTree(self.project_state)
         self.input_tree.module_selected.connect(self._handle_module_selected)
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
@@ -218,6 +227,7 @@ class ProjectShell(QWidget):
         self.results_tree.result_selected.connect(self._handle_result_selected)
 
         self.upper_tabs = DockTabPanel([
+            ("算例", self.case_manager),
             ("输入", self.input_tree),
         ])
         self.lower_tabs = DockTabPanel([
@@ -270,7 +280,36 @@ class ProjectShell(QWidget):
         root_splitter.setCollapsible(1, False)
         layout.addWidget(root_splitter, 1)
         self.restore_ui_state()
+        self._refresh_case_input_state(stay_on_case_tab=True)
         self._restore_packaged_simulation_result()
+
+    def _handle_case_selected(self, case_id):
+        case = self.project_state.case_by_id(case_id)
+        if case is None:
+            return
+        self._refresh_case_input_state(stay_on_case_tab=True)
+        self.message_log.append_message(f"[算例] 当前算例：{case.case_name}")
+        self._show_status(f"当前算例：{case.case_name}")
+
+    def _handle_case_created(self, case_id):
+        case = self.project_state.case_by_id(case_id)
+        self._refresh_case_input_state(stay_on_case_tab=False)
+        if case is not None:
+            self.message_log.append_message(f"[算例] 已创建气水模拟算例：{case.case_name}")
+            self._show_status(f"已创建算例：{case.case_name}")
+
+    def _refresh_case_input_state(self, *args, stay_on_case_tab=True):
+        has_case = bool(self.project_state.has_active_case())
+        input_index = self.upper_tabs.tab_widget.indexOf(self.input_tree)
+        case_index = self.upper_tabs.tab_widget.indexOf(self.case_manager)
+        if input_index >= 0:
+            self.upper_tabs.tab_widget.setTabEnabled(input_index, has_case)
+        self.input_tree.setEnabled(has_case)
+        self.case_manager.refresh()
+        if stay_on_case_tab and case_index >= 0:
+            self.upper_tabs.tab_widget.setCurrentIndex(case_index)
+        elif has_case and not stay_on_case_tab and input_index >= 0:
+            self.upper_tabs.tab_widget.setCurrentIndex(input_index)
 
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
@@ -526,6 +565,13 @@ class ProjectShell(QWidget):
 
         area, key = route
         if area == "input":
+            if not self.project_state.has_active_case():
+                index = self.upper_tabs.tab_widget.indexOf(self.case_manager)
+                if index >= 0:
+                    self.upper_tabs.tab_widget.setCurrentIndex(index)
+                self.message_log.append_message("[算例] 请先新建或选择一个算例。")
+                self._show_status("请先新建或选择一个算例")
+                return
             index = self.upper_tabs.tab_widget.indexOf(self.input_tree)
             if index >= 0:
                 self.upper_tabs.tab_widget.setCurrentIndex(index)
@@ -675,6 +721,10 @@ class ProjectShell(QWidget):
             key, (f"当前结果：{title}", "该结果节点后续接入真实模拟输出。"))
 
     def run_simulation_scan(self):
+        if not self.project_state.has_active_case():
+            self.message_log.append_message("[算例] 请先新建或选择一个算例后再运行模拟。")
+            self._show_status("请先新建或选择一个算例")
+            return
         if not ensure_model_config_confirmed(self.project_state, self):
             self.message_log.append_message("[运行] 已取消：尚未确认模型方案")
             self._show_status("已取消运行：尚未确认模型方案")

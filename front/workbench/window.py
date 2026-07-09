@@ -114,6 +114,8 @@ class WorkbenchWindow(QMainWindow):
         vertical = QSplitter(Qt.Vertical)
         self.start_workspace = StartWorkspace()
         self.start_workspace.module_requested.connect(self._open_module_workspace)
+        if hasattr(self.start_workspace, "command_requested"):
+            self.start_workspace.command_requested.connect(self._handle_command)
         vertical.addWidget(self.start_workspace)
         self.message_log = MessageLogPanel()
         vertical.addWidget(self.message_log)
@@ -126,6 +128,11 @@ class WorkbenchWindow(QMainWindow):
         recent_path = self._recent_project_path(command)
         if recent_path:
             self._open_project_file(recent_path)
+            return
+        if str(command or "") == "关闭工程":
+            if self._confirm_close_current_project():
+                self._close_current_project_page()
+                self.statusBar().showMessage("工程已关闭", 4500)
             return
         if self._is_save_as_command(command):
             self._save_project_as()
@@ -356,6 +363,8 @@ class WorkbenchWindow(QMainWindow):
             project_state,
             project_root=project_root or os.getcwd(),
         )
+        if hasattr(shell, "command_requested"):
+            shell.command_requested.connect(self._handle_command)
         self.pages.addWidget(shell)
         self.pages.setCurrentWidget(shell)
         self.setWindowTitle("储层建模与模拟平台")

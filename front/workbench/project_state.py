@@ -3,7 +3,9 @@
 
 import copy
 import os
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from .case_config_sync import (
     sync_project_modules_from_case_data,
@@ -16,6 +18,62 @@ GRID_TYPE_CORNER_POINT = "corner_point"
 WR_INPUT_MODE_FILE = "file"
 WR_INPUT_MODE_CONSTANT = "constant"
 WR_INPUT_MODE_MIXED = "mixed"
+CASE_TYPE_GAS_WATER = "gas_water"
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_case_id():
+    return f"case_{uuid.uuid4().hex[:12]}"
+
+
+@dataclass
+class CaseInfo:
+    """Lightweight case metadata. Inputs remain project-level in this phase."""
+
+    case_id: str = ""
+    case_name: str = "NewCase"
+    case_type: str = CASE_TYPE_GAS_WATER
+    description: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    def __post_init__(self):
+        if not self.case_id:
+            self.case_id = _new_case_id()
+        if not self.case_name:
+            self.case_name = "NewCase"
+        if self.case_type != CASE_TYPE_GAS_WATER:
+            self.case_type = CASE_TYPE_GAS_WATER
+        now = _utc_now()
+        if not self.created_at:
+            self.created_at = now
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def to_dict(self):
+        return {
+            "case_id": self.case_id,
+            "case_name": self.case_name,
+            "case_type": self.case_type,
+            "description": self.description,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, payload):
+        payload = payload or {}
+        return cls(
+            case_id=payload.get("case_id", ""),
+            case_name=payload.get("case_name", "NewCase"),
+            case_type=payload.get("case_type", CASE_TYPE_GAS_WATER),
+            description=payload.get("description", ""),
+            created_at=payload.get("created_at", ""),
+            updated_at=payload.get("updated_at", ""),
+        )
 
 
 def default_model_config():
@@ -87,10 +145,107 @@ class ProjectState:
     checked_items: dict = field(default_factory=dict)
     module_values: dict = field(default_factory=dict)
     ui_state: dict = field(default_factory=dict)
+    cases: list = field(default_factory=list)
+    active_case_id: str = ""
 
     def __post_init__(self):
         self.model_config = normalize_model_config(
             self.model_config, self.corner_grid_refinement)
+        self.cases = self._normalize_cases(self.cases)
+        if self.active_case_id and not self.case_by_id(self.active_case_id):
+            self.active_case_id = ""
+        if not self.active_case_id and self.cases:
+            self.active_case_id = self.cases[0].case_id
+
+    def _normalize_cases(self, cases):
+        normalized = []
+        seen = set()
+        for item in cases or []:
+            case = item if isinstance(item, CaseInfo) else CaseInfo.from_dict(item)
+            if case.case_id in seen:
+                case.case_id = _new_case_id()
+            seen.add(case.case_id)
+            normalized.append(case)
+        return normalized
+
+    def case_by_id(self, case_id):
+        for case in self.cases:
+            if case.case_id == case_id:
+                return case
+        return None
+
+    def active_case(self):
+        return self.case_by_id(self.active_case_id)
+
+    def has_active_case(self):
+        return self.active_case() is not None
+
+    def add_case(self, case_name="NewCase", case_type=CASE_TYPE_GAS_WATER,
+                 description="", activate=True):
+        existing_names = {case.case_name for case in self.cases}
+        name = case_name or "NewCase"
+        if name in existing_names:
+            base = name
+            index = 1
+            while f"{base}{index}" in existing_names:
+                index += 1
+            name = f"{base}{index}"
+        case = CaseInfo(
+            case_name=name,
+            case_type=case_type,
+            description=description,
+        )
+        self.cases.append(case)
+        if activate:
+            self.active_case_id = case.case_id
+        return case
+
+    def select_case(self, case_id):
+        if not self.case_by_id(case_id):
+            return False
+        self.active_case_id = case_id
+        return True
+
+    def rename_case(self, case_id, case_name):
+        case = self.case_by_id(case_id)
+        if not case or not case_name:
+            return False
+        case.case_name = case_name
+        case.updated_at = _utc_now()
+        return True
+
+    def delete_case(self, case_id):
+        before = len(self.cases)
+        self.cases = [case for case in self.cases if case.case_id != case_id]
+        if len(self.cases) == before:
+            return False
+        if self.active_case_id == case_id:
+            self.active_case_id = self.cases[0].case_id if self.cases else ""
+        return True
+
+    def duplicate_case(self, case_id):
+        source = self.case_by_id(case_id)
+        if not source:
+            return None
+        return self.add_case(
+            case_name=f"{source.case_name}_copy",
+            case_type=source.case_type,
+            description=source.description,
+            activate=True,
+        )
+
+    def ensure_legacy_case(self):
+        if self.cases:
+            return self.active_case()
+        has_legacy_input = any([
+            self.case_data_path,
+            self.case_dataset_path,
+            self.case_data_sections,
+            self.module_values,
+        ])
+        if not has_legacy_input:
+            return None
+        return self.add_case(case_name=self.project_name or "DefaultCase")
 
     def set_model_config(self, config):
         self.model_config = normalize_model_config(
@@ -191,6 +346,8 @@ class ProjectState:
             "checked_items": copy.deepcopy(self.checked_items),
             "module_values": copy.deepcopy(self.module_values),
             "ui_state": copy.deepcopy(self.ui_state),
+            "cases": [case.to_dict() for case in self.cases],
+            "active_case_id": self.active_case_id,
         }
 
     @classmethod
@@ -212,6 +369,8 @@ class ProjectState:
             "checked_items",
             "module_values",
             "ui_state",
+            "cases",
+            "active_case_id",
         ):
             if field_name in payload:
                 setattr(state, field_name, copy.deepcopy(payload.get(field_name)))
@@ -220,6 +379,12 @@ class ProjectState:
         state.corner_grid_refinement = (
             "加密" if state.model_config.get("enable_lgr") else "不加密"
         )
+        state.cases = state._normalize_cases(getattr(state, "cases", []) or [])
+        if state.active_case_id and not state.case_by_id(state.active_case_id):
+            state.active_case_id = ""
+        if not state.active_case_id and state.cases:
+            state.active_case_id = state.cases[0].case_id
+        state.ensure_legacy_case()
         if state.case_data_sections:
             sync_project_modules_from_case_data(state)
         if state.case_dataset_path:

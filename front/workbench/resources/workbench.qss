@@ -460,7 +460,7 @@ QFrame#titledPanel, QFrame#dockTabPanel {
     background: #ffffff;
     border: none;
 }
-QTreeWidget#inputTree, QTreeWidget#resultsTree, QTreeWidget#casesTree,
+QTreeWidget#inputTree, QTreeWidget#resultsTree, QTreeWidget#caseManagerTree, QTreeWidget#casesTree,
 QTreeWidget#templatesTree, QTreeWidget#processesTree, QTreeWidget#modelsTree,
 QTreeWidget#windowsTree {
     background: #ffffff;
