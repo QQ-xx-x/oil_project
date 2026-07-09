@@ -30,6 +30,10 @@ from .results_tree import ResultsTree
 from .simulation_service import WorkbenchSimulationService
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
+from visual.pyvista_static_property_preview import (
+    attach_static_property_preview_data_from_files,
+)
+from front.uniform_parser import parse_dfn
 
 
 LAZY_SIMULATION_DATA_KEYS = {
@@ -418,6 +422,10 @@ class ProjectShell(QWidget):
     def _handle_initial_result_load_finished(self, sim_data):
         self._show_progress("加载 3D 结果", 82, "补齐 Corner Point Grid")
         self._ensure_corner_point_grid_for_slice(sim_data)
+        self._attach_parsed_wells_to_sim_data(sim_data)
+        self._attach_static_property_preview_data(sim_data)
+        self._attach_static_fracture_preview_data(sim_data)
+        self._augment_corner_visual_layers(sim_data)
         self._show_progress("加载 3D 结果", 90, "推送到 3D 窗口")
         self.result_store.simulation_data = sim_data
         self.workspace.set_simulation_data(sim_data)
@@ -672,6 +680,10 @@ class ProjectShell(QWidget):
             self.message_log.append_message(f"[结果] 按需加载模拟结果失败：{exc}")
             return None
         self._ensure_corner_point_grid_for_slice(sim_data)
+        self._attach_parsed_wells_to_sim_data(sim_data)
+        self._attach_static_property_preview_data(sim_data)
+        self._attach_static_fracture_preview_data(sim_data)
+        self._augment_corner_visual_layers(sim_data)
         self.result_store.simulation_data = sim_data
         self.workspace.set_simulation_data(sim_data)
         self._log_simulation_summary(sim_data)
@@ -767,6 +779,8 @@ class ProjectShell(QWidget):
     def _handle_simulation_finished(self, sim_data, result_path):
         self._ensure_corner_point_grid_for_slice(sim_data)
         self._attach_parsed_wells_to_sim_data(sim_data)
+        self._attach_static_property_preview_data(sim_data)
+        self._attach_static_fracture_preview_data(sim_data)
         self._augment_corner_visual_layers(sim_data)
         self.result_store.run_status = "done"
         self.result_store.simulation_data = sim_data
@@ -803,6 +817,290 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[切片] 已从 Dataset 补齐 Corner Point Grid："
             f"{corner_grid.nx} x {corner_grid.ny} x {corner_grid.nz}"
+        )
+
+    def _attach_static_property_preview_data(self, sim_data):
+        """
+        给 sim_data 挂静态属性场预览数据。
+        """
+        if (
+            getattr(sim_data, "static_grid_data", None) is not None
+            and getattr(sim_data, "static_properties", None) is not None
+        ):
+            return
+        dataset_path = (
+            getattr(
+                self.project_state,
+                "case_dataset_path",
+                "",
+            )
+            or ""
+        )
+        if not dataset_path or not os.path.isdir(dataset_path):
+            self.message_log.append_message(
+                "[静态属性预览] 当前没有有效的 CaseDataset 路径，无法加载静态属性。"
+            )
+            return
+        try:
+            dataset = load_case_dataset(
+                dataset_path,
+                strict=False,
+            )
+        except (
+            CaseDatasetReadError,
+            ValueError,
+            OSError,
+        ) as exc:
+            self.message_log.append_message(
+                f"[静态属性预览] 读取 CaseDataset 失败：{exc}"
+            )
+            return
+        source_files = getattr(
+            dataset,
+            "source_files",
+            None,
+        )
+        if not isinstance(source_files, dict):
+            manifest = getattr(
+                dataset,
+                "manifest",
+                None,
+            )
+            if isinstance(manifest, dict):
+                source_files = manifest.get(
+                    "source_files",
+                    {},
+                )
+        if not isinstance(source_files, dict):
+            self.message_log.append_message(
+                "[静态属性预览] Dataset 中没有 source_files，无法定位属性文件。"
+            )
+            return
+
+        def get_path(key):
+            item = source_files.get(
+                key,
+                {},
+            ) or {}
+
+            if isinstance(item, dict):
+                path = item.get(
+                    "path",
+                    "",
+                ) or ""
+
+                if path and os.path.exists(path):
+                    return path
+
+                copied_to = item.get(
+                    "copied_to",
+                    "",
+                ) or ""
+
+                if copied_to:
+                    copied_path = os.path.join(
+                        dataset_path,
+                        copied_to,
+                    )
+
+                    if os.path.exists(copied_path):
+                        return copied_path
+
+                return path
+
+            if isinstance(item, str):
+                return item
+
+            return ""
+
+        grid_file = get_path("grid_file")
+
+        property_files = {
+            "MATRIX_PORO": get_path("matrix_phi_file"),
+            "MATRIX_PERMX": get_path("matrix_kx_file"),
+            "MATRIX_PERMY": get_path("matrix_ky_file"),
+            "MATRIX_PERMZ": get_path("matrix_kz_file"),
+
+            "DFN_PORO": get_path("fracture_phi_file"),
+            "DFN_PERMX": get_path("fracture_kx_file"),
+            "DFN_PERMY": get_path("fracture_ky_file"),
+            "DFN_PERMZ": get_path("fracture_kz_file"),
+
+            "SIGMA": get_path("sigma_file"),
+        }
+
+        if not grid_file:
+            self.message_log.append_message(
+                "[静态属性预览] 缺少 grid_file，无法构建角点网格预览。"
+            )
+            return
+
+        try:
+            attach_static_property_preview_data_from_files(
+                sim_data=sim_data,
+                grid_file=grid_file,
+                property_files=property_files,
+                null_value=99999.0,
+                strict=False,
+            )
+
+        except Exception as exc:
+            self.message_log.append_message(
+                f"[静态属性预览] 静态属性数据挂载失败：{exc}"
+            )
+            return
+
+        static_properties = (
+            getattr(
+                sim_data,
+                "static_properties",
+                {},
+            )
+            or {}
+        )
+
+        meta = (
+            getattr(
+                sim_data,
+                "static_property_meta",
+                {},
+            )
+            or {}
+        )
+
+        self.message_log.append_message(
+            f"[静态属性预览] 已挂载静态属性预览数据："
+            f"{len(meta)} 个属性文件，{len(static_properties)} 个属性键。"
+        )
+
+    def _attach_static_fracture_preview_data(self, sim_data):
+        """
+        给 sim_data 挂天然裂缝预览数据。
+        """
+        if getattr(sim_data, "static_dfn_data", None) is not None:
+            return
+
+        dataset_path = (
+            getattr(
+                self.project_state,
+                "case_dataset_path",
+                "",
+            )
+            or ""
+        )
+
+        if not dataset_path or not os.path.isdir(dataset_path):
+            self.message_log.append_message(
+                "[裂缝预览] 当前没有有效的 CaseDataset 路径，无法加载天然裂缝。"
+            )
+            return
+
+        try:
+            dataset = load_case_dataset(
+                dataset_path,
+                strict=False,
+            )
+
+        except (
+            CaseDatasetReadError,
+            ValueError,
+            OSError,
+        ) as exc:
+            self.message_log.append_message(
+                f"[裂缝预览] 读取 CaseDataset 失败：{exc}"
+            )
+            return
+
+        dfn_data = getattr(
+            dataset,
+            "dfn",
+            None,
+        )
+
+        if isinstance(dfn_data, dict) and dfn_data.get("fractures"):
+            sim_data.static_dfn_data = dfn_data
+            self.message_log.append_message(
+                f"[裂缝预览] 已从 Dataset 挂载天然裂缝："
+                f"{len(dfn_data.get('fractures', []))} 条。"
+            )
+            return
+
+        source_files = getattr(
+            dataset,
+            "source_files",
+            None,
+        )
+
+        if not isinstance(source_files, dict):
+            manifest = getattr(
+                dataset,
+                "manifest",
+                None,
+            )
+
+            if isinstance(manifest, dict):
+                source_files = manifest.get(
+                    "source_files",
+                    {},
+                )
+
+        if not isinstance(source_files, dict):
+            self.message_log.append_message(
+                "[裂缝预览] Dataset 中没有 source_files，无法定位 dfn.txt。"
+            )
+            return
+
+        item = source_files.get(
+            "fracture_file",
+            {},
+        ) or {}
+
+        dfn_file = ""
+
+        if isinstance(item, dict):
+            dfn_file = item.get(
+                "path",
+                "",
+            ) or ""
+
+            if not dfn_file or not os.path.exists(dfn_file):
+                copied_to = item.get(
+                    "copied_to",
+                    "",
+                ) or ""
+
+                if copied_to:
+                    copied_path = os.path.join(
+                        dataset_path,
+                        copied_to,
+                    )
+
+                    if os.path.exists(copied_path):
+                        dfn_file = copied_path
+
+        elif isinstance(item, str):
+            dfn_file = item
+
+        if not dfn_file or not os.path.exists(dfn_file):
+            self.message_log.append_message(
+                "[裂缝预览] 找不到 dfn.txt，无法加载天然裂缝预览。"
+            )
+            return
+
+        try:
+            dfn_data = parse_dfn(dfn_file)
+
+        except Exception as exc:
+            self.message_log.append_message(
+                f"[裂缝预览] parse_dfn 失败：{exc}"
+            )
+            return
+
+        sim_data.static_dfn_data = dfn_data
+
+        self.message_log.append_message(
+            f"[裂缝预览] 已解析并挂载天然裂缝："
+            f"{len(dfn_data.get('fractures', []))} 条。"
         )
 
     def _attach_parsed_wells_to_sim_data(self, sim_data):
@@ -876,6 +1174,104 @@ class ProjectShell(QWidget):
         params = self._last_simulation_params or {}
         fractures = getattr(sim_data, "fractures", []) or []
         self._apply_corner_origin_offset(sim_data, fractures)
+        parsed_well_data = getattr(sim_data, "parsed_well_data", None) or {}
+        hydraulic_signatures = []
+
+        def _normalize_points(points):
+            normalized = []
+            for point in points:
+                normalized.append((
+                    round(float(point[0]), 6),
+                    round(float(point[1]), 6),
+                    round(float(point[2]), 6),
+                ))
+            normalized.sort()
+            return tuple(normalized)
+
+        for well in parsed_well_data.get("wells", []) or []:
+            for completion in well.get("completion_definitions", []) or []:
+                if not completion.get("is_fractured", False):
+                    continue
+
+                fracture_data = completion.get("fracture")
+                if not isinstance(fracture_data, dict):
+                    continue
+
+                if not fracture_data.get("geometry_available", False):
+                    continue
+
+                corners = fracture_data.get("corners", []) or []
+                if len(corners) < 4:
+                    continue
+
+                try:
+                    csv_points = [
+                        (
+                            float(corner["x_m"]),
+                            float(corner["y_m"]),
+                            float(corner["z_m"]),
+                        )
+                        for corner in corners[:4]
+                    ]
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+                hydraulic_signatures.append(_normalize_points(csv_points))
+
+        hydraulic_centers = []
+
+        for index, frac in enumerate(fractures):
+            try:
+                frac_id = int(
+                    frac.get(
+                        "id",
+                        frac.get("fracture_id", index),
+                    )
+                )
+            except (TypeError, ValueError):
+                frac_id = index
+
+            points = frac.get("points", []) or []
+
+            if len(points) < 4:
+                frac["type"] = "natural"
+                frac["is_hydraulic"] = 0
+                frac["fracture_source"] = "dfn"
+                continue
+
+            try:
+                final_signature = _normalize_points(points[:4])
+            except (TypeError, ValueError, IndexError):
+                frac["type"] = "natural"
+                frac["is_hydraulic"] = 0
+                frac["fracture_source"] = "dfn"
+                continue
+
+            is_hydraulic = final_signature in hydraulic_signatures
+
+            if is_hydraulic:
+                frac["type"] = "hydraulic"
+                frac["is_hydraulic"] = 1
+                frac["fracture_source"] = "well_completion_csv"
+
+                if points:
+                    hydraulic_centers.append(
+                        tuple(
+                            sum(float(point[axis]) for point in points) / len(points)
+                            for axis in range(3)
+                        )
+                    )
+
+            else:
+                frac["type"] = "natural"
+                frac["is_hydraulic"] = 0
+                frac["fracture_source"] = "dfn"
+
+    """
+    def _augment_corner_visual_layers(self, sim_data):
+        params = self._last_simulation_params or {}
+        fractures = getattr(sim_data, "fractures", []) or []
+        self._apply_corner_origin_offset(sim_data, fractures)
         natural_count = int(params.get("num_fracs", 0) or 0)
         region_count = int(params.get("region_num_fracs", 0) or 0)
         hydraulic_count = int(params.get("hf_count", 0) or 0)
@@ -921,6 +1317,7 @@ class ProjectShell(QWidget):
                 "WI": 0.0,
                 "P_bhp": float(params.get("well_pressure", 50.0)),
             }]
+    """
 
     def _apply_corner_origin_offset(self, sim_data, fractures):
         if not fractures:
