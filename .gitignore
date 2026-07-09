@@ -87,3 +87,5 @@ Desktop.ini
 # VS / Claude Code
 .vs/
 .claude/
+docs/
+tmp/
