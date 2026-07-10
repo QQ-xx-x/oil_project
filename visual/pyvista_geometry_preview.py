@@ -103,6 +103,84 @@ class GeometryPreviewRenderer:
         except Exception:
             pass
 
+    def _setup_camera_for_corner_grid_bounds(self, bounds):
+        if bounds is None or len(bounds) != 6:
+            return
+
+        try:
+            min_x, max_x, min_y, max_y, min_z, max_z = [
+                float(value)
+                for value in bounds
+            ]
+
+            cx = (min_x + max_x) / 2.0
+            cy = (min_y + max_y) / 2.0
+            cz = (min_z + max_z) / 2.0
+
+            dx = max_x - min_x
+            dy = max_y - min_y
+            dz = max_z - min_z
+
+            max_xy = max(dx, dy)
+            z_ratio = dz / max_xy if max_xy > 0 else 1.0
+
+            if z_ratio < 0.1:
+                dist = max_xy * 1.8
+
+                self.plotter.camera_position = [
+                    (
+                        cx + dx * 0.3,
+                        cy - dist,
+                        cz + dz * 8,
+                    ),
+                    (
+                        cx,
+                        cy,
+                        cz,
+                    ),
+                    (
+                        0,
+                        0,
+                        1,
+                    ),
+                ]
+
+            else:
+                dist = max(
+                    dx,
+                    dy,
+                    dz,
+                ) * 2.5
+
+                self.plotter.camera_position = [
+                    (
+                        cx + dist * 0.8,
+                        cy + dist * 0.6,
+                        cz + dist * 0.4,
+                    ),
+                    (
+                        cx,
+                        cy,
+                        cz,
+                    ),
+                    (
+                        0,
+                        0,
+                        1,
+                    ),
+                ]
+
+            self.plotter.reset_camera(
+                render=False,
+            )
+
+            self.plotter.camera.Zoom(
+                1.0,
+            )
+
+        except Exception:
+            pass
+
     def clear_grid(self, render_now=True):
         self._remove_actor(self.grid_actor)
         self._remove_actor(self.grid_edge_actor)
@@ -149,12 +227,32 @@ class GeometryPreviewRenderer:
         if render_now:
             self._render()
 
+    def is_grid_visible(self) -> bool:
+        return self.grid_actor is not None or self.grid_edge_actor is not None
+
+    def is_wells_visible(self) -> bool:
+        return bool(self.well_actors)
+
+    def is_natural_fractures_visible(self) -> bool:
+        return bool(self.natural_fracture_actors)
+
+    def is_hydraulic_fractures_visible(self) -> bool:
+        return bool(self.hydraulic_fracture_actors)
+
+    def is_fractures_visible(self) -> bool:
+        return self.is_natural_fractures_visible() or self.is_hydraulic_fractures_visible()
+
     def render_grid(
         self,
         sim_data,
         render_now=True,
     ):
         self._configure_preview_scene()
+
+        if self.is_grid_visible():
+            self.clear_grid(render_now=render_now)
+            return None
+
         self.clear_grid(render_now=False)
 
         grid_data = getattr(
@@ -234,11 +332,9 @@ class GeometryPreviewRenderer:
                 render=False,
             )
 
-        try:
-            self.plotter.reset_camera()
-            self.plotter.reset_camera_clipping_range()
-        except Exception:
-            pass
+        self._setup_camera_for_corner_grid_bounds(
+            grid.bounds
+        )
 
         if render_now:
             self._render()
@@ -251,6 +347,11 @@ class GeometryPreviewRenderer:
         render_now=True,
     ):
         self._configure_preview_scene()
+
+        if self.is_wells_visible():
+            self.clear_wells(render_now=render_now)
+            return False
+
         self.clear_wells(render_now=False)
 
         well_data = getattr(
@@ -387,6 +488,11 @@ class GeometryPreviewRenderer:
         render_now=True,
     ):
         self._configure_preview_scene()
+
+        if self.is_natural_fractures_visible():
+            self.clear_natural_fractures(render_now=render_now)
+            return False
+
         self.clear_natural_fractures(render_now=False)
 
         count = self._render_natural_fractures(
@@ -468,6 +574,11 @@ class GeometryPreviewRenderer:
         render_now=True,
     ):
         self._configure_preview_scene()
+
+        if self.is_hydraulic_fractures_visible():
+            self.clear_hydraulic_fractures(render_now=render_now)
+            return False
+
         self.clear_hydraulic_fractures(render_now=False)
 
         count = self._render_hydraulic_fractures(
@@ -600,6 +711,11 @@ class GeometryPreviewRenderer:
         render_now=True,
     ):
         self._configure_preview_scene()
+
+        if self.is_fractures_visible():
+            self.clear_fractures(render_now=render_now)
+            return False
+
         self.clear_fractures(render_now=False)
 
         total_count = 0

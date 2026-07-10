@@ -336,6 +336,41 @@ class StaticPropertyPreviewRenderer:
         if render_now:
             self._render()
 
+    def is_visible(self) -> bool:
+        return self.actor is not None
+
+    def is_current_property(self, property_key: str) -> bool:
+        canonical_key = normalize_static_property_key(property_key)
+
+        return (
+            self.actor is not None
+            and self.current_property_key == canonical_key
+            and self.current_axis is None
+            and self.current_layer_index is None
+        )
+
+    def is_current_property_layer(
+        self,
+        property_key: str,
+        axis: str,
+        layer_index: int,
+        index_base: int = 1,
+    ) -> bool:
+        canonical_key = normalize_static_property_key(property_key)
+        axis = str(axis).strip().lower()
+
+        layer_index0 = int(layer_index)
+
+        if int(index_base) == 1:
+            layer_index0 -= 1
+
+        return (
+            self.actor is not None
+            and self.current_property_key == canonical_key
+            and self.current_axis == axis
+            and self.current_layer_index == layer_index0
+        )
+
     def render_property(
         self,
         sim_data,
@@ -344,6 +379,10 @@ class StaticPropertyPreviewRenderer:
         **_ignored_style_kwargs,
     ):
         canonical_key = normalize_static_property_key(property_key)
+
+        if self.is_current_property(canonical_key):
+            self.clear(render_now=render_now)
+            return None
 
         grid_data = self._get_static_grid_data(sim_data)
 
@@ -400,6 +439,15 @@ class StaticPropertyPreviewRenderer:
 
         if int(index_base) == 1:
             layer_index0 -= 1
+
+        if self.is_current_property_layer(
+            canonical_key,
+            axis,
+            layer_index0,
+            index_base=0,
+        ):
+            self.clear(render_now=render_now)
+            return None
 
         grid_data = self._get_static_grid_data(sim_data)
 
@@ -974,9 +1022,91 @@ class StaticPropertyPreviewRenderer:
         )
 
     def _reset_camera_to_grid(self, grid):
+        if grid is None:
+            return
+
         try:
-            self.plotter.reset_camera()
-            self.plotter.reset_camera_clipping_range()
+            bounds = grid.bounds
+        except Exception:
+            return
+
+        self._setup_camera_for_corner_grid_bounds(bounds)
+
+    def _setup_camera_for_corner_grid_bounds(self, bounds):
+        if bounds is None or len(bounds) != 6:
+            return
+
+        try:
+            min_x, max_x, min_y, max_y, min_z, max_z = [
+                float(value)
+                for value in bounds
+            ]
+
+            cx = (min_x + max_x) / 2.0
+            cy = (min_y + max_y) / 2.0
+            cz = (min_z + max_z) / 2.0
+
+            dx = max_x - min_x
+            dy = max_y - min_y
+            dz = max_z - min_z
+
+            max_xy = max(dx, dy)
+            z_ratio = dz / max_xy if max_xy > 0 else 1.0
+
+            if z_ratio < 0.1:
+                dist = max_xy * 1.8
+
+                self.plotter.camera_position = [
+                    (
+                        cx + dx * 0.3,
+                        cy - dist,
+                        cz + dz * 8,
+                    ),
+                    (
+                        cx,
+                        cy,
+                        cz,
+                    ),
+                    (
+                        0,
+                        0,
+                        1,
+                    ),
+                ]
+
+            else:
+                dist = max(
+                    dx,
+                    dy,
+                    dz,
+                ) * 2.5
+
+                self.plotter.camera_position = [
+                    (
+                        cx + dist * 0.8,
+                        cy + dist * 0.6,
+                        cz + dist * 0.4,
+                    ),
+                    (
+                        cx,
+                        cy,
+                        cz,
+                    ),
+                    (
+                        0,
+                        0,
+                        1,
+                    ),
+                ]
+
+            self.plotter.reset_camera(
+                render=False,
+            )
+
+            self.plotter.camera.Zoom(
+                1.0,
+            )
+
         except Exception:
             pass
 
