@@ -14,6 +14,7 @@ from .viewport_placeholders import ChartViewport, ThreeDViewport, TwoDViewport, 
 class WorkspaceTabs(QTabWidget):
     workspace_message = pyqtSignal(str)
     result_property_selected = pyqtSignal(str)
+    preview_requested = pyqtSignal(object, str, str, str, int)
 
     def __init__(self, parent=None, project_state=None, result_store=None):
         super().__init__(parent)
@@ -31,6 +32,7 @@ class WorkspaceTabs(QTabWidget):
             "pressure_field",
         )
         self._last_simulation_data = None
+        self._last_preview_data = None
         self._chart_data_by_key = {}
         self._layer_states = {}
 
@@ -87,6 +89,7 @@ class WorkspaceTabs(QTabWidget):
         page = ViewPage(viewport, view_type)
         page.view_message.connect(self.workspace_message.emit)
         page.result_property_selected.connect(self.result_property_selected.emit)
+        page.preview_requested.connect(self.preview_requested.emit)
         page.new_window_requested.connect(lambda: self._show_new_menu_from_page(page))
         page.clone_window_requested.connect(lambda: self.clone_window(self.indexOf(page)))
         page.close_window_requested.connect(lambda: self.close_window(self.indexOf(page)))
@@ -202,6 +205,11 @@ class WorkspaceTabs(QTabWidget):
         for page in self._pages_of_type("3d"):
             page.set_simulation_data(sim_data)
 
+    def set_preview_data(self, sim_data):
+        self._last_preview_data = sim_data
+        for page in self._pages_of_type("3d"):
+            page.set_preview_data(sim_data)
+
     def set_chart_data(self, chart_key, data):
         self._chart_data_by_key[chart_key] = data
         for page in self._pages_of_type("chart"):
@@ -290,6 +298,8 @@ class WorkspaceTabs(QTabWidget):
         if view_type == "3d":
             if self._last_simulation_data is not None:
                 page.set_simulation_data(self._last_simulation_data)
+            if self._last_preview_data is not None:
+                page.set_preview_data(self._last_preview_data)
             for layer_key, enabled in self._layer_states.items():
                 page.set_layer_state(layer_key, enabled)
         elif view_type == "chart":
@@ -307,6 +317,9 @@ class WorkspaceTabs(QTabWidget):
             sim_data = getattr(viewport, "simulation_data", None) or self._last_simulation_data
             if sim_data is not None:
                 target.set_simulation_data(sim_data)
+            preview_data = getattr(viewport, "preview_data", None) or self._last_preview_data
+            if preview_data is not None:
+                target.set_preview_data(preview_data)
             source_layers = getattr(viewport, "layers", None)
             layer_states = dict(source_layers or self._layer_states)
             for layer_key, enabled in layer_states.items():

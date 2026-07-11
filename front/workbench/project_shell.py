@@ -206,6 +206,7 @@ class ProjectShell(QWidget):
         self.result_store = self.workflow_runner.discover_results()
         self.simulation_service = WorkbenchSimulationService(self.project_root, self)
         self._last_simulation_params = {}
+        self._preview_data = None
         self._result_load_thread = None
         self._result_load_worker = None
         self._autoload_result_path = ""
@@ -269,6 +270,7 @@ class ProjectShell(QWidget):
         )
         self.workspace.workspace_message.connect(self._handle_workspace_message)
         self.workspace.result_property_selected.connect(self._handle_workspace_result_property_selected)
+        self.workspace.preview_requested.connect(self._handle_workspace_preview_requested)
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(left_container)
         main_splitter.addWidget(self.workspace)
@@ -291,12 +293,16 @@ class ProjectShell(QWidget):
         case = self.project_state.case_by_id(case_id)
         if case is None:
             return
+        self._preview_data = None
+        self.workspace.set_preview_data(None)
         self._refresh_case_input_state(stay_on_case_tab=True)
         self.message_log.append_message(f"[算例] 当前算例：{case.case_name}")
         self._show_status(f"当前算例：{case.case_name}")
 
     def _handle_case_created(self, case_id):
         case = self.project_state.case_by_id(case_id)
+        self._preview_data = None
+        self.workspace.set_preview_data(None)
         self._refresh_case_input_state(stay_on_case_tab=False)
         if case is not None:
             self.message_log.append_message(f"[算例] 已创建气水模拟算例：{case.case_name}")
@@ -323,6 +329,18 @@ class ProjectShell(QWidget):
         if property_key not in LAZY_SIMULATION_DATA_KEYS:
             return
         self.results_tree.select_key(property_key)
+
+    def _handle_workspace_preview_requested(self, page, preview_type, key, axis, layer):
+        sim_data = self._ensure_preview_data_loaded()
+        if sim_data is None:
+            return
+        self.workspace.set_preview_data(sim_data)
+        if page is not None and hasattr(page, "set_preview_data"):
+            page.set_preview_data(sim_data)
+        if page is not None and hasattr(page, "handle_preview_request"):
+            page.handle_preview_request(preview_type, key, axis, layer)
+        else:
+            self.message_log.append_message("[预览] 当前 3D 窗口不可用")
 
     def _handle_input_related_result_requested(self, result_key):
         index = self.lower_tabs.tab_widget.indexOf(self.results_tree)
@@ -428,7 +446,9 @@ class ProjectShell(QWidget):
         self._augment_corner_visual_layers(sim_data)
         self._show_progress("加载 3D 结果", 90, "推送到 3D 窗口")
         self.result_store.simulation_data = sim_data
+        self._preview_data = sim_data
         self.workspace.set_simulation_data(sim_data)
+        self.workspace.set_preview_data(sim_data)
         if not self._has_saved_workspace_state():
             self.workspace.update_context(
                 *self._result_context("pressure_field", "压力场"),
@@ -619,6 +639,8 @@ class ProjectShell(QWidget):
         self._show_status(f"已更新参数：{title}")
 
     def _handle_case_dataset_built(self, dataset_path, manifest):
+        self._preview_data = None
+        self.workspace.set_preview_data(None)
         validation = manifest.get("validation", {}) if isinstance(manifest, dict) else {}
         array_count = len(manifest.get("arrays", {}) or {}) if isinstance(manifest, dict) else 0
         source_file_count = len(manifest.get("source_files", []) or []) if isinstance(manifest, dict) else 0
@@ -633,6 +655,45 @@ class ProjectShell(QWidget):
             f"[CaseData] Dataset 校验：数组 {array_count} 个，文件 {source_file_count} 个，"
             f"错误 {error_count} 个，警告 {warning_count} 个")
         self._show_status("CaseData Dataset 已生成")
+
+    def _ensure_preview_data_loaded(self):
+        sim_data = self.result_store.simulation_data
+        if sim_data is None:
+            dataset_path = getattr(self.project_state, "case_dataset_path", "") or ""
+            if not dataset_path or not os.path.isdir(dataset_path):
+                self.message_log.append_message(
+                    "[预览] 请先构建 CaseDataset 后再预览输入数据。")
+                self._show_status("预览数据不可用")
+                return None
+            if self._preview_data is None:
+                self._preview_data = SimulationData()
+            sim_data = self._preview_data
+
+        self._ensure_corner_point_grid_for_slice(sim_data)
+        self._attach_parsed_wells_to_sim_data(sim_data)
+        self._attach_static_property_preview_data(sim_data)
+        self._attach_static_fracture_preview_data(sim_data)
+        self._augment_corner_visual_layers(sim_data)
+
+        if not self._has_any_preview_payload(sim_data):
+            self.message_log.append_message(
+                "[预览] 当前没有可用预览数据，请检查 CaseDataset 中的网格、属性、井或裂缝文件。")
+            self._show_status("预览数据不可用")
+            return None
+        return sim_data
+
+    def _has_any_preview_payload(self, sim_data):
+        if getattr(sim_data, "static_grid_data", None) is not None:
+            return True
+        if getattr(sim_data, "static_properties", None):
+            return True
+        parsed_well_data = getattr(sim_data, "parsed_well_data", None)
+        if isinstance(parsed_well_data, dict) and parsed_well_data.get("wells"):
+            return True
+        dfn_data = getattr(sim_data, "static_dfn_data", None)
+        if isinstance(dfn_data, dict) and dfn_data.get("fractures"):
+            return True
+        return False
 
     def show_model_config_dialog(self, force=True):
         if not ensure_model_config_confirmed(self.project_state, self, force=force):
@@ -685,7 +746,9 @@ class ProjectShell(QWidget):
         self._attach_static_fracture_preview_data(sim_data)
         self._augment_corner_visual_layers(sim_data)
         self.result_store.simulation_data = sim_data
+        self._preview_data = sim_data
         self.workspace.set_simulation_data(sim_data)
+        self.workspace.set_preview_data(sim_data)
         self._log_simulation_summary(sim_data)
         self.message_log.append_message(f"[结果] 已按需加载 3D 模拟结果：{result_path}")
         return sim_data
@@ -784,9 +847,11 @@ class ProjectShell(QWidget):
         self._augment_corner_visual_layers(sim_data)
         self.result_store.run_status = "done"
         self.result_store.simulation_data = sim_data
+        self._preview_data = sim_data
         self.result_store.result_json_path = result_path
         self._refresh_result_file_paths()
         self.workspace.set_simulation_data(sim_data)
+        self.workspace.set_preview_data(sim_data)
         self.workspace.update_context(
             "当前结果：Corner Grid 压力场",
             "三维窗口显示导入角点网格的 LGR 加密模拟结果。",

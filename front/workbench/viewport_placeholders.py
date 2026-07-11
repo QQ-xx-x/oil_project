@@ -49,6 +49,26 @@ PICK_PROPERTY_LABELS = {
     "permeability_z": "Kz",
 }
 
+STATIC_PREVIEW_LABELS = {
+    "MATRIX_PORO": "MATRIX_PORO",
+    "MATRIX_PERMX": "MATRIX_PERMX",
+    "MATRIX_PERMY": "MATRIX_PERMY",
+    "MATRIX_PERMZ": "MATRIX_PERMZ",
+    "DFN_PORO": "DFN_PORO",
+    "DFN_PERMX": "DFN_PERMX",
+    "DFN_PERMY": "DFN_PERMY",
+    "DFN_PERMZ": "DFN_PERMZ",
+    "SIGMA": "SIGMA",
+}
+
+GEOMETRY_PREVIEW_LABELS = {
+    "grid": "角点网格",
+    "wells": "井轨迹",
+    "natural_fractures": "天然裂缝",
+    "hydraulic_fractures": "人工裂缝",
+    "fractures": "全部裂缝",
+}
+
 RESULT_STYLES = {
     "pressure_field": {
         "legend": "压力",
@@ -141,6 +161,8 @@ class ThreeDViewport(QWidget):
         self._real_renderer = None
         self._real_view_error = ""
         self.simulation_data = None
+        self.preview_data = None
+        self._preview_mode_active = False
         self.context_title = "当前结果：三维视图"
         self.context_detail = "在结果树中选择结果或图层后，这里显示对应占位视图。"
         self.display_key = "pressure_field"
@@ -237,6 +259,163 @@ class ThreeDViewport(QWidget):
         if sim_data is not None and self._ensure_real_view():
             self._restore_saved_visual_state()
         self.update()
+
+    def set_preview_data(self, sim_data):
+        if sim_data is self.preview_data:
+            return
+        self.preview_data = sim_data
+        if self._preview_mode_active and self._real_renderer is not None:
+            self._real_renderer.clear_cache()
+            self._preview_mode_active = False
+            self._rendered_display_key = None
+            self.update()
+
+    def _preview_source_data(self):
+        return self.preview_data or self.simulation_data
+
+    def _enter_preview_mode(self):
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
+        if not self._preview_mode_active and self._real_renderer is not None:
+            self._real_renderer.clear_cache()
+            self._preview_mode_active = True
+            self._rendered_display_key = None
+
+    def toggle_geometry_preview(self, preview_kind):
+        preview_kind = str(preview_kind or "").strip()
+        method_name = {
+            "grid": "render_grid",
+            "wells": "render_wells",
+            "natural_fractures": "render_natural_fractures",
+            "hydraulic_fractures": "render_hydraulic_fractures",
+            "fractures": "render_fractures",
+        }.get(preview_kind)
+        label = GEOMETRY_PREVIEW_LABELS.get(preview_kind, preview_kind)
+        if method_name is None:
+            return False, f"[预览] 不支持的几何预览：{preview_kind}"
+        sim_data = self._preview_source_data()
+        if sim_data is None:
+            return False, "[预览] 当前没有可用预览数据，请先构建 CaseDataset"
+        if not self._ensure_real_view():
+            return False, f"[预览] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        renderer = self._real_renderer
+        preview = getattr(renderer, "geometry_preview", None)
+        if preview is None:
+            return False, "[预览] 渲染端缺少 geometry_preview"
+        method = getattr(preview, method_name, None)
+        if method is None:
+            return False, f"[预览] 渲染端缺少 {method_name}"
+        state_method = getattr(preview, self._geometry_preview_state_method(preview_kind), None)
+        was_visible = bool(state_method()) if state_method is not None else False
+        self._enter_preview_mode()
+        try:
+            method(sim_data, render_now=True)
+        except Exception as exc:
+            return False, f"[预览] {label}预览失败：{exc}"
+        is_visible = bool(state_method()) if state_method is not None else False
+        self.update()
+        if was_visible and not is_visible:
+            return True, f"[预览] 已隐藏{label}"
+        if is_visible:
+            return True, f"[预览] 已显示{label}"
+        return False, f"[预览] 没有可显示的{label}数据"
+
+    def _geometry_preview_state_method(self, preview_kind):
+        return {
+            "grid": "is_grid_visible",
+            "wells": "is_wells_visible",
+            "natural_fractures": "is_natural_fractures_visible",
+            "hydraulic_fractures": "is_hydraulic_fractures_visible",
+            "fractures": "is_fractures_visible",
+        }.get(preview_kind, "")
+
+    def toggle_static_property_preview(self, property_key):
+        property_key = str(property_key or "").strip()
+        label = STATIC_PREVIEW_LABELS.get(property_key, property_key)
+        sim_data = self._preview_source_data()
+        if sim_data is None:
+            return False, "[静态属性预览] 当前没有可用预览数据，请先构建 CaseDataset"
+        if not self._ensure_real_view():
+            return False, f"[静态属性预览] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        renderer = self._real_renderer
+        preview = getattr(renderer, "static_property_preview", None)
+        if preview is None:
+            return False, "[静态属性预览] 渲染端缺少 static_property_preview"
+        was_visible = False
+        if hasattr(preview, "is_current_property"):
+            try:
+                was_visible = bool(preview.is_current_property(property_key))
+            except Exception:
+                was_visible = False
+        self._enter_preview_mode()
+        try:
+            preview.render_property(sim_data, property_key, render_now=True)
+        except Exception as exc:
+            return False, f"[静态属性预览] {label} 预览失败：{exc}"
+        is_visible = False
+        if hasattr(preview, "is_current_property"):
+            try:
+                is_visible = bool(preview.is_current_property(property_key))
+            except Exception:
+                is_visible = False
+        self.update()
+        if was_visible and not is_visible:
+            return True, f"[静态属性预览] 已隐藏 {label}"
+        if is_visible:
+            return True, f"[静态属性预览] 已显示 {label}"
+        return False, f"[静态属性预览] 没有可显示的 {label} 数据"
+
+    def toggle_static_property_layer_preview(self, property_key, axis, layer):
+        property_key = str(property_key or "").strip()
+        axis = str(axis or "").strip().lower()
+        label = STATIC_PREVIEW_LABELS.get(property_key, property_key)
+        try:
+            layer = int(layer)
+        except (TypeError, ValueError):
+            return False, "[分层预览] 层号必须是整数"
+        if axis not in {"i", "j", "k"}:
+            return False, f"[分层预览] 不支持的方向：{axis}"
+        sim_data = self._preview_source_data()
+        if sim_data is None:
+            return False, "[分层预览] 当前没有可用预览数据，请先构建 CaseDataset"
+        if not self._ensure_real_view():
+            return False, f"[分层预览] 无法初始化 3D 渲染器：{self._real_view_error or '未知错误'}"
+        renderer = self._real_renderer
+        preview = getattr(renderer, "static_property_preview", None)
+        if preview is None:
+            return False, "[分层预览] 渲染端缺少 static_property_preview"
+        was_visible = False
+        if hasattr(preview, "is_current_property_layer"):
+            try:
+                was_visible = bool(preview.is_current_property_layer(
+                    property_key, axis, layer, index_base=1))
+            except Exception:
+                was_visible = False
+        self._enter_preview_mode()
+        try:
+            preview.render_property_layer(
+                sim_data,
+                property_key=property_key,
+                axis=axis,
+                layer_index=layer,
+                index_base=1,
+                render_now=True,
+            )
+        except Exception as exc:
+            return False, f"[分层预览] {label} {axis.upper()}={layer} 预览失败：{exc}"
+        is_visible = False
+        if hasattr(preview, "is_current_property_layer"):
+            try:
+                is_visible = bool(preview.is_current_property_layer(
+                    property_key, axis, layer, index_base=1))
+            except Exception:
+                is_visible = False
+        self.update()
+        if was_visible and not is_visible:
+            return True, f"[分层预览] 已隐藏 {label} {axis.upper()}={layer}"
+        if is_visible:
+            return True, f"[分层预览] 已显示 {label} {axis.upper()}={layer}"
+        return False, f"[分层预览] 没有可显示的 {label} {axis.upper()}={layer} 数据"
 
     def set_layer_state(self, layer_key, enabled):
         if layer_key in self.layers:
@@ -1055,6 +1234,7 @@ class ThreeDViewport(QWidget):
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         renderer.clear_cache()
+        self._preview_mode_active = False
         self._rendered_display_key = self.display_key
         if (
                 getattr(sim_data, "corner_point_grid", None) is not None
@@ -1914,6 +2094,7 @@ class ViewPage(QFrame):
     close_window_requested = pyqtSignal()
     view_message = pyqtSignal(str)
     result_property_selected = pyqtSignal(str)
+    preview_requested = pyqtSignal(object, str, str, str, int)
 
     def __init__(self, viewport, view_type="3d", parent=None):
         super().__init__(parent)
@@ -1940,6 +2121,9 @@ class ViewPage(QFrame):
             self.toolbar.threshold_requested.connect(self._handle_threshold_requested)
             self.toolbar.threshold_clear_requested.connect(self._handle_threshold_clear_requested)
             self.toolbar.time_playback_requested.connect(self._handle_time_playback_requested)
+            self.toolbar.geometry_preview_requested.connect(self._handle_geometry_preview_requested)
+            self.toolbar.static_preview_requested.connect(self._handle_static_preview_requested)
+            self.toolbar.static_layer_preview_requested.connect(self._handle_static_layer_preview_requested)
             if hasattr(self.viewport, "interaction_message"):
                 self.viewport.interaction_message.connect(self.view_message.emit)
         layout.addWidget(self.toolbar)
@@ -2084,6 +2268,30 @@ class ViewPage(QFrame):
             self._sync_time_step_control()
             self.view_message.emit(message)
 
+    def _handle_geometry_preview_requested(self, preview_kind):
+        self._stop_time_playback_timer()
+        self.preview_requested.emit(self, "geometry", preview_kind, "", 0)
+
+    def _handle_static_preview_requested(self, property_key):
+        self._stop_time_playback_timer()
+        self.preview_requested.emit(self, "static", property_key, "", 0)
+
+    def _handle_static_layer_preview_requested(self, property_key, axis, layer):
+        self._stop_time_playback_timer()
+        self.preview_requested.emit(self, "static_layer", property_key, axis, int(layer))
+
+    def handle_preview_request(self, preview_type, key, axis="", layer=0):
+        if preview_type == "geometry" and hasattr(self.viewport, "toggle_geometry_preview"):
+            ok, message = self.viewport.toggle_geometry_preview(key)
+        elif preview_type == "static" and hasattr(self.viewport, "toggle_static_property_preview"):
+            ok, message = self.viewport.toggle_static_property_preview(key)
+        elif preview_type == "static_layer" and hasattr(self.viewport, "toggle_static_property_layer_preview"):
+            ok, message = self.viewport.toggle_static_property_layer_preview(key, axis, layer)
+        else:
+            ok, message = False, f"[预览] 当前窗口不支持预览操作：{preview_type}"
+        self.view_message.emit(message)
+        return ok, message
+
     def _advance_time_playback(self):
         if not hasattr(self.viewport, "show_next_time_step"):
             self._stop_time_playback_timer()
@@ -2140,6 +2348,10 @@ class ViewPage(QFrame):
             self.viewport.set_simulation_data(sim_data)
         self._sync_layer_control_visibility()
         self._position_layer_control()
+
+    def set_preview_data(self, sim_data):
+        if hasattr(self.viewport, "set_preview_data"):
+            self.viewport.set_preview_data(sim_data)
 
     def set_chart_data(self, chart_key, data):
         if hasattr(self.viewport, "set_chart_data"):

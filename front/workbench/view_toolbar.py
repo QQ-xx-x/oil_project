@@ -22,6 +22,21 @@ class ViewToolbar(QFrame):
     threshold_requested = pyqtSignal(str, str)
     threshold_clear_requested = pyqtSignal()
     time_playback_requested = pyqtSignal(str, int)
+    geometry_preview_requested = pyqtSignal(str)
+    static_preview_requested = pyqtSignal(str)
+    static_layer_preview_requested = pyqtSignal(str, str, int)
+
+    STATIC_PREVIEW_PROPERTIES = [
+        ("MATRIX_PORO", "MATRIX_PORO"),
+        ("MATRIX_PERMX", "MATRIX_PERMX"),
+        ("MATRIX_PERMY", "MATRIX_PERMY"),
+        ("MATRIX_PERMZ", "MATRIX_PERMZ"),
+        ("DFN_PORO", "DFN_PORO"),
+        ("DFN_PERMX", "DFN_PERMX"),
+        ("DFN_PERMY", "DFN_PERMY"),
+        ("DFN_PERMZ", "DFN_PERMZ"),
+        ("SIGMA", "SIGMA"),
+    ]
 
     TOOLSETS = {
         "3d": [
@@ -65,13 +80,18 @@ class ViewToolbar(QFrame):
             controls_layout = QHBoxLayout()
             controls_layout.setContentsMargins(0, 0, 0, 0)
             controls_layout.setSpacing(2)
+            preview_layout = QHBoxLayout()
+            preview_layout.setContentsMargins(0, 0, 0, 0)
+            preview_layout.setSpacing(2)
             root_layout.addLayout(layout)
             root_layout.addLayout(controls_layout)
+            root_layout.addLayout(preview_layout)
         else:
             layout = QHBoxLayout(self)
             layout.setContentsMargins(4, 2, 5, 2)
             layout.setSpacing(2)
             controls_layout = layout
+            preview_layout = layout
 
         for tooltip, kind, signal in [
             ("新建窗口", "new", self.new_window_requested),
@@ -133,6 +153,8 @@ class ViewToolbar(QFrame):
             self._add_threshold_controls(controls_layout)
             self._add_time_controls(controls_layout)
             controls_layout.addStretch()
+            self._add_preview_controls(preview_layout)
+            preview_layout.addStretch()
         layout.addStretch()
 
     def _add_slice_controls(self, layout):
@@ -234,6 +256,69 @@ class ViewToolbar(QFrame):
                 lambda checked=False, name=action: self._emit_time_playback_request(name))
             layout.addWidget(button)
 
+    def _add_preview_controls(self, layout):
+        layout.addWidget(QLabel("预览"))
+
+        for text, tooltip, kind, preview_kind, width in [
+            ("网格", "预览角点网格", "grid", "grid", 54),
+            ("井", "预览井轨迹", "well", "wells", 42),
+            ("天然裂缝", "预览天然裂缝", "fracture", "natural_fractures", 78),
+            ("人工裂缝", "预览人工裂缝", "fracture", "hydraulic_fractures", 78),
+            ("全部裂缝", "预览全部裂缝", "fracture", "fractures", 78),
+        ]:
+            button = self._button(tooltip, kind)
+            button.setText(text)
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setFixedSize(width, 23)
+            button.clicked.connect(
+                lambda checked=False, name=preview_kind:
+                    self.geometry_preview_requested.emit(name))
+            layout.addWidget(button)
+
+        layout.addWidget(QLabel("静态属性"))
+        self.static_preview_property = QComboBox()
+        self.static_preview_property.setObjectName("staticPreviewPropertySelector")
+        for text, key in self.STATIC_PREVIEW_PROPERTIES:
+            self.static_preview_property.addItem(text, key)
+        self.static_preview_property.setFixedWidth(118)
+        layout.addWidget(self.static_preview_property)
+
+        static_button = self._button("预览整体静态属性场", "pressure")
+        static_button.setText("整体")
+        static_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        static_button.setFixedSize(62, 23)
+        static_button.clicked.connect(self._emit_static_preview_request)
+        layout.addWidget(static_button)
+
+        layout.addWidget(QLabel("分层"))
+        self.static_layer_property = QComboBox()
+        self.static_layer_property.setObjectName("staticLayerPreviewPropertySelector")
+        for text, key in self.STATIC_PREVIEW_PROPERTIES:
+            self.static_layer_property.addItem(text, key)
+        self.static_layer_property.setFixedWidth(118)
+        layout.addWidget(self.static_layer_property)
+
+        self.static_layer_axis = QComboBox()
+        self.static_layer_axis.setObjectName("staticLayerPreviewAxisSelector")
+        self.static_layer_axis.addItems(["I", "J", "K"])
+        self.static_layer_axis.setFixedWidth(46)
+        layout.addWidget(self.static_layer_axis)
+
+        self.static_layer_index = QSpinBox()
+        self.static_layer_index.setObjectName("staticLayerPreviewIndexSpinBox")
+        self.static_layer_index.setRange(1, 999999)
+        self.static_layer_index.setValue(1)
+        self.static_layer_index.setFixedWidth(58)
+        self.static_layer_index.setToolTip("预览层号，按 1 开始计数")
+        layout.addWidget(self.static_layer_index)
+
+        layer_button = self._button("预览静态属性分层", "grid")
+        layer_button.setText("预览")
+        layer_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        layer_button.setFixedSize(62, 23)
+        layer_button.clicked.connect(self._emit_static_layer_preview_request)
+        layout.addWidget(layer_button)
+
     def _emit_slice_request(self):
         property_key = self.slice_property.currentData() or "pressure_field"
         axis = self.slice_axis.currentText().lower()
@@ -269,6 +354,16 @@ class ViewToolbar(QFrame):
     def _emit_time_playback_request(self, action):
         self.time_playback_requested.emit(action, int(self.time_step_index.value()))
 
+    def _emit_static_preview_request(self):
+        property_key = self.static_preview_property.currentData() or "MATRIX_PORO"
+        self.static_preview_requested.emit(property_key)
+
+    def _emit_static_layer_preview_request(self):
+        property_key = self.static_layer_property.currentData() or "MATRIX_PORO"
+        axis = self.static_layer_axis.currentText().lower()
+        layer = int(self.static_layer_index.value())
+        self.static_layer_preview_requested.emit(property_key, axis, layer)
+
     def set_time_step_index(self, index, step_count=None):
         try:
             if step_count is not None and int(step_count) > 0:
@@ -294,6 +389,11 @@ class ViewToolbar(QFrame):
             state["threshold_max"] = self.threshold_max.text()
         if hasattr(self, "time_step_index"):
             state["time_step_index"] = int(self.time_step_index.value())
+        if hasattr(self, "static_preview_property"):
+            state["static_preview_property"] = self.static_preview_property.currentData()
+            state["static_layer_property"] = self.static_layer_property.currentData()
+            state["static_layer_axis"] = self.static_layer_axis.currentText()
+            state["static_layer_index"] = int(self.static_layer_index.value())
         return state
 
     def restore_ui_state(self, state):
@@ -322,6 +422,24 @@ class ViewToolbar(QFrame):
         if hasattr(self, "time_step_index"):
             try:
                 self.time_step_index.setValue(max(0, int(state.get("time_step_index", 0))))
+            except (TypeError, ValueError):
+                pass
+        if hasattr(self, "static_preview_property"):
+            self._set_combo_from_state(
+                self.static_preview_property,
+                state.get("static_preview_property"),
+                None,
+                None,
+            )
+            self._set_combo_from_state(
+                self.static_layer_property,
+                state.get("static_layer_property"),
+                None,
+                None,
+            )
+            self._set_combo_text(self.static_layer_axis, state.get("static_layer_axis"))
+            try:
+                self.static_layer_index.setValue(max(1, int(state.get("static_layer_index", 1))))
             except (TypeError, ValueError):
                 pass
 
