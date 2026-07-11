@@ -235,6 +235,13 @@ class CaseManagerPanel(QTreeWidget):
         case = self.project_state.case_by_id(case_id) if self.project_state else None
         if case is None:
             return
+        if case.has_unfinished_runs():
+            QMessageBox.warning(
+                self,
+                "算例正在运行",
+                "该算例仍有仿真或历史拟合任务正在运行，请先停止任务再删除。",
+            )
+            return
         result = QMessageBox.question(
             self,
             "删除算例",

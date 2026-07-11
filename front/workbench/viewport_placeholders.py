@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """工程主界面使用的二维、三维和图表视图窗口。"""
 
+import json
 import math
+import os
+from datetime import datetime, timezone
 
 from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
@@ -2193,7 +2196,52 @@ class ViewPage(QFrame):
                 export_path=export_path,
                 export_scale=scale,
             )
+            if ok and command == "export_graphic" and export_path:
+                try:
+                    metadata_path = self._write_export_metadata(export_path)
+                    message = f"{message} | metadata: {metadata_path}"
+                except OSError as exc:
+                    message = f"{message} | metadata failed: {exc}"
             self.view_message.emit(message)
+
+    def _write_export_metadata(self, export_path):
+        viewport = getattr(self, "viewport", None)
+        sim_data = getattr(viewport, "simulation_data", None)
+        result_context = dict(
+            getattr(sim_data, "result_context", None) or {})
+        for key in ("case_id", "run_id", "dataset_id"):
+            value = self.property(key)
+            if value:
+                result_context[key] = str(value)
+        render_context = dict(
+            getattr(viewport, "current_render_context", None) or {})
+        slice_state = getattr(viewport, "_slice_state", None)
+        if slice_state is not None:
+            property_key, axis, layer = slice_state
+            slice_payload = {
+                "property_key": property_key,
+                "axis": axis,
+                "layer": int(layer),
+            }
+        else:
+            slice_payload = None
+        time_step = None
+        if hasattr(self.toolbar, "time_step_index"):
+            time_step = int(self.toolbar.time_step_index.value())
+        payload = {
+            "schema_version": "preview_export_v1",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "image_path": os.path.abspath(export_path),
+            "result_context": result_context,
+            "display_key": getattr(viewport, "display_key", ""),
+            "render_context": render_context,
+            "slice": slice_payload,
+            "time_step_index": time_step,
+        }
+        metadata_path = f"{os.path.abspath(export_path)}.metadata.json"
+        with open(metadata_path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        return metadata_path
 
     def _handle_property_selected(self, property_key):
         self._stop_time_playback_timer()
@@ -2346,6 +2394,16 @@ class ViewPage(QFrame):
     def set_simulation_data(self, sim_data):
         if hasattr(self.viewport, "set_simulation_data"):
             self.viewport.set_simulation_data(sim_data)
+        if (
+            sim_data is not None
+            and self.view_type == "3d"
+            and hasattr(self.viewport, "prepare_time_playback")
+            and hasattr(self.toolbar, "time_step_index")
+            and getattr(sim_data, "time_steps", None) is not None
+        ):
+            self.viewport.prepare_time_playback(
+                int(self.toolbar.time_step_index.value()))
+            self._sync_time_step_control()
         self._sync_layer_control_visibility()
         self._position_layer_control()
 

@@ -20,6 +20,7 @@ from .case_data_parser import (
     save_case_data, update_keyword_value,
 )
 from .case_dataset_builder import build_case_dataset
+from .case_models import new_dataset_id
 from .model_config_dialog import ensure_model_config_confirmed
 
 
@@ -213,7 +214,16 @@ class CaseDataPanel(QWidget):
         path = getattr(self.project_state, "case_dataset_path", "") if self.project_state else ""
         if path:
             return path
+        repository = self._artifact_repository()
+        case = self.project_state.active_case() if self.project_state else None
+        if repository is not None and case is not None:
+            return repository.datasets_dir(case.case_id)
         return os.path.abspath(os.path.join(os.getcwd(), ".tmp", "case_dataset"))
+
+    def _artifact_repository(self):
+        if self.project_state is None:
+            return None
+        return getattr(self.project_state, "artifact_repository", None)
 
     def _choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -273,6 +283,18 @@ class CaseDataPanel(QWidget):
             if not ensure_model_config_confirmed(self.project_state, self):
                 return False
         output_dir = self.dataset_path_edit.text().strip() if hasattr(self, "dataset_path_edit") else ""
+        dataset_id = new_dataset_id()
+        repository = self._artifact_repository()
+        active_case = self.project_state.active_case() if self.project_state else None
+        if repository is not None and active_case is not None:
+            active_path = getattr(self.project_state, "case_dataset_path", "") or ""
+            if (
+                not output_dir
+                or (active_path and os.path.abspath(output_dir) == os.path.abspath(active_path))
+                or repository.is_managed_dataset_path(active_case.case_id, output_dir)
+            ):
+                dataset_id, output_dir = repository.allocate_dataset_dir(
+                    active_case.case_id, dataset_id)
         if not output_dir:
             output_dir = self._default_dataset_dir()
             if hasattr(self, "dataset_path_edit"):
@@ -289,9 +311,20 @@ class CaseDataPanel(QWidget):
             QMessageBox.critical(self, "生成 Dataset 失败", str(exc))
             return False
         self._attach_dataset_snapshot_metadata(result, snapshot_path)
+        result.manifest["case_id"] = active_case.case_id if active_case is not None else ""
+        result.manifest["dataset_id"] = dataset_id
+        try:
+            with open(result.manifest_path, "w", encoding="utf-8") as file:
+                json.dump(result.manifest, file, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
         if self.project_state is not None:
             self.project_state.set_case_dataset(
-                result.output_dir, result.manifest, result.validation)
+                result.output_dir,
+                result.manifest,
+                result.validation,
+                dataset_id=dataset_id,
+            )
         if hasattr(self, "dataset_path_edit"):
             self.dataset_path_edit.setText(result.output_dir)
         self._update_dataset_status(result)
@@ -313,6 +346,13 @@ class CaseDataPanel(QWidget):
         return True
 
     def _export_dataset_case_data_snapshot(self):
+        repository = self._artifact_repository()
+        active_case = self.project_state.active_case() if self.project_state else None
+        if repository is not None and active_case is not None:
+            return repository.export_managed_case_snapshot(
+                active_case,
+                self.case_data,
+            )
         snapshot_path = os.path.join(
             os.getcwd(),
             ".tmp",

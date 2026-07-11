@@ -383,6 +383,8 @@ class MinimalCommandBar(QWidget):
     def set_project_mode(self, enabled):
         self._project_mode = bool(enabled)
         self.run_button.setEnabled(self._project_mode)
+        if not self._project_mode:
+            self.set_run_active(False)
         if self._project_mode:
             self.run_button.setToolTip("运行当前工程的模拟流程")
         else:
@@ -393,6 +395,16 @@ class MinimalCommandBar(QWidget):
     def refresh_recent_projects(self):
         if self.file_menu is not None:
             self.file_menu.refresh_recent_projects()
+
+    def set_run_active(self, active):
+        active = bool(active)
+        self.run_button.setText(
+            "\u505c\u6b62\u6a21\u62df" if active else "\u5f00\u59cb\u6a21\u62df")
+        self.run_button.setToolTip(
+            "\u505c\u6b62\u5f53\u524d\u5de5\u7a0b\u7684\u6a21\u62df\u8fd0\u884c"
+            if active
+            else "\u8fd0\u884c\u5f53\u524d\u5de5\u7a0b\u7684\u6a21\u62df\u6d41\u7a0b"
+        )
 
     def _show_file_menu(self):
         if self.file_menu is None:

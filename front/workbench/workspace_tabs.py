@@ -15,6 +15,8 @@ class WorkspaceTabs(QTabWidget):
     workspace_message = pyqtSignal(str)
     result_property_selected = pyqtSignal(str)
     preview_requested = pyqtSignal(object, str, str, str, int)
+    history_run_state_changed = pyqtSignal(str, str)
+    derived_case_created = pyqtSignal(str)
 
     def __init__(self, parent=None, project_state=None, result_store=None):
         super().__init__(parent)
@@ -35,6 +37,11 @@ class WorkspaceTabs(QTabWidget):
         self._last_preview_data = None
         self._chart_data_by_key = {}
         self._layer_states = {}
+        self._result_context = {
+            "case_id": "",
+            "run_id": "",
+            "dataset_id": "",
+        }
 
         self.two_d_primary = None
         self.three_d = None
@@ -80,6 +87,10 @@ class WorkspaceTabs(QTabWidget):
             viewport = ProductionCurveViewport(self.project_state, self.result_store)
         elif view_type == "chart" and display_key == "history_matching":
             viewport = HistoryMatchingViewport(self.project_state, self.result_store)
+            viewport.run_state_changed.connect(
+                self.history_run_state_changed.emit)
+            viewport.derived_case_created.connect(
+                self.derived_case_created.emit)
         else:
             viewport = {
                 "2d": TwoDViewport,
@@ -99,6 +110,11 @@ class WorkspaceTabs(QTabWidget):
         icon_map = {"2d": "window", "3d": "grid", "chart": "chart"}
         icon_kind = semantic_icon_kind(icon_map[view_type], title)
         page.setProperty("viewType", view_type)
+        for key, value in self._result_context.items():
+            page.setProperty(key, value)
+            viewport = getattr(page, "viewport", None)
+            if viewport is not None:
+                viewport.setProperty(key, value)
         index = self.addTab(page, painted_icon(icon_kind, 16), title)
         return index
 
@@ -143,10 +159,20 @@ class WorkspaceTabs(QTabWidget):
             return
         title = self.tabText(index)
         page = self.widget(index)
+        viewport = getattr(page, "viewport", None)
+        if (
+            isinstance(viewport, HistoryMatchingViewport)
+            and viewport.has_running_operation()
+        ):
+            self.workspace_message.emit(
+                "[窗口] 历史拟合正在运行，请先停止运行再关闭窗口")
+            return False
         self.removeTab(index)
         page.deleteLater()
         self._refresh_primary_references()
         self.workspace_message.emit(f"[窗口] 已关闭 {title}")
+
+        return True
 
     def close_other_windows(self, index):
         if index < 0:
@@ -157,6 +183,12 @@ class WorkspaceTabs(QTabWidget):
             if self.widget(tab_index) is keep:
                 continue
             page = self.widget(tab_index)
+            viewport = getattr(page, "viewport", None)
+            if (
+                isinstance(viewport, HistoryMatchingViewport)
+                and viewport.has_running_operation()
+            ):
+                continue
             self.removeTab(tab_index)
             page.deleteLater()
         self.setCurrentWidget(keep)
@@ -215,6 +247,39 @@ class WorkspaceTabs(QTabWidget):
         for page in self._pages_of_type("chart"):
             page.set_chart_data(chart_key, data)
 
+    def set_result_context(self, case_id="", run_id="", dataset_id=""):
+        self._result_context = {
+            "case_id": str(case_id or ""),
+            "run_id": str(run_id or ""),
+            "dataset_id": str(dataset_id or ""),
+        }
+        for page in self._pages():
+            for key, value in self._result_context.items():
+                page.setProperty(key, value)
+                viewport = getattr(page, "viewport", None)
+                if viewport is not None:
+                    if (
+                        isinstance(viewport, HistoryMatchingViewport)
+                        and viewport.has_running_operation()
+                    ):
+                        continue
+                    viewport.setProperty(key, value)
+
+    def clear_result_data(self):
+        self._last_simulation_data = None
+        self._last_preview_data = None
+        self._chart_data_by_key = {}
+        for page in self._pages_of_type("3d"):
+            page.set_simulation_data(None)
+            page.set_preview_data(None)
+        for page in self._pages_of_type("chart"):
+            for key in (
+                "production_curve",
+                "pvt_curve",
+                "blasingame_curve",
+            ):
+                page.set_chart_data(key, {})
+
     def set_project_context(self, project_state=None, result_store=None):
         if project_state is not None:
             self.project_state = project_state
@@ -224,6 +289,17 @@ class WorkspaceTabs(QTabWidget):
             viewport = getattr(page, "viewport", None)
             if hasattr(viewport, "set_project_context"):
                 viewport.set_project_context(self.project_state, self.result_store)
+
+    def load_history_matching_run(self, run_record):
+        page = self._first_special_chart_page("history_matching")
+        if page is None:
+            page = self._create_context_window("chart", "history_matching")
+        viewport = getattr(page, "viewport", None)
+        if not isinstance(viewport, HistoryMatchingViewport):
+            return False
+        loaded = viewport.load_run_record(run_record)
+        self.setCurrentWidget(page)
+        return loaded
 
     def export_ui_state(self):
         pages = []
@@ -241,24 +317,37 @@ class WorkspaceTabs(QTabWidget):
             "current_index": self.currentIndex(),
             "last_context": list(self._last_context),
             "layer_states": dict(self._layer_states),
+            "result_context": dict(self._result_context),
             "pages": pages,
         }
 
     def restore_ui_state(self, state):
         if not isinstance(state, dict):
-            return
+            return False
+        if self.has_running_operations():
+            # Rebuilding tabs would destroy the QProcess owner during a
+            # normal case switch. The target case state can be restored after
+            # the operation reaches a terminal state.
+            return False
         pages = state.get("pages")
         if not isinstance(pages, list) or not pages:
-            return
+            return False
         normalized_pages = [
             page_info for page_info in pages
             if isinstance(page_info, dict)
             and page_info.get("view_type") in {"2d", "3d", "chart"}
         ]
         if not normalized_pages:
-            return
+            return False
 
         self._layer_states = dict(state.get("layer_states") or {})
+        result_context = state.get("result_context") or {}
+        if isinstance(result_context, dict):
+            self._result_context = {
+                "case_id": str(result_context.get("case_id") or ""),
+                "run_id": str(result_context.get("run_id") or ""),
+                "dataset_id": str(result_context.get("dataset_id") or ""),
+            }
         last_context = state.get("last_context")
         if isinstance(last_context, (list, tuple)) and len(last_context) >= 3:
             self._last_context = (last_context[0], last_context[1], last_context[2])
@@ -290,6 +379,7 @@ class WorkspaceTabs(QTabWidget):
         if 0 <= current_index < self.count():
             self.setCurrentIndex(current_index)
         self._refresh_primary_references()
+        return True
 
     def _apply_last_context(self, page):
         title, detail, display_key = self._last_context
@@ -360,6 +450,7 @@ class WorkspaceTabs(QTabWidget):
         self._apply_last_context(page)
         index = self._add_page(page, view_type, title)
         self._refresh_primary_references()
+        self.set_result_context(**self._result_context)
         self.workspace_message.emit(f"[窗口] 已新建 {title}")
         return self.widget(index)
 
@@ -371,9 +462,37 @@ class WorkspaceTabs(QTabWidget):
         if viewport_type is None:
             return None
         for page in self._pages_of_type("chart"):
-            if isinstance(getattr(page, "viewport", None), viewport_type):
-                return page
+            viewport = getattr(page, "viewport", None)
+            if not isinstance(viewport, viewport_type):
+                continue
+            if (
+                display_key == "history_matching"
+                and str(viewport.property("case_id") or "")
+                and self._result_context.get("case_id", "")
+                and str(viewport.property("case_id") or "")
+                != self._result_context.get("case_id", "")
+            ):
+                continue
+            return page
         return None
+
+    def has_running_operations(self):
+        return any(
+            viewport.has_running_operation()
+            for viewport in self._history_matching_viewports()
+        )
+
+    def shutdown_operations(self, timeout_ms=5000):
+        ok = True
+        for viewport in self._history_matching_viewports():
+            ok = viewport.shutdown_operations(timeout_ms=timeout_ms) and ok
+        return ok
+
+    def _history_matching_viewports(self):
+        for page in self._pages_of_type("chart"):
+            viewport = getattr(page, "viewport", None)
+            if isinstance(viewport, HistoryMatchingViewport):
+                yield viewport
 
     def _first_production_curve_page(self):
         return self._first_special_chart_page("production_curve")

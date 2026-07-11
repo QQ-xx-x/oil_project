@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QProcess, Qt
+from PyQt5.QtCore import QProcess, Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
@@ -20,9 +20,19 @@ from PyQt5.QtWidgets import (
 
 DEFAULT_CONFIG_NAME = "enkf_config.json"
 
+from .case_models import RUN_TYPE_HISTORY_MATCHING
+from .history_matching_run_manager import (
+    HistoryMatchingRunError,
+    HistoryMatchingRunManager,
+    context_from_record,
+)
+
 
 class HistoryMatchingViewport(QWidget):
     """Workspace viewport for history matching setup and results."""
+
+    run_state_changed = pyqtSignal(str, str)
+    derived_case_created = pyqtSignal(str)
 
     FIT_COLUMNS = [
         "启用", "参数名", "参数路径", "初值", "下限", "上限", "变换", "扰动",
@@ -54,6 +64,8 @@ class HistoryMatchingViewport(QWidget):
         self._target_stdout_buffer = ""
         self._target_stderr_buffer = ""
         self._stop_requested = False
+        self._active_run_context = None
+        self._viewing_run_context = None
         self._build_ui()
         self._load_config_to_ui(self.default_config)
 
@@ -339,9 +351,14 @@ class HistoryMatchingViewport(QWidget):
         self.refresh_results_button = QPushButton("刷新结果")
         self.refresh_results_button.setObjectName("modulePreviewResultButton")
         self.refresh_results_button.clicked.connect(self.refresh_result_view)
+        self.derive_case_button = QPushButton("最优参数生成派生算例")
+        self.derive_case_button.setObjectName("modulePreviewResultButton")
+        self.derive_case_button.setEnabled(False)
+        self.derive_case_button.clicked.connect(self.create_derived_case_from_best)
         controls_layout.addWidget(self.run_button)
         controls_layout.addWidget(self.stop_button)
         controls_layout.addWidget(self.refresh_results_button)
+        controls_layout.addWidget(self.derive_case_button)
         controls_layout.addStretch()
         layout.addWidget(controls)
 
@@ -571,6 +588,16 @@ class HistoryMatchingViewport(QWidget):
 
     def collect_runtime_config(self):
         config = copy.deepcopy(self.default_config)
+        active_case = (
+            self.project_state.active_case()
+            if self.project_state is not None
+            and hasattr(self.project_state, "active_case") else None
+        )
+        if active_case is not None:
+            derived_base = (active_case.input_state.module_values or {}).get(
+                "history_matching_base_params")
+            if isinstance(derived_base, dict) and derived_base:
+                config["base_params"] = copy.deepcopy(derived_base)
         config["history_file"] = self.history_file_edit.text().strip()
         config["case_dataset_path"] = self.case_dataset_path_edit.text().strip()
         config["simulation_days"] = float(self.simulation_days_spin.value())
@@ -662,8 +689,21 @@ class HistoryMatchingViewport(QWidget):
 
     def _handle_generate_config_clicked(self):
         try:
-            config_path = self.generate_runtime_config_file()
-        except (OSError, ValueError) as exc:
+            config = self.collect_runtime_config()
+            history_path = self._validated_history_path()
+            case_dataset_path = self._validated_case_dataset_path()
+            manager = self._history_run_manager()
+            runtime = self._prepare_runtime_config(
+                config, self.history_root, history_path, case_dataset_path)
+            context = manager.prepare(runtime, history_path)
+            config_path = Path(context.config_path)
+            self._active_run_context = context
+            self._viewing_run_context = context
+            self.last_runtime_dir = Path(context.run_dir)
+            self.last_runtime_config_path = config_path
+            self.last_collected_config = json.loads(
+                config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, HistoryMatchingRunError) as exc:
             self.status_label.setText(f"生成运行配置失败：{exc}")
             return
         self.status_label.setText(f"运行配置已生成：{config_path}")
@@ -857,13 +897,16 @@ class HistoryMatchingViewport(QWidget):
         self.process = QProcess(self)
         self.process.setProgram(sys.executable)
         self.process.setArguments([str(script_path), "--config", str(config_path)])
-        self.process.setWorkingDirectory(str(self.history_root))
+        self.process.setWorkingDirectory(str(self.last_runtime_dir))
         self.process.readyReadStandardOutput.connect(self._handle_process_stdout)
         self.process.readyReadStandardError.connect(self._handle_process_stderr)
         self.process.errorOccurred.connect(self._handle_process_error)
         self.process.finished.connect(self._handle_process_finished)
         self._set_process_running(True)
         self._append_run_log(f"启动命令: {sys.executable} {script_path} --config {config_path}")
+        manager.mark_running(self._active_run_context)
+        self.run_state_changed.emit(
+            self._active_run_context.case_id, self._active_run_context.run_id)
         self.process.start()
 
     def stop_history_matching(self):
@@ -924,6 +967,9 @@ class HistoryMatchingViewport(QWidget):
         )
         if member_match:
             iteration, member, objective = member_match.groups()
+            if self._active_run_context is not None:
+                self._history_run_manager().record_member(
+                    self._active_run_context, iteration, member, objective)
             self.progress_label.setText(
                 f"iteration: {iteration}, member: {member}, objective: {objective}"
             )
@@ -936,6 +982,11 @@ class HistoryMatchingViewport(QWidget):
         )
         if summary_match:
             iteration, minimum, mean, maximum = summary_match.groups()
+            if self._active_run_context is not None:
+                self._history_run_manager().record_iteration(
+                    self._active_run_context,
+                    iteration, minimum, mean, maximum,
+                )
             self.progress_label.setText(
                 f"iteration: {iteration}, objective min/mean/max: {minimum} / {mean} / {maximum}"
             )
@@ -979,11 +1030,18 @@ class HistoryMatchingViewport(QWidget):
         self.run_state_label.setText(f"进程错误: {error}")
         self._append_run_log(f"进程错误: {error}")
         if self.process is None or self.process.state() == QProcess.NotRunning:
+            if self._active_run_context is not None:
+                context = self._active_run_context
+                self._history_run_manager().mark_failed(
+                    context, f"Process error: {error}")
+                self.run_state_changed.emit(context.case_id, context.run_id)
+                self._active_run_context = None
             self._set_process_running(False)
             self.process = None
 
     def _handle_process_finished(self, exit_code, exit_status):
         self._flush_process_buffers()
+        context = self._active_run_context
         if self._stop_requested:
             self.run_state_label.setText("已停止")
         elif exit_code == 0:
@@ -994,6 +1052,22 @@ class HistoryMatchingViewport(QWidget):
         else:
             self.run_state_label.setText(f"运行失败，退出码: {exit_code}")
         self._append_run_log(f"进程结束: exit_code={exit_code}, exit_status={exit_status}")
+        if context is not None:
+            manager = self._history_run_manager()
+            if self._stop_requested:
+                manager.mark_failed(
+                    context, "History matching cancelled by user",
+                    exit_code=exit_code, cancelled=True)
+            elif exit_code == 0:
+                manager.mark_completed(
+                    context, payload=self.result_payload, exit_code=exit_code)
+            else:
+                manager.mark_failed(
+                    context, f"History matching exited with code {exit_code}",
+                    exit_code=exit_code)
+            self.run_state_changed.emit(context.case_id, context.run_id)
+            self._active_run_context = None
+            self.derive_case_button.setEnabled(exit_code == 0)
         self._set_process_running(False)
         self.process = None
 
@@ -1010,6 +1084,12 @@ class HistoryMatchingViewport(QWidget):
             return
         self.run_log.append(str(text))
         self.run_log.ensureCursorVisible()
+        if self._active_run_context is not None:
+            try:
+                self._history_run_manager().append_log(
+                    self._active_run_context, text)
+            except (OSError, HistoryMatchingRunError):
+                pass
 
     def refresh_result_view(self):
         payload = self.result_payload or self._load_latest_result_payload()
@@ -1024,6 +1104,8 @@ class HistoryMatchingViewport(QWidget):
     def _reset_result_view(self):
         if not hasattr(self, "result_objective_label"):
             return
+        if hasattr(self, "derive_case_button"):
+            self.derive_case_button.setEnabled(False)
         self.result_objective_label.setText("-")
         self.result_source_label.setText("-")
         self.result_mode_label.setText("-")
@@ -1052,6 +1134,21 @@ class HistoryMatchingViewport(QWidget):
 
     def _load_latest_result_payload(self):
         candidates = []
+        if self._viewing_run_context is not None:
+            candidates.append(
+                Path(self._viewing_run_context.results_dir) / "run_result.json")
+        active_case = (
+            self.project_state.active_case()
+            if self.project_state is not None
+            and hasattr(self.project_state, "active_case") else None
+        )
+        if active_case is not None:
+            for record in reversed(active_case.run_records or []):
+                if record.run_type != RUN_TYPE_HISTORY_MATCHING:
+                    continue
+                result_path = str((record.artifacts or {}).get("result_json") or "")
+                if result_path:
+                    candidates.append(Path(result_path))
         if self.last_runtime_dir:
             candidates.append(Path(self.last_runtime_dir) / "results" / "run_result.json")
         ui_runs = self.history_root / "ui_runs"
@@ -1346,6 +1443,162 @@ class HistoryMatchingViewport(QWidget):
             self.result_store = result_store
         if hasattr(self, "case_dataset_path_edit") and self._project_case_dataset_path():
             self._refresh_case_dataset_from_project()
+        self._apply_active_case_best_parameters()
+
+    def _apply_active_case_best_parameters(self):
+        if not hasattr(self, "fit_table"):
+            return
+        case = (
+            self.project_state.active_case()
+            if self.project_state is not None
+            and hasattr(self.project_state, "active_case") else None
+        )
+        if case is None:
+            return
+        default_values = {
+            str(spec.get("name") or ""): spec.get("initial")
+            for spec in (self.default_config.get("fit_parameters") or [])
+        }
+        overlay = (case.input_state.module_values or {}).get(
+            "history_matching_best_parameters") or {}
+        values = default_values
+        values.update(dict(overlay.get("physical_fit_parameters") or {}))
+        for row in range(self.fit_table.rowCount()):
+            name = self._table_text(self.fit_table, row, 1)
+            if name in values:
+                self.fit_table.setItem(
+                    row, 3, QTableWidgetItem(
+                        self._format_number(values[name])))
+
+    def _history_run_manager(self):
+        repository = (
+            getattr(self.project_state, "artifact_repository", None)
+            if self.project_state is not None else None
+        )
+        if repository is None:
+            raise HistoryMatchingRunError(
+                "The project artifact repository is not available")
+        return HistoryMatchingRunManager(self.project_state, repository)
+
+    def load_run_record(self, run_record):
+        """Load one persisted history-matching Run without using global latest."""
+        if run_record is None or run_record.run_type != RUN_TYPE_HISTORY_MATCHING:
+            return False
+        context = context_from_record(
+            getattr(self.project_state, "project_id", ""), run_record)
+        self._viewing_run_context = context
+        self.last_runtime_dir = Path(context.run_dir) if context.run_dir else None
+        self.last_runtime_config_path = (
+            Path(context.config_path) if context.config_path else None)
+        payload = None
+        result_path = str((run_record.artifacts or {}).get("result_json") or "")
+        if result_path and Path(result_path).is_file():
+            try:
+                payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
+                payload = self._payload_with_record_artifacts(
+                    payload, run_record)
+            except (OSError, json.JSONDecodeError) as exc:
+                self._append_run_log(f"Failed to load history-matching result: {exc}")
+        self.result_payload = payload
+        self.run_state_label.setText(str(run_record.status or "-"))
+        self.runtime_config_label.setText(
+            f"运行配置: {context.config_path or '-'}")
+        progress = dict((run_record.summary or {}).get("progress") or {})
+        if progress:
+            self.progress_label.setText(
+                ", ".join(f"{key}: {value}" for key, value in progress.items()))
+        if payload:
+            self._update_result_view(payload)
+        else:
+            self._reset_result_view()
+        log_path = str((run_record.artifacts or {}).get("run_log") or "")
+        if log_path and Path(log_path).is_file():
+            try:
+                self.run_log.setPlainText(
+                    Path(log_path).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+        self.derive_case_button.setEnabled(
+            run_record.status == "completed" and bool(payload))
+        self.tabs.setCurrentIndex(3)
+        return bool(payload)
+
+    @staticmethod
+    def _payload_with_record_artifacts(payload, run_record):
+        payload = copy.deepcopy(payload or {})
+        files = dict(payload.get("files") or {})
+        artifacts = dict(getattr(run_record, "artifacts", {}) or {})
+        for payload_key, artifact_key in (
+            ("plot", "history_fit_plot"),
+            ("best_fit_params", "best_fit_params"),
+            ("best_fit_output", "best_fit_output"),
+            ("summary", "best_fit_summary"),
+            ("assimilation_summary", "assimilation_summary"),
+        ):
+            path = str(artifacts.get(artifact_key) or "")
+            if path:
+                files[payload_key] = path
+        payload["files"] = files
+        return payload
+
+    def create_derived_case_from_best(self):
+        context = self._viewing_run_context
+        if context is None:
+            self.status_label.setText("请先选择一个已完成的历史拟合 Run")
+            return None
+        try:
+            derived = self._history_run_manager().create_derived_case(context)
+        except (OSError, ValueError, HistoryMatchingRunError) as exc:
+            self.status_label.setText(f"派生算例创建失败: {exc}")
+            self._append_run_log(f"派生算例创建失败: {exc}")
+            return None
+        self.status_label.setText(
+            f"已创建派生算例: {derived.case_name} ({derived.case_id})")
+        self._append_run_log(
+            f"Derived case created: {derived.case_name} ({derived.case_id})")
+        self.derived_case_created.emit(derived.case_id)
+        return derived
+
+    def has_running_operation(self):
+        for process in (self.process, self.target_process):
+            if process is not None and process.state() != QProcess.NotRunning:
+                return True
+        return False
+
+    def shutdown_operations(self, timeout_ms=5000):
+        """Stop child processes and finalize their persistent Run state."""
+        timeout_ms = max(0, int(timeout_ms or 0))
+        context = self._active_run_context
+        process = self.process
+        if process is not None and process.state() != QProcess.NotRunning:
+            self._stop_requested = True
+            process.terminate()
+            if not process.waitForFinished(timeout_ms):
+                process.kill()
+                process.waitForFinished(2000)
+        if context is not None and self._active_run_context is not None:
+            try:
+                self._history_run_manager().mark_failed(
+                    context,
+                    "Project or workspace closed while history matching was running",
+                    cancelled=True,
+                )
+                self.run_state_changed.emit(context.case_id, context.run_id)
+            except (OSError, ValueError, HistoryMatchingRunError):
+                pass
+            self._active_run_context = None
+        self.process = None
+
+        target = self.target_process
+        if target is not None and target.state() != QProcess.NotRunning:
+            target.terminate()
+            if not target.waitForFinished(timeout_ms):
+                target.kill()
+                target.waitForFinished(2000)
+        self.target_process = None
+        self._set_process_running(False)
+        self._set_target_process_running(False)
+        return not self.has_running_operation()
 
     def set_context(self, title, detail, display_key=None):
         self.context_title = title or self.context_title

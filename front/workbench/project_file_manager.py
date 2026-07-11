@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """工程文件读写。
 
-第二阶段起，保存的 .oilproj 是单文件 zip 工程包，内部包含 project.json
-和可选的 case_dataset/。打开时仍兼容第一阶段的纯 JSON .oilproj。
-算法侧不直接读取 .oilproj；UI 打开工程包后会解出 case_dataset 目录。
+保存的 .oilproj 是单文件 zip 工程包。v2 工程包可以包含所有算例的
+托管输入、Dataset 和已登记运行制品，同时继续兼容旧 JSON/v1 工程包。
 """
 
 import copy
@@ -18,9 +17,10 @@ from .case_data_parser import parse_case_data
 from .project_state import ProjectState
 
 
-PROJECT_SCHEMA_VERSION = "oil_project_v2"
+PROJECT_SCHEMA_VERSION = "oil_project_v3"
+PREVIOUS_PROJECT_SCHEMA_VERSION = "oil_project_v2"
 LEGACY_PROJECT_SCHEMA_VERSION = "oil_project_v1"
-PACKAGE_SCHEMA_VERSION = "oil_project_package_v1"
+PACKAGE_SCHEMA_VERSION = "oil_project_package_v2"
 PROJECT_FILE_EXT = ".oilproj"
 PACKAGE_PROJECT_FILE = "project.json"
 PACKAGE_MANIFEST_FILE = "package_manifest.json"
@@ -32,6 +32,12 @@ PROJECT_CACHE_MAX_AGE_DAYS = 7
 PROJECT_CACHE_KEEP_RECENT = 10
 PROJECT_CACHE_MAX_BYTES = 5 * 1024 ** 3
 PROJECT_CACHE_TARGET_BYTES = 4 * 1024 ** 3
+
+SUPPORTED_PROJECT_SCHEMA_VERSIONS = {
+    LEGACY_PROJECT_SCHEMA_VERSION,
+    PREVIOUS_PROJECT_SCHEMA_VERSION,
+    PROJECT_SCHEMA_VERSION,
+}
 
 
 class ProjectFileError(ValueError):
@@ -46,6 +52,17 @@ def save_project_file(
     """把当前 ProjectState 保存为包式 .oilproj 文件。"""
     if project_state is None:
         raise ProjectFileError("当前没有可保存的工程")
+    unfinished = [
+        (case.case_id, run.run_id)
+        for case in (getattr(project_state, "cases", []) or [])
+        for run in case.unfinished_runs()
+    ]
+    if unfinished:
+        labels = ", ".join(
+            f"{case_id}/{run_id}" for case_id, run_id in unfinished)
+        raise ProjectFileError(
+            "Cannot save a project while runs are preparing or running: "
+            + labels)
     project_file_path = _ensure_project_suffix(project_file_path)
     project_file_path = os.path.abspath(project_file_path)
     project_dir = os.path.dirname(project_file_path)
@@ -81,9 +98,7 @@ def _load_legacy_project_file(project_file_path):
     """读取第一阶段 JSON .oilproj。"""
     with open(project_file_path, "r", encoding="utf-8-sig") as file:
         payload = json.load(file)
-    if payload.get("schema_version") not in {
-        LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION,
-    }:
+    if payload.get("schema_version") not in SUPPORTED_PROJECT_SCHEMA_VERSIONS:
         raise ProjectFileError(
             f"不支持的工程文件版本: {payload.get('schema_version')}")
 
@@ -102,9 +117,6 @@ def _save_project_package(
         project_file_path,
         simulation_result_path=None,
         result_files=None):
-    raw_dataset_path = getattr(project_state, "case_dataset_path", "") or ""
-    dataset_path = os.path.abspath(raw_dataset_path) if raw_dataset_path else ""
-    has_dataset = bool(dataset_path and os.path.isdir(dataset_path))
     result_path = os.path.abspath(simulation_result_path or "") if simulation_result_path else ""
     has_result = bool(result_path and os.path.isfile(result_path))
     packaged_result_files = _existing_result_files(result_files)
@@ -112,13 +124,20 @@ def _save_project_package(
         key: f"{PACKAGE_RESULTS_DIR}/{os.path.basename(path)}"
         for key, path in packaged_result_files.items()
     }
-    payload = _build_package_payload(project_state, project_file_path, dataset_path)
+    payload, package_plan, case_manifest, asset_manifest = _build_package_payload(
+        project_state, project_file_path)
+    active_dataset_dir = (
+        (payload.get("state") or {}).get("case_dataset_path") or ""
+    )
+    has_dataset = bool(active_dataset_dir)
     package_manifest = {
         "schema_version": PACKAGE_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "project_file": PACKAGE_PROJECT_FILE,
         "has_case_dataset": has_dataset,
-        "case_dataset_dir": PACKAGE_DATASET_DIR if has_dataset else "",
+        "case_dataset_dir": active_dataset_dir if has_dataset else "",
+        "cases": case_manifest,
+        "assets": asset_manifest,
         "has_results": has_result,
         "simulation_result_file": (
             f"{PACKAGE_RESULTS_DIR}/{PACKAGE_SIMULATION_RESULT_FILE}"
@@ -137,8 +156,12 @@ def _save_project_package(
         ) as archive:
             _write_json_to_zip(archive, PACKAGE_PROJECT_FILE, payload)
             _write_json_to_zip(archive, PACKAGE_MANIFEST_FILE, package_manifest)
-            if has_dataset:
-                _write_directory_to_zip(archive, dataset_path, PACKAGE_DATASET_DIR)
+            for entry in package_plan:
+                if entry["kind"] == "directory":
+                    _write_directory_to_zip(
+                        archive, entry["source"], entry["target"])
+                else:
+                    archive.write(entry["source"], entry["target"])
             if has_result:
                 archive.write(
                     result_path,
@@ -161,9 +184,7 @@ def _load_project_package(project_file_path):
     package_checks = _validate_package_contents(cache_dir, manifest)
     with open(project_json, "r", encoding="utf-8-sig") as file:
         payload = json.load(file)
-    if payload.get("schema_version") not in {
-        LEGACY_PROJECT_SCHEMA_VERSION, PROJECT_SCHEMA_VERSION,
-    }:
+    if payload.get("schema_version") not in SUPPORTED_PROJECT_SCHEMA_VERSIONS:
         raise ProjectFileError(
             f"不支持的工程文件版本: {payload.get('schema_version')}")
     state = _state_from_payload(payload, cache_dir)
@@ -191,52 +212,147 @@ def _load_project_package(project_file_path):
 
 
 def validate_project_state(project_state, refresh_case_data=True):
-    """检查工程引用的 CaseData 和 Dataset 是否仍可用。"""
+    """检查所有算例引用的 CaseData 和 Dataset 是否仍可用。"""
     errors = []
     warnings = []
     dataset_summary = {}
+    case_summaries = {}
+    run_summaries = {}
 
-    case_data_path = getattr(project_state, "case_data_path", "")
-    if refresh_case_data and case_data_path and not os.path.exists(case_data_path):
-        warnings.append(f"CaseData 文件不存在: {case_data_path}")
-    elif refresh_case_data and case_data_path:
-        try:
-            project_state.set_case_data(parse_case_data(case_data_path))
-        except Exception as exc:
-            errors.append(f"CaseData 读取失败: {exc}")
+    cases = list(getattr(project_state, "cases", []) or [])
+    if not cases:
+        cases = [None]
+    active_case_id = getattr(project_state, "active_case_id", "")
 
-    dataset_path = getattr(project_state, "case_dataset_path", "")
-    if dataset_path:
-        if not os.path.isdir(dataset_path):
-            warnings.append(f"Dataset 目录不存在: {dataset_path}")
-        else:
+    for case in cases:
+        case_id = getattr(case, "case_id", "") if case is not None else ""
+        case_name = getattr(case, "case_name", "") if case is not None else "DefaultCase"
+        input_state = getattr(case, "input_state", None) if case is not None else None
+        case_data_path = (
+            getattr(input_state, "case_data_path", "")
+            if input_state is not None
+            else getattr(project_state, "case_data_path", "")
+        )
+        if case_data_path and not os.path.exists(case_data_path):
+            warnings.append(f"[{case_name}] CaseData 文件不存在: {case_data_path}")
+
+        records = (
+            list(getattr(case, "dataset_records", []) or [])
+            if case is not None
+            else []
+        )
+        if case is None and getattr(project_state, "case_dataset_path", ""):
+            records = [type("LegacyDataset", (), {
+                "path": project_state.case_dataset_path,
+                "summary": project_state.case_dataset_summary,
+                "dataset_id": "legacy",
+            })()]
+
+        summaries = []
+        for record in records:
+            dataset_path = getattr(record, "path", "") or ""
+            if not dataset_path:
+                continue
+            if not os.path.isdir(dataset_path):
+                warnings.append(f"[{case_name}] Dataset 目录不存在: {dataset_path}")
+                continue
             try:
                 dataset = load_case_dataset(dataset_path, strict=False)
-                dataset_summary = dataset.summary()
-                project_state.case_dataset_summary.update({
-                    "schema_version": dataset_summary.get("schema_version", ""),
-                    "array_count": dataset_summary.get("array_count", 0),
+                summary = dataset.summary()
+                summaries.append(summary)
+                record.summary.update({
+                    "schema_version": summary.get("schema_version", ""),
+                    "array_count": summary.get("array_count", 0),
                     "source_file_count": len(
                         dataset.manifest.get("source_files", {}) or {}),
-                    "error_count": dataset_summary.get("error_count", 0),
-                    "warning_count": dataset_summary.get("warning_count", 0),
+                    "error_count": summary.get("error_count", 0),
+                    "warning_count": summary.get("warning_count", 0),
                     "manifest_path": os.path.join(dataset_path, "manifest.json"),
                 })
-                if dataset_summary.get("error_count", 0):
+                if summary.get("error_count", 0):
                     errors.append(
-                        f"Dataset 校验存在 {dataset_summary.get('error_count')} 个错误")
+                        f"[{case_name}] Dataset 校验存在 "
+                        f"{summary.get('error_count')} 个错误")
+                if case_id == active_case_id and (
+                        getattr(case, "active_dataset_id", "") ==
+                        getattr(record, "dataset_id", "")):
+                    dataset_summary = summary
             except CaseDatasetReadError as exc:
-                errors.append(f"Dataset 读取失败: {exc}")
+                errors.append(f"[{case_name}] Dataset 读取失败: {exc}")
+        case_summaries[case_id or "legacy"] = summaries
+        dataset_ids = {
+            str(getattr(record, "dataset_id", "") or "")
+            for record in records
+        }
+        run_items = []
+        for run in list(getattr(case, "run_records", []) or []):
+            artifacts = dict(getattr(run, "artifacts", {}) or {})
+            result_path = str(artifacts.get("result_json") or "")
+            missing_artifacts = [
+                key for key, path in artifacts.items()
+                if isinstance(path, str) and path and not os.path.exists(path)
+            ]
+            item = {
+                "run_id": getattr(run, "run_id", "") or "",
+                "run_type": getattr(run, "run_type", "") or "",
+                "status": getattr(run, "status", "") or "",
+                "dataset_id": getattr(run, "dataset_id", "") or "",
+                "result_json_path": result_path,
+                "result_json_exists": bool(
+                    result_path and os.path.isfile(result_path)),
+                "artifact_count": len(artifacts),
+                "missing_artifacts": missing_artifacts,
+            }
+            run_items.append(item)
+            if case is not None and getattr(run, "case_id", "") != case_id:
+                errors.append(
+                    f"[{case_name}] Run {item['run_id']} ownership does not match its Case")
+            if item["dataset_id"] and item["dataset_id"] not in dataset_ids:
+                warnings.append(
+                    f"[{case_name}] Run {item['run_id']} references an unknown Dataset "
+                    f"{item['dataset_id']}")
+            if item["status"] == "completed" and not item["result_json_exists"]:
+                warnings.append(
+                    f"[{case_name}] Run {item['run_id']} result JSON is missing")
+            load_error = str(
+                (getattr(run, "summary", {}) or {}).get(
+                    "result_load_error") or "")
+            if load_error:
+                warnings.append(
+                    f"[{case_name}] Run {item['run_id']} result is unreadable: "
+                    f"{load_error}")
+            if missing_artifacts:
+                warnings.append(
+                    f"[{case_name}] Run {item['run_id']} has missing artifacts: "
+                    + ", ".join(sorted(missing_artifacts)))
+        run_summaries[case_id or "legacy"] = run_items
+
+    if refresh_case_data:
+        case_data_path = getattr(project_state, "case_data_path", "")
+        if case_data_path and os.path.exists(case_data_path):
+            try:
+                project_state.set_case_data(parse_case_data(case_data_path))
+            except Exception as exc:
+                errors.append(f"活动算例 CaseData 读取失败: {exc}")
     return {
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
         "dataset_summary": dataset_summary,
+        "case_summaries": case_summaries,
+        "run_summaries": run_summaries,
     }
 
 
 def _state_from_payload(payload, base_dir):
     state_payload = copy.deepcopy(payload.get("state", {}))
+    _restore_case_paths_in_payload(state_payload, base_dir)
+    for asset in (state_payload.get("input_assets") or {}).values():
+        if isinstance(asset, dict):
+            asset["managed_path"] = _restore_packaged_value(
+                asset.get("managed_path"), base_dir)
+    _restore_case_data_section_paths(
+        state_payload.get("case_data_sections"), base_dir)
     path_records = payload.get("path_records") or {}
     for field_name in ("case_data_path", "case_dataset_path"):
         path_record = path_records.get(field_name)
@@ -246,25 +362,200 @@ def _state_from_payload(payload, base_dir):
         value = state_payload.get(field_name, "")
         if value and not os.path.isabs(value):
             state_payload[field_name] = os.path.abspath(os.path.join(base_dir, value))
+    summary = state_payload.get("case_dataset_summary") or {}
+    if summary.get("manifest_path") and not os.path.isabs(summary["manifest_path"]):
+        summary["manifest_path"] = os.path.abspath(
+            os.path.join(base_dir, summary["manifest_path"]))
     return ProjectState.from_dict(state_payload)
 
 
-def _build_package_payload(project_state, project_file_path, dataset_path):
+def _build_package_payload(project_state, project_file_path):
     payload = _build_payload(project_state, project_file_path)
     state = payload["state"]
     path_records = payload["path_records"]
+    package_plan = []
+    plan_targets = set()
+    asset_manifest = []
+    asset_targets = {}
+    case_manifest = []
+
+    cases_by_id = {
+        getattr(case, "case_id", ""): case
+        for case in (getattr(project_state, "cases", []) or [])
+    }
+    for case_payload in state.get("cases", []) or []:
+        if not isinstance(case_payload, dict):
+            continue
+        case_id = str(case_payload.get("case_id") or "")
+        case = cases_by_id.get(case_id)
+        if case is None:
+            continue
+        packaged_case = {
+            "case_id": case_id,
+            "case_name": case_payload.get("case_name", ""),
+            "datasets": [],
+            "runs": [],
+        }
+        dataset_package_paths = {}
+        input_payload = case_payload.get("input_state") or {}
+        assets = input_payload.get("input_assets") or {}
+        for key, asset in assets.items():
+            if not isinstance(asset, dict):
+                continue
+            source = asset.get("managed_path") or ""
+            if not source or not os.path.isfile(source):
+                continue
+            digest = asset.get("sha256") or ""
+            if not digest:
+                digest = _file_sha256(source)
+                asset["sha256"] = digest
+                asset["asset_id"] = digest
+            target = asset_targets.get(digest)
+            if not target:
+                target = (
+                    f"assets/{_safe_package_component(digest)}/"
+                    f"{_safe_package_filename(os.path.basename(source))}"
+                )
+                asset_targets[digest] = target
+                _add_package_entry(
+                    package_plan, plan_targets, source, target, "file")
+                asset_manifest.append({
+                    "asset_id": digest,
+                    "package_path": target,
+                    "size": _file_size(source),
+                })
+            asset["managed_path"] = target
+            if key == "case_data":
+                input_payload["case_data_path"] = target
+            for section in input_payload.get("case_data_sections", []) or []:
+                if not isinstance(section, dict):
+                    continue
+                for keyword in section.get("keywords", []) or []:
+                    if not isinstance(keyword, dict) or keyword.get("key") != key:
+                        continue
+                    keyword["file_path"] = target
+                    keyword["file_exists"] = True
+
+        for record_payload in case_payload.get("dataset_records", []) or []:
+            if not isinstance(record_payload, dict):
+                continue
+            source = record_payload.get("path") or ""
+            if not source or not os.path.isdir(source):
+                continue
+            dataset_id = _safe_package_component(
+                record_payload.get("dataset_id") or "dataset")
+            target = f"cases/{_safe_package_component(case_id)}/datasets/{dataset_id}"
+            _add_package_entry(
+                package_plan, plan_targets, source, target, "directory")
+            record_payload["path"] = target
+            dataset_package_paths[record_payload.get("dataset_id", "")] = target
+            summary = record_payload.get("summary") or {}
+            summary["manifest_path"] = f"{target}/manifest.json"
+            packaged_case["datasets"].append({
+                "dataset_id": record_payload.get("dataset_id", ""),
+                "path": target,
+                "status": record_payload.get("status", ""),
+            })
+
+        for run_payload in case_payload.get("run_records", []) or []:
+            if not isinstance(run_payload, dict):
+                continue
+            run_dataset_id = run_payload.get("dataset_id", "") or ""
+            if run_dataset_id in dataset_package_paths:
+                run_payload["dataset_path"] = dataset_package_paths[run_dataset_id]
+            run_id = _safe_package_component(run_payload.get("run_id") or "run")
+            run_type = _safe_package_component(
+                run_payload.get("run_type") or "simulation")
+            artifacts = run_payload.get("artifacts") or {}
+            packaged_artifacts = {}
+            run_target = (
+                f"cases/{_safe_package_component(case_id)}/runs/"
+                f"{run_type}/{run_id}"
+            )
+            run_dir_source = artifacts.get("run_dir") or ""
+            if run_dir_source and os.path.isdir(run_dir_source):
+                run_dir_source = os.path.abspath(run_dir_source)
+                _add_package_entry(
+                    package_plan,
+                    plan_targets,
+                    run_dir_source,
+                    run_target,
+                    "directory",
+                )
+                artifacts["run_dir"] = run_target
+                packaged_artifacts["run_dir"] = run_target
+            elif run_dir_source:
+                artifacts.pop("run_dir", None)
+            for key, source in list(artifacts.items()):
+                if key == "run_dir":
+                    continue
+                if not isinstance(source, str) or not source:
+                    artifacts.pop(key, None)
+                    continue
+                if not os.path.exists(source):
+                    artifacts.pop(key, None)
+                    continue
+                relative = _path_within(source, run_dir_source)
+                if relative:
+                    target = f"{run_target}/{relative.replace(os.sep, '/')}"
+                else:
+                    target = (
+                        f"{run_target}/artifacts/{_safe_package_component(key)}/"
+                        f"{_safe_package_filename(os.path.basename(source))}"
+                    )
+                    kind = "directory" if os.path.isdir(source) else "file"
+                    _add_package_entry(
+                        package_plan, plan_targets, source, target, kind)
+                artifacts[key] = target
+                packaged_artifacts[key] = target
+            packaged_case["runs"].append({
+                "run_id": run_payload.get("run_id", ""),
+                "run_type": run_payload.get("run_type", ""),
+                "status": run_payload.get("status", ""),
+                "artifacts": packaged_artifacts,
+            })
+        case_manifest.append(packaged_case)
+
+    active_case_payload = next((
+        item for item in state.get("cases", []) or []
+        if isinstance(item, dict)
+        and item.get("case_id") == state.get("active_case_id")
+    ), None)
+    if active_case_payload:
+        input_payload = active_case_payload.get("input_state") or {}
+        state["case_data_path"] = input_payload.get("case_data_path", "")
+        state["case_data_summary"] = copy.deepcopy(
+            input_payload.get("case_data_summary") or {})
+        state["case_data_sections"] = copy.deepcopy(
+            input_payload.get("case_data_sections") or [])
+        state["case_data_schema"] = copy.deepcopy(
+            input_payload.get("case_data_schema") or {})
+        state["model_config"] = copy.deepcopy(input_payload.get("model_config") or {})
+        state["module_values"] = copy.deepcopy(input_payload.get("module_values") or {})
+        state["checked_items"] = copy.deepcopy(input_payload.get("checked_items") or {})
+        state["input_assets"] = copy.deepcopy(input_payload.get("input_assets") or {})
+        active_dataset_id = active_case_payload.get("active_dataset_id") or ""
+        active_dataset = next((
+            item for item in active_case_payload.get("dataset_records", []) or []
+            if isinstance(item, dict) and item.get("dataset_id") == active_dataset_id
+        ), None)
+        state["case_dataset_path"] = (
+            active_dataset.get("path", "") if active_dataset else "")
+        state["case_dataset_summary"] = copy.deepcopy(
+            active_dataset.get("summary") or {}) if active_dataset else {}
+
     if state.get("case_data_sections"):
         state.setdefault("ui_state", {})["case_data_source_mode"] = "snapshot"
-    if dataset_path and os.path.isdir(dataset_path):
-        state["case_dataset_path"] = PACKAGE_DATASET_DIR
-        path_records["case_dataset_path"] = {
-            "stored_path": PACKAGE_DATASET_DIR,
-            "absolute_path": dataset_path,
-            "is_relative": True,
-            "exists": True,
-            "package_path": PACKAGE_DATASET_DIR,
+    for field_name in ("case_data_path", "case_dataset_path"):
+        stored_path = state.get(field_name, "") or ""
+        path_records[field_name] = {
+            "stored_path": stored_path,
+            "absolute_path": "",
+            "is_relative": bool(stored_path),
+            "exists": bool(stored_path),
+            "package_path": stored_path,
         }
-    return payload
+    return payload, package_plan, case_manifest, asset_manifest
 
 
 def _build_payload(project_state, project_file_path):
@@ -284,6 +575,109 @@ def _build_payload(project_state, project_file_path):
         "state": state,
         "path_records": path_records,
     }
+
+
+def _restore_case_paths_in_payload(state_payload, base_dir):
+    for case_payload in state_payload.get("cases", []) or []:
+        if not isinstance(case_payload, dict):
+            continue
+        input_payload = case_payload.get("input_state") or {}
+        input_payload["case_data_path"] = _restore_packaged_value(
+            input_payload.get("case_data_path"), base_dir)
+        for asset in (input_payload.get("input_assets") or {}).values():
+            if isinstance(asset, dict):
+                asset["managed_path"] = _restore_packaged_value(
+                    asset.get("managed_path"), base_dir)
+        _restore_case_data_section_paths(
+            input_payload.get("case_data_sections"), base_dir)
+        for record in case_payload.get("dataset_records", []) or []:
+            if not isinstance(record, dict):
+                continue
+            record["path"] = _restore_packaged_value(record.get("path"), base_dir)
+            summary = record.get("summary") or {}
+            summary["manifest_path"] = _restore_packaged_value(
+                summary.get("manifest_path"), base_dir)
+        for run in case_payload.get("run_records", []) or []:
+            if not isinstance(run, dict):
+                continue
+            run["dataset_path"] = _restore_packaged_value(
+                run.get("dataset_path"), base_dir)
+            artifacts = run.get("artifacts") or {}
+            for key, value in list(artifacts.items()):
+                if isinstance(value, str):
+                    artifacts[key] = _restore_packaged_value(value, base_dir)
+
+
+def _restore_case_data_section_paths(sections, base_dir):
+    for section in sections or []:
+        if not isinstance(section, dict):
+            continue
+        for keyword in section.get("keywords", []) or []:
+            if not isinstance(keyword, dict) or not keyword.get("is_file_ref"):
+                continue
+            keyword["file_path"] = _restore_packaged_value(
+                keyword.get("file_path"), base_dir)
+            keyword["file_exists"] = bool(
+                keyword.get("file_path")
+                and os.path.exists(keyword["file_path"])
+            )
+
+
+def _restore_packaged_value(value, base_dir):
+    value = str(value or "")
+    if not value or os.path.isabs(value):
+        return value
+    return os.path.abspath(os.path.join(base_dir, value))
+
+
+def _add_package_entry(plan, targets, source, target, kind):
+    source = os.path.abspath(source)
+    target = str(target or "").replace("\\", "/").strip("/")
+    if not target or target in targets:
+        return
+    targets.add(target)
+    plan.append({"source": source, "target": target, "kind": kind})
+
+
+def _safe_package_component(value):
+    value = str(value or "")
+    safe = "".join(
+        ch if ch.isalnum() or ch in "_-" else "_"
+        for ch in value
+    ).strip("_")
+    return safe or "item"
+
+
+def _safe_package_filename(value):
+    value = os.path.basename(str(value or "artifact"))
+    safe = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_"
+        for ch in value
+    )
+    return safe or "artifact"
+
+
+def _path_within(path, root):
+    if not path or not root:
+        return ""
+    path = os.path.abspath(path)
+    root = os.path.abspath(root)
+    try:
+        if os.path.commonpath([path, root]) != root or path == root:
+            return ""
+    except ValueError:
+        return ""
+    return os.path.relpath(path, root)
+
+
+def _file_sha256(path):
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _path_record(path, base_dir):
@@ -428,6 +822,39 @@ def _validate_package_contents(cache_dir, manifest):
     for key, package_path in dict((manifest or {}).get("result_files") or {}).items():
         label = f"结果文件 {key}"
         _require_package_file(cache_dir, package_path, checks, label)
+
+    for asset in (manifest or {}).get("assets", []) or []:
+        if not isinstance(asset, dict):
+            continue
+        _require_package_file(
+            cache_dir,
+            asset.get("package_path", ""),
+            checks,
+            f"输入资产 {asset.get('asset_id', '')}",
+        )
+
+    for case in (manifest or {}).get("cases", []) or []:
+        if not isinstance(case, dict):
+            continue
+        case_label = case.get("case_name") or case.get("case_id") or "case"
+        for dataset in case.get("datasets", []) or []:
+            if isinstance(dataset, dict):
+                _require_package_dir(
+                    cache_dir,
+                    dataset.get("path", ""),
+                    checks,
+                    f"[{case_label}] Dataset {dataset.get('dataset_id', '')}",
+                )
+        for run in case.get("runs", []) or []:
+            if not isinstance(run, dict):
+                continue
+            for key, package_path in (run.get("artifacts") or {}).items():
+                abs_path = _package_abs_path(cache_dir, package_path)
+                label = f"[{case_label}] Run {run.get('run_id', '')} 制品 {key}"
+                if abs_path and os.path.isdir(abs_path):
+                    _require_package_dir(cache_dir, package_path, checks, label)
+                else:
+                    _require_package_file(cache_dir, package_path, checks, label)
 
     checks["ok"] = not checks["errors"]
     return checks

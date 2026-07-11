@@ -91,6 +91,7 @@ class WorkbenchWindow(QMainWindow):
         root_layout.addWidget(self.command_bar)
 
         self.pages = QStackedWidget()
+        self.pages.currentChanged.connect(self._sync_run_button_state)
         self.start_page = self._create_start_page()
         self.pages.addWidget(self.start_page)
         root_layout.addWidget(self.pages, 1)
@@ -159,6 +160,10 @@ class WorkbenchWindow(QMainWindow):
         if command in {"运行模拟", "扫描结果", "刷新结果"}:
             current = self.pages.currentWidget()
             if isinstance(current, ProjectShell):
+                if current.simulation_service.is_running():
+                    current.stop_simulation()
+                    self.statusBar().showMessage("Stopping simulation", 4500)
+                    return
                 current.run_simulation_scan()
                 self.statusBar().showMessage("运行模拟扫描完成", 4500)
             else:
@@ -205,6 +210,15 @@ class WorkbenchWindow(QMainWindow):
         return self._write_project_file(shell, path)
 
     def _write_project_file(self, shell, path):
+        if shell.has_running_operations():
+            QMessageBox.warning(
+                self,
+                "工程正在运行",
+                "仿真或历史拟合尚未结束。请先停止运行，再保存工程。",
+            )
+            shell.message_log.append_message(
+                "[工程] 运行期间未执行保存；请先停止当前任务")
+            return False
         try:
             shell.collect_ui_state()
             result_store = getattr(shell, "result_store", None)
@@ -365,6 +379,12 @@ class WorkbenchWindow(QMainWindow):
         )
         if hasattr(shell, "command_requested"):
             shell.command_requested.connect(self._handle_command)
+        shell.simulation_service.run_started.connect(
+            lambda *_args: self._sync_run_button_state())
+        shell.simulation_service.run_finished.connect(
+            lambda *_args: self._sync_run_button_state())
+        shell.simulation_service.run_failed.connect(
+            lambda *_args: self._sync_run_button_state())
         self.pages.addWidget(shell)
         self.pages.setCurrentWidget(shell)
         self.setWindowTitle("储层建模与模拟平台")
@@ -376,6 +396,12 @@ class WorkbenchWindow(QMainWindow):
         self._mark_project_clean(shell)
         self.statusBar().showMessage("Action performed OK", 4500)
         return shell
+
+    def _sync_run_button_state(self, *_args):
+        shell = self._current_project_shell()
+        active = bool(
+            shell is not None and shell.simulation_service.is_running())
+        self.command_bar.set_run_active(active)
 
     def _open_module_workspace(self, module_key):
         if module_key in {"help_license", "ai_assistant"}:
@@ -468,6 +494,7 @@ class WorkbenchWindow(QMainWindow):
         shell = self._current_project_shell()
         if shell is None:
             return
+        shell.shutdown()
         self.pages.removeWidget(shell)
         shell.deleteLater()
         self.pages.setCurrentWidget(self.start_page)
@@ -496,4 +523,6 @@ class WorkbenchWindow(QMainWindow):
             if not self._confirm_close_current_project():
                 event.ignore()
                 return
+        for shell in list(self._project_shells()):
+            shell.shutdown()
         super().closeEvent(event)

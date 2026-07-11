@@ -15,6 +15,13 @@ from ..simulation_runner import (
     _normalize_parsed_wells_z_to_grid,
 )
 from .case_manager_panel import CaseManagerPanel
+from .case_artifact_repository import CaseArtifactRepository
+from .case_models import (
+    RUN_STATUS_COMPLETED,
+    RUN_TYPE_HISTORY_MATCHING,
+    RUN_TYPE_SIMULATION,
+    RunRecord,
+)
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
 from .icon_registry import semantic_icon_kind
@@ -27,7 +34,13 @@ from .model_config_dialog import (
 )
 from .project_state import ProjectState
 from .results_tree import ResultsTree
+from .result_catalog import RESULT_AVAILABLE, RunResultCatalog
 from .simulation_service import WorkbenchSimulationService
+from .simulation_run_manager import (
+    SimulationRunContext,
+    SimulationRunError,
+    SimulationRunManager,
+)
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
 from visual.pyvista_static_property_preview import (
@@ -202,14 +215,27 @@ class ProjectShell(QWidget):
         self.project_name = project_name
         self.project_state = project_state or ProjectState(project_name=project_name)
         self.project_root = project_root or os.getcwd()
+        self.artifact_repository = CaseArtifactRepository(
+            self.project_state,
+            self.project_root,
+        )
+        self.project_state.attach_artifact_repository(self.artifact_repository)
+        self.simulation_run_manager = SimulationRunManager(
+            self.project_state,
+            self.artifact_repository,
+        )
         self.workflow_runner = WorkbenchWorkflowRunner(self.project_root)
         self.result_store = self.workflow_runner.discover_results()
         self.simulation_service = WorkbenchSimulationService(self.project_root, self)
         self._last_simulation_params = {}
+        self._last_simulation_context = {}
         self._preview_data = None
         self._result_load_thread = None
         self._result_load_worker = None
+        self._result_load_context = {}
+        self._pending_result_load = None
         self._autoload_result_path = ""
+        self._bound_case_id = self.project_state.active_case_id or ""
         self.setObjectName("projectShell")
 
         layout = QVBoxLayout(self)
@@ -229,7 +255,12 @@ class ProjectShell(QWidget):
         self.input_tree.result_requested.connect(self._handle_input_related_result_requested)
 
         self.results_tree = ResultsTree()
-        self.results_tree.result_selected.connect(self._handle_result_selected)
+        self.results_tree.bind_case(self.project_state.active_case())
+        self.results_tree.run_selected.connect(self._handle_run_selected)
+        self.results_tree.run_result_selected.connect(
+            self._handle_run_result_selected)
+        self.results_tree.analysis_result_selected.connect(
+            self._handle_result_selected)
 
         self.upper_tabs = DockTabPanel([
             ("算例", self.case_manager),
@@ -243,10 +274,10 @@ class ProjectShell(QWidget):
         self.message_log = MessageLogPanel()
         self.upper_tabs.panel_message.connect(self.message_log.append_message)
         self.lower_tabs.panel_message.connect(self.message_log.append_message)
-        self.simulation_service.started.connect(self._handle_simulation_started)
+        self.simulation_service.run_started.connect(self._handle_simulation_started)
         self.simulation_service.log_message.connect(self.message_log.append_message)
-        self.simulation_service.finished.connect(self._handle_simulation_finished)
-        self.simulation_service.failed.connect(self._handle_simulation_failed)
+        self.simulation_service.run_finished.connect(self._handle_simulation_finished)
+        self.simulation_service.run_failed.connect(self._handle_simulation_failed)
         self.message_log.append_message(f"[工程] 已打开 {project_name}")
         self._report_discovered_results(prefix="[结果]")
         left_splitter.addWidget(self.upper_tabs)
@@ -271,6 +302,10 @@ class ProjectShell(QWidget):
         self.workspace.workspace_message.connect(self._handle_workspace_message)
         self.workspace.result_property_selected.connect(self._handle_workspace_result_property_selected)
         self.workspace.preview_requested.connect(self._handle_workspace_preview_requested)
+        self.workspace.history_run_state_changed.connect(
+            self._handle_history_run_state_changed)
+        self.workspace.derived_case_created.connect(
+            self._handle_history_derived_case_created)
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(left_container)
         main_splitter.addWidget(self.workspace)
@@ -293,20 +328,44 @@ class ProjectShell(QWidget):
         case = self.project_state.case_by_id(case_id)
         if case is None:
             return
-        self._preview_data = None
-        self.workspace.set_preview_data(None)
+        self._save_bound_case_result_state()
+        self._bind_active_case_results(restore=True)
         self._refresh_case_input_state(stay_on_case_tab=True)
         self.message_log.append_message(f"[算例] 当前算例：{case.case_name}")
         self._show_status(f"当前算例：{case.case_name}")
 
     def _handle_case_created(self, case_id):
         case = self.project_state.case_by_id(case_id)
-        self._preview_data = None
-        self.workspace.set_preview_data(None)
+        self._save_bound_case_result_state()
+        self._bind_active_case_results(restore=True)
         self._refresh_case_input_state(stay_on_case_tab=False)
         if case is not None:
             self.message_log.append_message(f"[算例] 已创建气水模拟算例：{case.case_name}")
             self._show_status(f"已创建算例：{case.case_name}")
+
+    def _handle_history_run_state_changed(self, case_id, run_id):
+        case = self.project_state.case_by_id(case_id)
+        if case is None:
+            return
+        if case_id == self.project_state.active_case_id:
+            self.results_tree.refresh()
+            self._sync_result_store_for_active_case()
+        self.case_manager.refresh()
+        record = case.run_by_id(run_id)
+        status = record.status if record is not None else "unknown"
+        self.message_log.append_message(
+            f"[HistoryMatching] {run_id}: {status}")
+
+    def _handle_history_derived_case_created(self, case_id):
+        case = self.project_state.case_by_id(case_id)
+        if case is None:
+            return
+        self._save_bound_case_result_state()
+        self._bind_active_case_results(restore=True)
+        self._refresh_case_input_state(stay_on_case_tab=True)
+        self.message_log.append_message(
+            f"[HistoryMatching] Derived case created: {case.case_name}")
+        self._show_status(f"Derived case created: {case.case_name}")
 
     def _refresh_case_input_state(self, *args, stay_on_case_tab=True):
         has_case = bool(self.project_state.has_active_case())
@@ -315,11 +374,84 @@ class ProjectShell(QWidget):
         if input_index >= 0:
             self.upper_tabs.tab_widget.setTabEnabled(input_index, has_case)
         self.input_tree.setEnabled(has_case)
+        self.input_tree.refresh_case_data_sections(preserve_expanded=True)
+        self.input_tree.refresh_model_config_visibility()
         self.case_manager.refresh()
+        self.workspace.set_project_context(
+            project_state=self.project_state,
+            result_store=self.result_store,
+        )
         if stay_on_case_tab and case_index >= 0:
             self.upper_tabs.tab_widget.setCurrentIndex(case_index)
         elif has_case and not stay_on_case_tab and input_index >= 0:
             self.upper_tabs.tab_widget.setCurrentIndex(input_index)
+
+    def _sync_result_store_for_active_case(self):
+        self.result_store.clear_run()
+        case = self.project_state.active_case()
+        record = case.active_run() if case is not None else None
+        if record is None:
+            return
+        self.result_store.case_id = case.case_id
+        self.result_store.run_id = record.run_id
+        self.result_store.dataset_id = record.dataset_id
+        descriptor = RunResultCatalog.from_case(case).by_run_id(record.run_id)
+        self.result_store.descriptor = descriptor
+        self.result_store.run_status = (
+            "done" if record.status == RUN_STATUS_COMPLETED else record.status)
+        if record.run_type != RUN_TYPE_SIMULATION:
+            self.result_store.load_status = (
+                descriptor.availability if descriptor is not None else "unavailable")
+            return
+        if descriptor is None or descriptor.availability != RESULT_AVAILABLE:
+            if descriptor is not None and descriptor.errors:
+                self.result_store.load_status = descriptor.availability
+                self.result_store.load_error = "; ".join(descriptor.errors)
+            return
+        artifacts = record.artifacts or {}
+        self.result_store.result_json_path = artifacts.get("result_json", "")
+        self.result_store.load_status = "indexed"
+        run_dir = artifacts.get("run_dir", "")
+        if run_dir and os.path.isdir(run_dir):
+            restored = WorkbenchWorkflowRunner(run_dir).discover_results()
+            self._copy_result_file_state(restored)
+
+    def _save_bound_case_result_state(self):
+        if not self._bound_case_id:
+            return
+        case = self.project_state.case_by_id(self._bound_case_id)
+        if case is None:
+            return
+        case.ui_state["result_view"] = {
+            "results_tree": self.results_tree.export_ui_state(),
+            "workspace": self.workspace.export_ui_state(),
+        }
+
+    def _bind_active_case_results(self, restore=True):
+        case = self.project_state.active_case()
+        self._bound_case_id = case.case_id if case is not None else ""
+        self._preview_data = None
+        self.workspace.clear_result_data()
+        self.result_store.clear_run()
+        self.results_tree.bind_case(case)
+        self._sync_result_store_for_active_case()
+        record = case.active_run() if case is not None else None
+        self.workspace.set_result_context(
+            case_id=case.case_id if case is not None else "",
+            run_id=record.run_id if record is not None else "",
+            dataset_id=record.dataset_id if record is not None else "",
+        )
+        state = (
+            (case.ui_state or {}).get("result_view")
+            if case is not None else None
+        ) or {}
+        if restore and state:
+            self.workspace.restore_ui_state(state.get("workspace") or {})
+            self.results_tree.restore_ui_state(
+                state.get("results_tree") or {})
+            self.results_tree.activate_current()
+        elif record is not None:
+            self.results_tree.select_run(record.run_id, emit=False)
 
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
@@ -328,7 +460,11 @@ class ProjectShell(QWidget):
     def _handle_workspace_result_property_selected(self, property_key):
         if property_key not in LAZY_SIMULATION_DATA_KEYS:
             return
-        self.results_tree.select_key(property_key)
+        record = self.project_state.active_run_record()
+        self.results_tree.select_key(
+            property_key,
+            run_id=record.run_id if record is not None else None,
+        )
 
     def _handle_workspace_preview_requested(self, page, preview_type, key, axis, layer):
         sim_data = self._ensure_preview_data_loaded()
@@ -354,6 +490,8 @@ class ProjectShell(QWidget):
             self._show_status(f"未找到关联结果：{result_key}")
 
     def collect_ui_state(self):
+        """Persist project-level layout and active case result context."""
+        self._save_bound_case_result_state()
         """保存工程前收集当前界面状态。"""
         state = dict(getattr(self.project_state, "ui_state", {}) or {})
         state["input_tree"] = self.input_tree.export_ui_state()
@@ -374,8 +512,31 @@ class ProjectShell(QWidget):
         if not tree_state and state.get("input_tree_current_key"):
             tree_state = {"current_key": state.get("input_tree_current_key")}
         self.input_tree.restore_ui_state(tree_state)
-        self.results_tree.restore_ui_state(state.get("results_tree") or {})
-        self.workspace.restore_ui_state(state.get("workspace") or {})
+        case = self.project_state.active_case()
+        case_result_state = (
+            (case.ui_state or {}).get("result_view")
+            if case is not None else None
+        ) or {}
+        self.results_tree.bind_case(case)
+        self._bound_case_id = case.case_id if case is not None else ""
+        self.workspace.restore_ui_state(
+            case_result_state.get("workspace")
+            or state.get("workspace")
+            or {}
+        )
+        self.results_tree.restore_ui_state(
+            case_result_state.get("results_tree")
+            or state.get("results_tree")
+            or {}
+        )
+        self._sync_result_store_for_active_case()
+        record = self.project_state.active_run_record()
+        self.workspace.set_result_context(
+            case_id=self.project_state.active_case_id,
+            run_id=record.run_id if record is not None else "",
+            dataset_id=record.dataset_id if record is not None else "",
+        )
+        self.results_tree.activate_current()
         self._restore_tab_index(self.upper_tabs.tab_widget, state.get("upper_tab_index"))
         self._restore_tab_index(self.lower_tabs.tab_widget, state.get("lower_tab_index"))
         if not state.get("workspace"):
@@ -384,35 +545,155 @@ class ProjectShell(QWidget):
     def _has_saved_workspace_state(self):
         state = getattr(self.project_state, "ui_state", {}) or {}
         workspace_state = state.get("workspace") or {}
+        case = self.project_state.active_case()
+        case_result_state = (
+            (case.ui_state or {}).get("result_view")
+            if case is not None else None
+        ) or {}
+        workspace_state = (
+            case_result_state.get("workspace") or workspace_state)
         pages = workspace_state.get("pages") if isinstance(workspace_state, dict) else None
         return bool(pages)
 
     def _restore_packaged_simulation_result(self):
         state = getattr(self.project_state, "ui_state", {}) or {}
-        result_path = state.get("loaded_result_json_path") or ""
+        self._migrate_legacy_packaged_result(state)
+        active_run = self.project_state.active_run_record()
+        if active_run is not None and active_run.run_type != RUN_TYPE_SIMULATION:
+            # History matching has its own payload/view loader. Treating its
+            # run_result.json as SimulationData corrupts the restore chain.
+            self._bind_active_case_results(restore=True)
+            return
+        run_artifacts = (
+            active_run.artifacts
+            if active_run is not None and active_run.status == RUN_STATUS_COMPLETED
+            else {}
+        )
+        result_path = (
+            run_artifacts.get("result_json")
+            or state.get("loaded_result_json_path")
+            or ""
+        )
         if not result_path:
+            self._bind_active_case_results(restore=True)
             return
         if not os.path.exists(result_path):
             self.message_log.append_message(
                 f"[结果] 工程包内结果 JSON 不存在：{result_path}")
             return
         self.result_store.run_status = "done"
+        self.result_store.case_id = (
+            active_run.case_id if active_run is not None else "")
+        self.result_store.run_id = (
+            active_run.run_id if active_run is not None else "")
+        self.result_store.dataset_id = (
+            active_run.dataset_id if active_run is not None else "")
         self.result_store.simulation_data = None
         self.result_store.result_json_path = result_path
-        self._restore_packaged_result_files(state.get("loaded_results_dir") or "")
+        self.result_store.load_status = "indexed"
+        run_dir = run_artifacts.get("run_dir") or ""
+        if run_dir:
+            self._restore_packaged_result_files(run_dir)
+        else:
+            self._restore_packaged_result_files(
+                state.get("loaded_results_dir") or "")
         self._publish_loaded_charts()
         self.message_log.append_message(
             f"[结果] 已恢复工程包模拟结果索引，正在自动加载 3D 结果：{result_path}")
-        QTimer.singleShot(0, lambda path=result_path: self._start_initial_3d_result_load(path))
+        tree_state = (
+            ((self.project_state.active_case().ui_state or {}).get("result_view") or {})
+            .get("results_tree")
+            if self.project_state.active_case() is not None else {}
+        ) or state.get("results_tree") or {}
+        selected_key = (
+            tree_state.get("current_result_key")
+            or tree_state.get("current_key")
+            or ""
+        )
+        if selected_key in LAZY_SIMULATION_DATA_KEYS:
+            QTimer.singleShot(
+                0,
+                lambda key=selected_key, run=active_run.run_id:
+                self.results_tree.select_key(key, run_id=run),
+            )
+        else:
+            self.message_log.append_message(
+                f"[Result] Indexed run={active_run.run_id}; data remains lazy")
 
-    def _start_initial_3d_result_load(self, result_path):
+    def _migrate_legacy_packaged_result(self, state):
+        if self.project_state.active_run_record() is not None:
+            return None
+        result_path = str(state.get("loaded_result_json_path") or "")
+        if not result_path or not os.path.isfile(result_path):
+            return None
+        case = self.project_state.active_case()
+        if case is None:
+            return None
+        dataset = case.active_dataset()
+        results_dir = str(state.get("loaded_results_dir") or "")
+        artifacts = {
+            "result_json": os.path.abspath(result_path),
+            "run_dir": (
+                os.path.abspath(results_dir)
+                if results_dir and os.path.isdir(results_dir)
+                else os.path.dirname(os.path.abspath(result_path))
+            ),
+        }
+        discovered = WorkbenchWorkflowRunner(
+            artifacts["run_dir"]).discover_results()
+        for key in (
+            "output_sim_path",
+            "final_field_path",
+            "gas_pvt_table_path",
+        ):
+            path = getattr(discovered, key, "") or ""
+            if path:
+                artifacts[key] = path
+        record = RunRecord(
+            case_id=case.case_id,
+            dataset_id=dataset.dataset_id if dataset is not None else "",
+            dataset_path=dataset.path if dataset is not None else "",
+            input_revision=(
+                dataset.input_revision
+                if dataset is not None else case.input_state.input_revision),
+            input_fingerprint=(
+                dataset.input_fingerprint
+                if dataset is not None else case.input_state.input_fingerprint),
+            model_type=case.input_state.model_config.get("model_type", "normal"),
+            status=RUN_STATUS_COMPLETED,
+            parameters={"interface_source": "legacy_project_result"},
+            artifacts=artifacts,
+            summary={"migrated_from_legacy_result": True},
+        )
+        record.mark_completed()
+        case.add_run(record, activate=True)
+        self.results_tree.bind_case(case)
+        self._bound_case_id = case.case_id
+        self._sync_result_store_for_active_case()
+        self.workspace.set_result_context(
+            case_id=case.case_id,
+            run_id=record.run_id,
+            dataset_id=record.dataset_id,
+        )
+        self.message_log.append_message(
+            f"[Result] Migrated legacy project result to run={record.run_id}")
+        return record
+
+    def _start_initial_3d_result_load(self, result_path, run_context=None):
         if not result_path or not os.path.exists(result_path):
             return
         if self.result_store.simulation_data is not None:
             return
         if self._result_load_thread is not None:
+            context = run_context or self._active_result_load_context(result_path)
+            if context != self._result_load_context:
+                self._pending_result_load = (result_path, context)
             return
+        context = run_context or self._active_result_load_context(result_path)
         self._autoload_result_path = result_path
+        self._result_load_context = dict(context or {})
+        self.result_store.load_status = "loading"
+        self.result_store.load_error = ""
         self._show_progress("加载 3D 结果", 5, "准备加载工程包结果")
         self.message_log.append_message("[结果] 开始自动加载 3D 模拟结果")
 
@@ -438,14 +719,29 @@ class ProjectShell(QWidget):
         self._show_status(f"加载 3D 结果：{detail}")
 
     def _handle_initial_result_load_finished(self, sim_data):
+        context = dict(self._result_load_context or {})
+        if not self._is_current_result_context(context):
+            self.message_log.append_message(
+                f"[Result] Discarded stale load callback for run={context.get('run_id', '')}")
+            self._finish_progress("Stale result load discarded")
+            return
+        record = self.project_state.run_record(
+            context.get("case_id", ""), context.get("run_id", ""))
+        if record is not None:
+            record.summary.pop("result_load_error", None)
+            record.summary["result_load_status"] = "loaded"
+        sim_data.result_context = dict(context)
         self._show_progress("加载 3D 结果", 82, "补齐 Corner Point Grid")
-        self._ensure_corner_point_grid_for_slice(sim_data)
-        self._attach_parsed_wells_to_sim_data(sim_data)
-        self._attach_static_property_preview_data(sim_data)
-        self._attach_static_fracture_preview_data(sim_data)
+        dataset_path = context.get("dataset_path") or ""
+        self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
+        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
+        self._attach_static_property_preview_data(sim_data, dataset_path)
+        self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
         self._show_progress("加载 3D 结果", 90, "推送到 3D 窗口")
         self.result_store.simulation_data = sim_data
+        self.result_store.load_status = "loaded"
+        self.result_store.load_error = ""
         self._preview_data = sim_data
         self.workspace.set_simulation_data(sim_data)
         self.workspace.set_preview_data(sim_data)
@@ -462,6 +758,16 @@ class ProjectShell(QWidget):
         self._show_status("3D 结果加载完成")
 
     def _handle_initial_result_load_failed(self, message):
+        context = dict(self._result_load_context or {})
+        record = self.project_state.run_record(
+            context.get("case_id", ""), context.get("run_id", ""))
+        if record is not None:
+            record.summary["result_load_error"] = str(message)
+            if record.case_id == self._bound_case_id:
+                self.results_tree.refresh()
+        if self._is_current_result_context(context):
+            self.result_store.load_status = "error"
+            self.result_store.load_error = str(message)
         self.message_log.append_message(f"[结果] 自动加载 3D 模拟结果失败：{message}")
         self._fail_progress(f"3D 结果加载失败：{message}")
         self._show_status("3D 结果加载失败")
@@ -470,8 +776,39 @@ class ProjectShell(QWidget):
         thread = self._result_load_thread
         self._result_load_thread = None
         self._result_load_worker = None
+        self._result_load_context = {}
         if thread is not None:
             thread.deleteLater()
+        pending = self._pending_result_load
+        self._pending_result_load = None
+        if pending is not None:
+            path, context = pending
+            QTimer.singleShot(
+                0,
+                lambda p=path, c=context: self._start_initial_3d_result_load(
+                    p, c),
+            )
+
+    def _active_result_load_context(self, result_path=""):
+        case = self.project_state.active_case()
+        record = case.active_run() if case is not None else None
+        return {
+            "case_id": case.case_id if case is not None else "",
+            "run_id": record.run_id if record is not None else "",
+            "dataset_id": record.dataset_id if record is not None else "",
+            "dataset_path": record.dataset_path if record is not None else "",
+            "result_path": result_path or self.result_store.result_json_path,
+        }
+
+    def _is_current_result_context(self, context):
+        record = self.project_state.active_run_record()
+        return bool(
+            record is not None
+            and context.get("case_id") == self.project_state.active_case_id
+            and context.get("run_id") == record.run_id
+            and os.path.abspath(context.get("result_path") or "")
+            == os.path.abspath(self.result_store.result_json_path or "")
+        )
 
     def _restore_packaged_result_files(self, results_dir):
         if not results_dir or not os.path.isdir(results_dir):
@@ -489,9 +826,12 @@ class ProjectShell(QWidget):
             self.result_store.gas_pvt_table_path = source_store.gas_pvt_table_path
             self.result_store.pvt_data = source_store.pvt_data
 
-    def _refresh_result_file_paths(self):
-        app_root = getattr(self.simulation_service, "app_root", self.project_root)
-        discovered = WorkbenchWorkflowRunner(app_root).discover_results()
+    def _refresh_result_file_paths(self, result_root=None):
+        result_root = (
+            result_root
+            or getattr(self.simulation_service, "app_root", self.project_root)
+        )
+        discovered = WorkbenchWorkflowRunner(result_root).discover_results()
         self._copy_result_file_state(discovered)
 
     def _restore_tab_index(self, tab_widget, index):
@@ -669,11 +1009,18 @@ class ProjectShell(QWidget):
                 self._preview_data = SimulationData()
             sim_data = self._preview_data
 
-        self._ensure_corner_point_grid_for_slice(sim_data)
-        self._attach_parsed_wells_to_sim_data(sim_data)
-        self._attach_static_property_preview_data(sim_data)
-        self._attach_static_fracture_preview_data(sim_data)
+        record = self.project_state.active_run_record()
+        dataset_path = (
+            record.dataset_path
+            if record is not None and record.dataset_path
+            else getattr(self.project_state, "case_dataset_path", "") or ""
+        )
+        self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
+        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
+        self._attach_static_property_preview_data(sim_data, dataset_path)
+        self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
+        sim_data.result_context = self._active_result_load_context()
 
         if not self._has_any_preview_payload(sim_data):
             self.message_log.append_message(
@@ -706,6 +1053,59 @@ class ProjectShell(QWidget):
         self._show_status(f"模型方案：{summary}")
         return True
 
+    def _handle_run_selected(self, run_id):
+        if not self.project_state.select_run(run_id):
+            self.message_log.append_message(
+                f"[Result] Run does not belong to the active case: {run_id}")
+            return
+        self._preview_data = None
+        self.workspace.clear_result_data()
+        self._sync_result_store_for_active_case()
+        record = self.project_state.active_run_record()
+        self.workspace.set_result_context(
+            case_id=self.project_state.active_case_id,
+            run_id=record.run_id if record is not None else "",
+            dataset_id=record.dataset_id if record is not None else "",
+        )
+        self._save_bound_case_result_state()
+        descriptor = self.result_store.descriptor
+        if descriptor is not None and descriptor.errors:
+            self.message_log.append_message(
+                "[Result] " + "; ".join(descriptor.errors))
+        self.message_log.append_message(f"[Result] Active run: {run_id}")
+        self._show_status(f"Active run: {run_id}")
+
+    def _handle_run_result_selected(self, run_id, key, title, view):
+        if self.project_state.active_run_record() is None or (
+            self.project_state.active_run_record().run_id != run_id
+        ):
+            self._handle_run_selected(run_id)
+        descriptor = self.results_tree.descriptor(run_id)
+        if descriptor is None or descriptor.availability != RESULT_AVAILABLE:
+            details = "; ".join(
+                descriptor.errors if descriptor is not None else ())
+            self.message_log.append_message(
+                f"[Result] Run result unavailable: {run_id}"
+                + (f"; {details}" if details else ""))
+            self._show_status("Run result unavailable")
+            return
+        record = self.project_state.active_run_record()
+        if (
+            key == "history_matching"
+            and record is not None
+            and record.run_type == RUN_TYPE_HISTORY_MATCHING
+        ):
+            self.workspace.update_context(
+                *self._result_context(key, title), view, key)
+            self.workspace.load_history_matching_run(record)
+            self.message_log.append_message(
+                f"[HistoryMatching] Loaded run: {run_id}")
+            self._show_status(f"History matching run: {run_id}")
+            self._save_bound_case_result_state()
+            return
+        self._handle_result_selected(key, title, view)
+        self._save_bound_case_result_state()
+
     def _handle_result_selected(self, key, title, view):
         context_title, detail = self._result_context(key, title)
         if view == "chart":
@@ -724,6 +1124,16 @@ class ProjectShell(QWidget):
         if self.result_store.simulation_data is not None:
             return self.result_store.simulation_data
         if self._result_load_thread is not None:
+            result_path = self.result_store.result_json_path or ""
+            if result_path:
+                self._start_initial_3d_result_load(
+                    result_path,
+                    self._active_result_load_context(result_path),
+                )
+            return None
+        if self.result_store.simulation_data is not None:
+            return self.result_store.simulation_data
+        if self._result_load_thread is not None:
             self.message_log.append_message("[结果] 3D 结果正在自动加载，请稍候")
             self._show_status("3D 结果正在自动加载")
             return None
@@ -734,6 +1144,11 @@ class ProjectShell(QWidget):
             self.message_log.append_message(
                 f"[结果] 模拟结果 JSON 不存在：{result_path}")
             return None
+        self._start_initial_3d_result_load(
+            result_path,
+            self._active_result_load_context(result_path),
+        )
+        return None
         try:
             sim_data = SimulationData()
             sim_data.load_json(result_path)
@@ -746,6 +1161,8 @@ class ProjectShell(QWidget):
         self._attach_static_fracture_preview_data(sim_data)
         self._augment_corner_visual_layers(sim_data)
         self.result_store.simulation_data = sim_data
+        self.result_store.load_status = "loaded"
+        self.result_store.load_error = ""
         self._preview_data = sim_data
         self.workspace.set_simulation_data(sim_data)
         self.workspace.set_preview_data(sim_data)
@@ -796,6 +1213,11 @@ class ProjectShell(QWidget):
             key, (f"当前结果：{title}", "该结果节点后续接入真实模拟输出。"))
 
     def run_simulation_scan(self):
+        if self.simulation_service.is_running():
+            self.message_log.append_message(
+                "[Run] A simulation is already running in this project")
+            self._show_status("Simulation already running")
+            return
         if not self.project_state.has_active_case():
             self.message_log.append_message("[算例] 请先新建或选择一个算例后再运行模拟。")
             self._show_status("请先新建或选择一个算例")
@@ -808,11 +1230,45 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[模型方案] {model_config_summary(getattr(self.project_state, 'model_config', {}))}")
         self.message_log.append_message("[运行] 正在收集 Corner Grid LGR 输入参数")
-        self.simulation_service.run(self.project_state)
+        try:
+            params = self.simulation_service.build_run_params(
+                self.project_state)
+            context = self.simulation_run_manager.prepare(params)
+        except (ValueError, OSError, SimulationRunError) as exc:
+            self.message_log.append_message(
+                f"[Run] Failed to prepare simulation: {exc}")
+            self._show_status("Simulation preparation failed")
+            return
+        self._last_simulation_context = context.to_dict()
+        started = self.simulation_service.run(
+            run_context=context.to_dict(),
+            params=params,
+        )
+        if not started:
+            self.simulation_run_manager.mark_failed(
+                context,
+                "Simulation service rejected the run",
+            )
 
-    def _handle_simulation_started(self, params):
+    def _handle_simulation_started(self, params, context):
         self._last_simulation_params = dict(params)
-        self.result_store.run_status = "running"
+        self._last_simulation_context = dict(context or {})
+        try:
+            record = self.simulation_run_manager.mark_running(context)
+        except SimulationRunError as exc:
+            self.message_log.append_message(f"[Run] {exc}")
+            return
+        if record.case_id == self._bound_case_id:
+            self.results_tree.refresh()
+        if self.project_state.active_case_id == record.case_id:
+            self.result_store.clear_run()
+            self.result_store.case_id = record.case_id
+            self.result_store.run_id = record.run_id
+            self.result_store.dataset_id = record.dataset_id
+            self.result_store.run_status = "running"
+        self.message_log.append_message(
+            f"[Run] case={record.case_id}, dataset={record.dataset_id or '-'}, "
+            f"run={record.run_id}")
         self.message_log.append_message(
             f"[运行] 算法=corner_edfm，加密={params.get('corner_grid_refinement')}")
         if params.get("interface_source") == "case_dataset":
@@ -839,17 +1295,47 @@ class ProjectShell(QWidget):
             f"center=({params.get('hf_center_x')}, {params.get('hf_center_y')}, {params.get('hf_center_z')})")
         self._show_status("Corner Grid LGR 模拟运行中")
 
-    def _handle_simulation_finished(self, sim_data, result_path):
-        self._ensure_corner_point_grid_for_slice(sim_data)
-        self._attach_parsed_wells_to_sim_data(sim_data)
-        self._attach_static_property_preview_data(sim_data)
-        self._attach_static_fracture_preview_data(sim_data)
+    def _handle_simulation_finished(self, sim_data, result_path, context):
+        run_context = SimulationRunContext.from_value(context)
+        sim_data.result_context = run_context.to_dict()
+        dataset_path = run_context.dataset_path
+        self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
+        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
+        self._attach_static_property_preview_data(sim_data, dataset_path)
+        self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
+        try:
+            record = self.simulation_run_manager.mark_completed(
+                run_context,
+                result_path=result_path,
+                exit_code=context.get("exit_code", 0),
+                summary=self._simulation_data_summary(sim_data),
+            )
+        except SimulationRunError as exc:
+            self.message_log.append_message(f"[Run] {exc}")
+            return
+        if record.case_id == self._bound_case_id:
+            self.results_tree.refresh()
+        if self.project_state.active_case_id != record.case_id:
+            self.message_log.append_message(
+                f"[Run] Background run completed for case={record.case_id}, "
+                f"run={record.run_id}; current case was not changed")
+            self._show_status("Background simulation completed")
+            return
         self.result_store.run_status = "done"
+        self.result_store.case_id = record.case_id
+        self.result_store.run_id = record.run_id
+        self.result_store.dataset_id = record.dataset_id
+        self.result_store.load_status = "loaded"
+        self.workspace.set_result_context(
+            case_id=record.case_id,
+            run_id=record.run_id,
+            dataset_id=record.dataset_id,
+        )
         self.result_store.simulation_data = sim_data
         self._preview_data = sim_data
         self.result_store.result_json_path = result_path
-        self._refresh_result_file_paths()
+        self._refresh_result_file_paths(run_context.run_dir)
         self.workspace.set_simulation_data(sim_data)
         self.workspace.set_preview_data(sim_data)
         self.workspace.update_context(
@@ -863,10 +1349,27 @@ class ProjectShell(QWidget):
         self.message_log.append_message(f"[结果] 已加载模拟结果 JSON：{result_path}")
         self._show_status("Corner Grid LGR 模拟完成")
 
-    def _ensure_corner_point_grid_for_slice(self, sim_data):
+        self.results_tree.select_key(
+            "pressure_field", run_id=record.run_id)
+
+    @staticmethod
+    def _simulation_data_summary(sim_data):
+        return {
+            "pressure_field_count": len(
+                getattr(sim_data, "pressure_field", None) or []),
+            "water_saturation_field_count": len(
+                getattr(sim_data, "water_saturation_field", None) or []),
+            "fracture_count": len(getattr(sim_data, "fractures", None) or []),
+        }
+
+    def _ensure_corner_point_grid_for_slice(self, sim_data, dataset_path=None):
         if getattr(sim_data, "corner_point_grid", None) is not None:
             return
-        dataset_path = getattr(self.project_state, "case_dataset_path", "") or ""
+        dataset_path = (
+            dataset_path
+            or getattr(self.project_state, "case_dataset_path", "")
+            or ""
+        )
         if not dataset_path or not os.path.isdir(dataset_path):
             return
         try:
@@ -884,7 +1387,7 @@ class ProjectShell(QWidget):
             f"{corner_grid.nx} x {corner_grid.ny} x {corner_grid.nz}"
         )
 
-    def _attach_static_property_preview_data(self, sim_data):
+    def _attach_static_property_preview_data(self, sim_data, dataset_path=None):
         """
         给 sim_data 挂静态属性场预览数据。
         """
@@ -893,7 +1396,7 @@ class ProjectShell(QWidget):
             and getattr(sim_data, "static_properties", None) is not None
         ):
             return
-        dataset_path = (
+        dataset_path = dataset_path or (
             getattr(
                 self.project_state,
                 "case_dataset_path",
@@ -1038,14 +1541,14 @@ class ProjectShell(QWidget):
             f"{len(meta)} 个属性文件，{len(static_properties)} 个属性键。"
         )
 
-    def _attach_static_fracture_preview_data(self, sim_data):
+    def _attach_static_fracture_preview_data(self, sim_data, dataset_path=None):
         """
         给 sim_data 挂天然裂缝预览数据。
         """
         if getattr(sim_data, "static_dfn_data", None) is not None:
             return
 
-        dataset_path = (
+        dataset_path = dataset_path or (
             getattr(
                 self.project_state,
                 "case_dataset_path",
@@ -1168,8 +1671,8 @@ class ProjectShell(QWidget):
             f"{len(dfn_data.get('fractures', []))} 条。"
         )
 
-    def _attach_parsed_wells_to_sim_data(self, sim_data):
-        dataset_path = (
+    def _attach_parsed_wells_to_sim_data(self, sim_data, dataset_path=None):
+        dataset_path = dataset_path or (
             getattr(
                 self.project_state,
                 "case_dataset_path",
@@ -1224,10 +1727,68 @@ class ProjectShell(QWidget):
             f"[井渲染] 已附加 {len(wells)} 口真实井轨迹到本次模拟结果。"
         )
 
-    def _handle_simulation_failed(self, message):
-        self.result_store.run_status = "failed"
+    def _handle_simulation_failed(self, message, context=None):
+        context = dict(context or {})
+        record = None
+        if context.get("case_id") and context.get("run_id"):
+            try:
+                record = self.simulation_run_manager.mark_failed(
+                    context,
+                    message,
+                    exit_code=context.get("exit_code"),
+                    cancelled=bool(context.get("cancelled")),
+                )
+            except SimulationRunError as exc:
+                self.message_log.append_message(f"[Run] {exc}")
+        if record is not None and record.case_id == self._bound_case_id:
+            self.results_tree.refresh()
+        if (
+            record is None
+            or self.project_state.active_case_id == record.case_id
+        ):
+            self.result_store.run_status = (
+                "cancelled"
+                if record is not None and record.status != "failed"
+                else "failed"
+            )
         self.message_log.append_message(f"[运行] {message}")
         self._show_status("Corner Grid LGR 模拟失败")
+
+    def stop_simulation(self):
+        return self.simulation_service.stop()
+
+    def has_running_operations(self):
+        return bool(
+            self.simulation_service.is_running()
+            or self.workspace.has_running_operations()
+        )
+
+    def shutdown(self):
+        self.workspace.shutdown_operations(timeout_ms=5000)
+        self._pending_result_load = None
+        thread = self._result_load_thread
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            if not thread.wait(30000):
+                thread.terminate()
+                thread.wait(5000)
+        context = dict(self.simulation_service.run_context or {})
+        if not self.simulation_service.is_running():
+            return
+        self.simulation_service.stop()
+        if context.get("case_id") and context.get("run_id"):
+            try:
+                self.simulation_run_manager.mark_failed(
+                    context,
+                    "Project closed while simulation was running",
+                    cancelled=True,
+                )
+            except SimulationRunError:
+                pass
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 
     def _publish_loaded_charts(self):
         for key in ["production_curve", "pvt_curve"]:
