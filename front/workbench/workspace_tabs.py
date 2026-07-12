@@ -167,6 +167,8 @@ class WorkspaceTabs(QTabWidget):
             self.workspace_message.emit(
                 "[窗口] 历史拟合正在运行，请先停止运行再关闭窗口")
             return False
+        if hasattr(page, "prepare_for_close"):
+            page.prepare_for_close()
         self.removeTab(index)
         page.deleteLater()
         self._refresh_primary_references()
@@ -189,6 +191,8 @@ class WorkspaceTabs(QTabWidget):
                 and viewport.has_running_operation()
             ):
                 continue
+            if hasattr(page, "prepare_for_close"):
+                page.prepare_for_close()
             self.removeTab(tab_index)
             page.deleteLater()
         self.setCurrentWidget(keep)

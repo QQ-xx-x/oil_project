@@ -589,8 +589,8 @@ QFrame#viewToolbar {
     max-height: 28px;
 }
 QFrame#viewToolbar[viewType="3d"] {
-    min-height: 54px;
-    max-height: 58px;
+    min-height: 100px;
+    max-height: 104px;
 }
 QToolButton#viewToolbarButton {
     border: 1px solid transparent;

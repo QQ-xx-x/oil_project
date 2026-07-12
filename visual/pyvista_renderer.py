@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 def get_bright_jet_cmap():

@@ -25,6 +25,8 @@ class ViewToolbar(QFrame):
     geometry_preview_requested = pyqtSignal(str)
     static_preview_requested = pyqtSignal(str)
     static_layer_preview_requested = pyqtSignal(str, str, int)
+    fence_action_requested = pyqtSignal(str)
+    fence_property_selected = pyqtSignal(str)
 
     STATIC_PREVIEW_PROPERTIES = [
         ("MATRIX_PORO", "MATRIX_PORO"),
@@ -83,9 +85,13 @@ class ViewToolbar(QFrame):
             preview_layout = QHBoxLayout()
             preview_layout.setContentsMargins(0, 0, 0, 0)
             preview_layout.setSpacing(2)
+            fence_layout = QHBoxLayout()
+            fence_layout.setContentsMargins(0, 0, 0, 0)
+            fence_layout.setSpacing(2)
             root_layout.addLayout(layout)
             root_layout.addLayout(controls_layout)
             root_layout.addLayout(preview_layout)
+            root_layout.addLayout(fence_layout)
         else:
             layout = QHBoxLayout(self)
             layout.setContentsMargins(4, 2, 5, 2)
@@ -155,7 +161,90 @@ class ViewToolbar(QFrame):
             controls_layout.addStretch()
             self._add_preview_controls(preview_layout)
             preview_layout.addStretch()
+            self._add_fence_controls(fence_layout)
+            fence_layout.addStretch()
         layout.addStretch()
+
+    def _add_fence_controls(self, layout):
+        layout.addWidget(QLabel("折线剖面"))
+
+        self.fence_draw_button = self._button("绘制折线垂向剖面", "select")
+        self.fence_draw_button.setObjectName("fenceSectionDrawButton")
+        self.fence_draw_button.setText("绘制")
+        self.fence_draw_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.fence_draw_button.setFixedSize(64, 23)
+        self.fence_draw_button.setCheckable(True)
+        self.fence_draw_button.clicked.connect(
+            lambda checked=False: self.fence_action_requested.emit("start"))
+        layout.addWidget(self.fence_draw_button)
+
+        layout.addWidget(QLabel("属性"))
+        self.fence_property = QComboBox()
+        self.fence_property.setObjectName("fenceSectionPropertySelector")
+        self.fence_property.addItems(["Pressure", "Kx", "Ky", "Kz", "Phi", "Sw"])
+        self.fence_property.setFixedWidth(92)
+        self.fence_property.currentTextChanged.connect(
+            self.fence_property_selected.emit)
+        layout.addWidget(self.fence_property)
+
+        for text, tooltip, kind, action, object_name, width in [
+            ("完成", "完成折线剖面绘制", "refresh", "complete", "fenceSectionCompleteButton", 64),
+            ("取消绘制", "取消当前路径绘制", "undo", "cancel", "fenceSectionCancelButton", 82),
+            ("清除剖面", "清除已经生成的剖面", "clear", "clear", "fenceSectionClearButton", 82),
+            ("退出", "退出折线剖面功能", "close", "exit", "fenceSectionExitButton", 64),
+        ]:
+            button = self._button(tooltip, kind)
+            button.setObjectName(object_name)
+            button.setText(text)
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            button.setFixedSize(width, 23)
+            button.clicked.connect(
+                lambda checked=False, name=action:
+                    self.fence_action_requested.emit(name))
+            layout.addWidget(button)
+            setattr(self, f"fence_{action}_button", button)
+
+        self.set_fence_controls_state({
+            "state": "inactive",
+            "property_name": "Pressure",
+            "can_start": False,
+            "can_complete": False,
+            "can_cancel": False,
+            "can_clear": False,
+            "can_exit": False,
+            "can_change_property": True,
+        })
+
+    def set_fence_controls_state(self, state):
+        if not hasattr(self, "fence_draw_button"):
+            return False
+
+        state = state if isinstance(state, dict) else {}
+        state_name = str(state.get("state") or "inactive")
+
+        previous = self.fence_draw_button.blockSignals(True)
+        try:
+            self.fence_draw_button.setChecked(state_name == "drawing")
+        finally:
+            self.fence_draw_button.blockSignals(previous)
+
+        self.fence_draw_button.setEnabled(bool(state.get("can_start", False)))
+        self.fence_complete_button.setEnabled(bool(state.get("can_complete", False)))
+        self.fence_cancel_button.setEnabled(bool(state.get("can_cancel", False)))
+        self.fence_clear_button.setEnabled(bool(state.get("can_clear", False)))
+        self.fence_exit_button.setEnabled(bool(state.get("can_exit", False)))
+        self.fence_property.setEnabled(bool(state.get("can_change_property", True)))
+
+        property_name = str(state.get("property_name") or "Pressure")
+        property_index = self.fence_property.findText(property_name)
+        if property_index >= 0:
+            previous = self.fence_property.blockSignals(True)
+            try:
+                self.fence_property.setCurrentIndex(property_index)
+            finally:
+                self.fence_property.blockSignals(previous)
+
+        return True
 
     def _add_slice_controls(self, layout):
         layout.addWidget(QLabel("切片"))

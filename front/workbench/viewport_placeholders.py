@@ -6,7 +6,7 @@ import math
 import os
 from datetime import datetime, timezone
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import QFileDialog, QCheckBox, QFrame, QLabel, QVBoxLayout, QWidget
 
@@ -51,6 +51,19 @@ PICK_PROPERTY_LABELS = {
     "permeability_y": "Ky",
     "permeability_z": "Kz",
 }
+
+FENCE_SECTION_PROPERTIES = (
+    "Pressure",
+    "Kx",
+    "Ky",
+    "Kz",
+    "Phi",
+    "Sw",
+)
+
+FENCE_SECTION_STATE_INACTIVE = "inactive"
+FENCE_SECTION_STATE_DRAWING = "drawing"
+FENCE_SECTION_STATE_RESULT = "result"
 
 STATIC_PREVIEW_LABELS = {
     "MATRIX_PORO": "MATRIX_PORO",
@@ -155,6 +168,7 @@ CHART_STYLES = {
 
 class ThreeDViewport(QWidget):
     interaction_message = pyqtSignal(str)
+    fence_state_changed = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,6 +189,9 @@ class ThreeDViewport(QWidget):
         self._camera_state = None
         self.current_render_context = self._make_render_context("pressure_field")
         self.interaction_mode = "normal"
+        self.fence_section_property = "Pressure"
+        self._fence_section_state = FENCE_SECTION_STATE_INACTIVE
+        self._fence_qt_event_filter_installed = False
         self.coordinate_axes_visible = False
         self.camera_direction_locked = False
         self.layers = {
@@ -211,6 +228,11 @@ class ThreeDViewport(QWidget):
 
     def _set_interaction_mode(self, mode):
         mode = mode or "normal"
+        if mode != "fence":
+            self._deactivate_fence_interaction(
+                clear_result=False,
+                render=False,
+            )
         if mode != "magnify":
             self._deactivate_magnify(render=False)
         if mode != "measure":
@@ -219,6 +241,286 @@ class ThreeDViewport(QWidget):
             self._disable_cell_picking(clear_highlight=False)
         self.interaction_mode = mode
 
+    def _deactivate_fence_interaction(
+        self,
+        clear_result=False,
+        render=False,
+    ):
+        self._uninstall_fence_qt_interaction()
+        state = self.fence_section_ui_state()
+        if not state["drawing"] and not state["has_result"]:
+            if self.interaction_mode == "fence":
+                self.interaction_mode = "normal"
+            return True
+
+        ok, _ = self.exit_fence_section(
+            clear_result=clear_result,
+            render=render,
+        )
+        return ok
+
+    def _install_fence_qt_interaction(self):
+        view = self._real_view
+        plotter = getattr(view, "plotter", None) if view is not None else None
+        if plotter is None:
+            return False
+        if not self._fence_qt_event_filter_installed:
+            plotter.installEventFilter(self)
+            self._fence_qt_event_filter_installed = True
+        if hasattr(view, "set_cross_cursor"):
+            view.set_cross_cursor(True)
+
+        renderer = self._real_renderer
+        remove_observers = getattr(
+            renderer,
+            "_remove_fence_section_observers",
+            None,
+        )
+        if remove_observers is not None:
+            try:
+                remove_observers()
+            except Exception:
+                pass
+        return True
+
+    def _uninstall_fence_qt_interaction(self):
+        view = self._real_view
+        plotter = getattr(view, "plotter", None) if view is not None else None
+        if self._fence_qt_event_filter_installed and plotter is not None:
+            try:
+                plotter.removeEventFilter(self)
+            except Exception:
+                pass
+        self._fence_qt_event_filter_installed = False
+        if view is not None and hasattr(view, "set_cross_cursor"):
+            view.set_cross_cursor(False)
+
+    def _sync_fence_qt_event_position(self, event):
+        view = self._real_view
+        plotter = getattr(view, "plotter", None) if view is not None else None
+        renderer = self._real_renderer
+        if plotter is None or renderer is None:
+            return None
+
+        try:
+            pos = event.pos()
+            logical_x = int(pos.x())
+            logical_y = int(pos.y())
+            width = max(1, int(plotter.width()))
+            height = max(1, int(plotter.height()))
+            logical_x = max(0, min(width - 1, logical_x))
+            logical_y = max(0, min(height - 1, logical_y))
+        except Exception:
+            return None
+
+        get_interactor = getattr(
+            renderer,
+            "_get_fence_section_interactor",
+            None,
+        )
+        interactor = get_interactor() if get_interactor is not None else None
+        if interactor is None:
+            return None
+
+        set_event_information = getattr(
+            plotter,
+            "_setEventInformation",
+            None,
+        )
+        if set_event_information is not None:
+            try:
+                ctrl = bool(event.modifiers() & Qt.ControlModifier)
+                shift = bool(event.modifiers() & Qt.ShiftModifier)
+                repeat = int(event.type() == QEvent.MouseButtonDblClick)
+                set_event_information(
+                    logical_x,
+                    logical_y,
+                    ctrl,
+                    shift,
+                    chr(0),
+                    repeat,
+                    None,
+                )
+                display_x, display_y = interactor.GetEventPosition()
+                return (
+                    renderer,
+                    interactor,
+                    int(display_x),
+                    int(display_y),
+                )
+            except Exception:
+                pass
+
+        try:
+            pixel_ratio = float(plotter._getPixelRatio())
+        except Exception:
+            try:
+                pixel_ratio = float(plotter.devicePixelRatioF())
+            except Exception:
+                pixel_ratio = 1.0
+        display_x = int(round(logical_x * pixel_ratio))
+        display_y = int(round((height - 1 - logical_y) * pixel_ratio))
+
+        try:
+            interactor.SetEventPosition(display_x, display_y)
+        except Exception:
+            try:
+                interactor.SetEventInformation(
+                    display_x,
+                    display_y,
+                    0,
+                    0,
+                    "0",
+                    0,
+                    None,
+                )
+            except Exception:
+                return None
+        return renderer, interactor, display_x, display_y
+
+    def _fence_world_point_from_display(self, display_x, display_y):
+        renderer = self._real_renderer
+        cache = getattr(renderer, "cache", {}) or {}
+        bounds = cache.get("fence_section_bounds")
+        convert = getattr(renderer, "display_to_world_xy", None)
+        if bounds is None or convert is None:
+            return None
+        try:
+            point = convert(
+                display_x=float(display_x),
+                display_y=float(display_y),
+                world_bounds=bounds,
+            )
+            if point is None:
+                return None
+            xmin, xmax, ymin, ymax, zmin, zmax = [
+                float(value) for value in bounds
+            ]
+            px, py, _ = point
+            span = max(
+                xmax - xmin,
+                ymax - ymin,
+                zmax - zmin,
+                1.0,
+            )
+            tolerance = span * 1e-7
+            if (
+                px < xmin - tolerance
+                or px > xmax + tolerance
+                or py < ymin - tolerance
+                or py > ymax + tolerance
+            ):
+                return None
+            return float(px), float(py), float(zmax)
+        except Exception:
+            return None
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        view = self._real_view
+        plotter = getattr(view, "plotter", None) if view is not None else None
+        if (
+            self._fence_qt_event_filter_installed
+            and obj is plotter
+            and self.interaction_mode == "fence"
+        ):
+            state = self.fence_section_ui_state()
+            if not state["drawing"]:
+                self._uninstall_fence_qt_interaction()
+            else:
+                event_type = event.type()
+                if event_type in {
+                    QEvent.MouseButtonPress,
+                    QEvent.MouseButtonDblClick,
+                } and event.button() == Qt.LeftButton:
+                    synced = self._sync_fence_qt_event_position(event)
+                    if synced is not None:
+                        renderer, interactor, display_x, display_y = synced
+                        cache = getattr(renderer, "cache", {}) or {}
+                        points_before = len(
+                            cache.get("fence_section_points", []) or []
+                        )
+                        callback = getattr(
+                            renderer,
+                            "_on_fence_section_left_button_press",
+                            None,
+                        )
+                        callback_error = None
+                        if callback is not None:
+                            try:
+                                callback(interactor, "LeftButtonPressEvent")
+                            except Exception as exc:
+                                # Preserve the Qt-side world-pick fallback when
+                                # a renderer callback fails unexpectedly.
+                                callback_error = exc
+                        points_after = len(
+                            cache.get("fence_section_points", []) or []
+                        )
+                        if points_after == points_before:
+                            point = self._fence_world_point_from_display(
+                                display_x,
+                                display_y,
+                            )
+                            append_point = getattr(
+                                renderer,
+                                "_append_fence_section_point",
+                                None,
+                            )
+                            if point is not None and append_point is not None:
+                                append_point(point)
+                            points_after = len(
+                                cache.get("fence_section_points", []) or []
+                            )
+
+                        if points_after > points_before:
+                            self.interaction_message.emit(
+                                f"[折线剖面] 已添加路径点 {points_after}"
+                            )
+                            self.fence_state_changed.emit(
+                                self.fence_section_ui_state()
+                            )
+                        elif event_type == QEvent.MouseButtonPress:
+                            if callback_error is not None:
+                                self.interaction_message.emit(
+                                    "[折线剖面] 点击处理失败："
+                                    f"{callback_error}"
+                                )
+                            else:
+                                self.interaction_message.emit(
+                                    "[折线剖面] 点击位置未添加路径点，"
+                                    "请在有效网格范围内点击或避开重复点"
+                                )
+
+                        if (
+                            event_type == QEvent.MouseButtonDblClick
+                            and self.fence_section_ui_state()["drawing"]
+                        ):
+                            complete = getattr(
+                                renderer,
+                                "complete_vertical_fence_section",
+                                None,
+                            )
+                            if complete is not None:
+                                complete()
+                    return True
+                if event_type == QEvent.MouseMove:
+                    synced = self._sync_fence_qt_event_position(event)
+                    if synced is not None:
+                        renderer, interactor, display_x, display_y = synced
+                        callback = getattr(
+                            renderer,
+                            "_on_fence_section_mouse_move",
+                            None,
+                        )
+                        if callback is not None:
+                            callback(interactor, "MouseMoveEvent")
+                    return True
+                if (
+                    event_type == QEvent.MouseButtonRelease
+                    and event.button() == Qt.LeftButton
+                ):
+                    return True
+        return super().eventFilter(obj, event)
+
     def _current_pick_property(self):
         property_name = self.current_render_context.get("property_name", "pressure")
         return PICK_PROPERTY_LABELS.get(property_name, "Pressure")
@@ -226,6 +528,325 @@ class ThreeDViewport(QWidget):
     def _current_display_label(self):
         display_key = self.current_render_context.get("display_key", self.display_key)
         return DISPLAY_KEY_LABELS.get(display_key, display_key)
+
+    def set_fence_section_property_preference(self, property_name):
+        """Update the UI-side fence property without invoking the renderer."""
+        property_name = str(property_name or "").strip()
+        if property_name not in FENCE_SECTION_PROPERTIES:
+            return False
+        self.fence_section_property = property_name
+        return True
+
+    def fence_section_ui_state(self):
+        """Return a read-only UI state derived from the current renderer cache."""
+        renderer = self._real_renderer
+        cache = getattr(renderer, "cache", {}) or {}
+
+        drawing = bool(cache.get("fence_section_drawing", False))
+        has_result = bool(
+            cache.get("fence_section_actor") is not None
+            or cache.get("fence_section_data") is not None
+        )
+
+        if drawing or has_result:
+            property_name = str(
+                cache.get("fence_section_property")
+                or self.fence_section_property
+            ).strip()
+        else:
+            property_name = self.fence_section_property
+        if property_name not in FENCE_SECTION_PROPERTIES:
+            property_name = self.fence_section_property
+
+        points = cache.get("fence_section_points", []) or []
+        try:
+            point_count = len(points)
+        except TypeError:
+            point_count = 0
+
+        if drawing:
+            state = FENCE_SECTION_STATE_DRAWING
+        elif has_result:
+            state = FENCE_SECTION_STATE_RESULT
+        else:
+            state = FENCE_SECTION_STATE_INACTIVE
+
+        self._fence_section_state = state
+        self.fence_section_property = property_name
+
+        return {
+            "state": state,
+            "property_name": property_name,
+            "drawing": drawing,
+            "has_result": has_result,
+            "point_count": point_count,
+            "renderer_available": renderer is not None,
+            "has_simulation_data": self.simulation_data is not None,
+            "can_start": self.simulation_data is not None,
+            "can_complete": drawing,
+            "can_cancel": drawing,
+            "can_clear": has_result,
+            "can_exit": drawing or has_result,
+            "can_change_property": True,
+        }
+
+    def _fence_renderer_method(self, *method_names):
+        renderer = self._real_renderer
+        if renderer is None:
+            return None
+        for method_name in method_names:
+            method = getattr(renderer, method_name, None)
+            if method is not None:
+                return method
+        return None
+
+    def _fence_renderer_failure_message(self, fallback):
+        renderer = self._real_renderer
+        cache = getattr(renderer, "cache", {}) or {}
+        detail = str(cache.get("fence_section_last_info") or "").strip()
+        if detail:
+            return f"{fallback}：{detail}"
+        return fallback
+
+    def _ensure_fence_renderer(self):
+        if self.simulation_data is None:
+            return None, "[折线剖面] 当前没有可用的模拟结果"
+        if self._real_renderer is None and not self._ensure_real_view():
+            detail = self._real_view_error or "未知错误"
+            return None, f"[折线剖面] 无法初始化 3D 渲染器：{detail}"
+        if self._real_renderer is None:
+            return None, "[折线剖面] 当前没有可用的 3D 渲染器"
+        return self._real_renderer, ""
+
+    def start_fence_section(self, property_name=None):
+        property_name = str(
+            property_name or self.fence_section_property
+        ).strip()
+        if not self.set_fence_section_property_preference(property_name):
+            return False, f"[折线剖面] 不支持的属性：{property_name}"
+
+        renderer, message = self._ensure_fence_renderer()
+        if renderer is None:
+            return False, message
+
+        if (
+            self._preview_mode_active
+            or self._slice_state is not None
+            or self._threshold_state is not None
+            or self.time_playback_info().get("ready")
+        ):
+            self._slice_state = None
+            self._threshold_state = None
+            self._set_full_render_context(self.display_key)
+            self._render_real_result()
+
+        method = self._fence_renderer_method(
+            "enable_fence_section",
+            "enable_vertical_fence_section",
+        )
+        if method is None:
+            return False, "[折线剖面] 渲染端缺少开启剖面接口"
+
+        self._set_interaction_mode("fence")
+        try:
+            ok = bool(method(
+                self.simulation_data,
+                property_name=property_name,
+            ))
+        except Exception as exc:
+            self._set_interaction_mode("normal")
+            return False, f"[折线剖面] 开启失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if not ok or not state["drawing"]:
+            self._set_interaction_mode("normal")
+            return False, self._fence_renderer_failure_message(
+                "[折线剖面] 未能进入路径选点状态"
+            )
+
+        self._install_fence_qt_interaction()
+        return True, (
+            f"[折线剖面] 已开始绘制 {property_name}："
+            "左键添加路径点，双击或点击“完成”生成剖面"
+        )
+
+    def complete_fence_section(self):
+        state = self.fence_section_ui_state()
+        if not state["drawing"]:
+            return False, "[折线剖面] 当前不在路径绘制状态"
+        if state["point_count"] < 2:
+            return False, "[折线剖面] 至少需要选择两个有效路径点"
+
+        method = self._fence_renderer_method(
+            "complete_vertical_fence_section",
+        )
+        if method is None:
+            return False, "[折线剖面] 渲染端缺少完成剖面接口"
+
+        try:
+            ok = bool(method())
+        except Exception as exc:
+            return False, f"[折线剖面] 生成失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if not ok or not state["has_result"]:
+            if not state["drawing"]:
+                self._uninstall_fence_qt_interaction()
+                self.interaction_mode = "normal"
+            return False, self._fence_renderer_failure_message(
+                "[折线剖面] 剖面生成失败"
+            )
+        self._uninstall_fence_qt_interaction()
+        return True, f"[折线剖面] 剖面生成完成：{state['property_name']}"
+
+    def cancel_fence_section(self):
+        state = self.fence_section_ui_state()
+        if not state["drawing"]:
+            return False, "[折线剖面] 当前没有正在进行的路径绘制"
+
+        method = self._fence_renderer_method(
+            "cancel_vertical_fence_section",
+        )
+        if method is None:
+            return False, "[折线剖面] 渲染端缺少取消绘制接口"
+
+        try:
+            method(render=True)
+        except Exception as exc:
+            return False, f"[折线剖面] 取消绘制失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if state["drawing"]:
+            return False, "[折线剖面] 取消绘制后状态未正确复位"
+        self._uninstall_fence_qt_interaction()
+        if self.interaction_mode == "fence":
+            self.interaction_mode = "normal"
+        return True, "[折线剖面] 已取消当前路径绘制"
+
+    def clear_fence_section(self):
+        state = self.fence_section_ui_state()
+        if not state["has_result"]:
+            return False, "[折线剖面] 当前没有可清除的剖面结果"
+
+        method = self._fence_renderer_method(
+            "clear_fence_section",
+            "clear_vertical_fence_section",
+        )
+        if method is None:
+            return False, "[折线剖面] 渲染端缺少清除剖面接口"
+
+        try:
+            method(render=True)
+        except Exception as exc:
+            return False, f"[折线剖面] 清除剖面失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if state["has_result"]:
+            return False, "[折线剖面] 清除后仍检测到剖面结果"
+        self._uninstall_fence_qt_interaction()
+        if self.interaction_mode == "fence":
+            self.interaction_mode = "normal"
+        return True, "[折线剖面] 已清除剖面结果"
+
+    def exit_fence_section(self, clear_result=True, render=True):
+        state = self.fence_section_ui_state()
+        if not state["drawing"] and not state["has_result"]:
+            return False, "[折线剖面] 当前未开启剖面功能"
+
+        method = self._fence_renderer_method(
+            "disable_fence_section",
+            "disable_vertical_fence_section",
+        )
+        if method is None:
+            return False, "[折线剖面] 渲染端缺少退出剖面接口"
+
+        try:
+            method(
+                clear_result=bool(clear_result),
+                render=bool(render),
+            )
+        except Exception as exc:
+            return False, f"[折线剖面] 退出失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if state["drawing"]:
+            return False, "[折线剖面] 退出后仍处于路径绘制状态"
+        if clear_result and state["has_result"]:
+            return False, "[折线剖面] 退出后剖面结果未清除"
+        self._uninstall_fence_qt_interaction()
+        if self.interaction_mode == "fence":
+            self.interaction_mode = "normal"
+        if clear_result:
+            return True, "[折线剖面] 已退出并清除剖面"
+        return True, "[折线剖面] 已退出绘制交互并保留剖面"
+
+    def set_fence_property(self, property_name):
+        property_name = str(property_name or "").strip()
+        previous_property = self.fence_section_property
+        if not self.set_fence_section_property_preference(property_name):
+            return False, f"[折线剖面] 不支持的属性：{property_name}"
+
+        state = self.fence_section_ui_state()
+        if not state["drawing"] and not state["has_result"]:
+            return True, f"[折线剖面] 当前属性：{property_name}"
+
+        method = self._fence_renderer_method(
+            "set_vertical_fence_section_property",
+        )
+        if method is None:
+            self.fence_section_property = previous_property
+            return False, "[折线剖面] 渲染端缺少属性切换接口"
+
+        try:
+            ok = bool(method(property_name))
+        except Exception as exc:
+            self.fence_section_property = previous_property
+            return False, f"[折线剖面] 属性切换失败：{exc}"
+
+        state = self.fence_section_ui_state()
+        if not ok or state["property_name"] != property_name:
+            self.fence_section_property = previous_property
+            return False, self._fence_renderer_failure_message(
+                f"[折线剖面] 无法切换到属性 {property_name}"
+            )
+        return True, f"[折线剖面] 当前属性：{property_name}"
+
+    def _handle_renderer_interaction_message(self, message):
+        message = str(message or "").strip()
+        if message:
+            self.interaction_message.emit(message)
+
+        state = self.fence_section_ui_state()
+        if not state["drawing"]:
+            self._uninstall_fence_qt_interaction()
+        if (
+            self.interaction_mode == "fence"
+            and not state["drawing"]
+            and not state["has_result"]
+        ):
+            self.interaction_mode = "normal"
+        self.fence_state_changed.emit(state)
+
+    def _reset_fence_section_for_context_change(self, render=False):
+        state = self.fence_section_ui_state()
+        ok = True
+        if state["drawing"] or state["has_result"]:
+            ok, _ = self.exit_fence_section(
+                clear_result=True,
+                render=render,
+            )
+        elif self.interaction_mode == "fence":
+            self.interaction_mode = "normal"
+
+        state = self.fence_section_ui_state()
+        self.fence_state_changed.emit(state)
+        return ok
+
+    def shutdown_interactions(self):
+        self._reset_fence_section_for_context_change(render=False)
+        if self.interaction_mode != "normal":
+            self._set_interaction_mode("normal")
+        return True
 
     def has_simulation_data(self):
         return self.simulation_data is not None
@@ -253,6 +874,8 @@ class ThreeDViewport(QWidget):
         self.update()
 
     def set_simulation_data(self, sim_data):
+        if sim_data is not self.simulation_data:
+            self._reset_fence_section_for_context_change(render=False)
         self.simulation_data = sim_data
         if sim_data is None:
             if self._real_view is not None:
@@ -266,6 +889,7 @@ class ThreeDViewport(QWidget):
     def set_preview_data(self, sim_data):
         if sim_data is self.preview_data:
             return
+        self._reset_fence_section_for_context_change(render=False)
         self.preview_data = sim_data
         if self._preview_mode_active and self._real_renderer is not None:
             self._real_renderer.clear_cache()
@@ -277,6 +901,7 @@ class ThreeDViewport(QWidget):
         return self.preview_data or self.simulation_data
 
     def _enter_preview_mode(self):
+        self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         if not self._preview_mode_active and self._real_renderer is not None:
@@ -762,6 +1387,7 @@ class ThreeDViewport(QWidget):
             return False, "[阈值] 请至少填写最小值或最大值"
         if min_value is not None and max_value is not None and min_value > max_value:
             return False, "[阈值] 最小值不能大于最大值"
+        self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         display_key = self.current_render_context.get("display_key", self.display_key)
@@ -842,6 +1468,7 @@ class ThreeDViewport(QWidget):
         renderer = self._real_renderer
         if not hasattr(renderer, "prepare_corner_time_playback"):
             return False, "[时间步] 渲染端缺少 prepare_corner_time_playback"
+        self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         mode = self.current_render_context.get("mode", "full")
@@ -1014,12 +1641,19 @@ class ThreeDViewport(QWidget):
             "camera_state": self._export_camera_state(),
             "coordinate_axes_visible": bool(self.coordinate_axes_visible),
             "camera_direction_locked": bool(self.camera_direction_locked),
+            "fence_section_property": self.fence_section_property,
             "layers": dict(self.layers),
         }
 
     def restore_ui_state(self, state):
         if not isinstance(state, dict):
             return
+        self._reset_fence_section_for_context_change(render=False)
+        fence_property = state.get(
+            "fence_section_property",
+            self.fence_section_property,
+        )
+        self.set_fence_section_property_preference(fence_property)
         self.context_title = state.get("context_title") or self.context_title
         self.context_detail = state.get("context_detail") or self.context_detail
         display_key = state.get("display_key") or self.display_key
@@ -1225,7 +1859,8 @@ class ThreeDViewport(QWidget):
         layout.addWidget(self._real_view)
         self._real_renderer = PyVistaRenderer(self._real_view)
         if hasattr(self._real_view, "interaction_message"):
-            self._real_view.interaction_message.connect(self.interaction_message.emit)
+            self._real_view.interaction_message.connect(
+                self._handle_renderer_interaction_message)
         self._real_view.show()
         return True
 
@@ -1234,6 +1869,7 @@ class ThreeDViewport(QWidget):
         sim_data = self.simulation_data
         if renderer is None or sim_data is None:
             return
+        self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         renderer.clear_cache()
@@ -1297,6 +1933,7 @@ class ThreeDViewport(QWidget):
         valid, reason = self._validate_slice_request(sim_data, property_key, axis, layer)
         if not valid:
             return False, reason
+        self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
             self._set_interaction_mode("normal")
         renderer.clear_cache()
@@ -2127,8 +2764,15 @@ class ViewPage(QFrame):
             self.toolbar.geometry_preview_requested.connect(self._handle_geometry_preview_requested)
             self.toolbar.static_preview_requested.connect(self._handle_static_preview_requested)
             self.toolbar.static_layer_preview_requested.connect(self._handle_static_layer_preview_requested)
+            self.toolbar.fence_action_requested.connect(
+                self._handle_fence_action_requested)
+            self.toolbar.fence_property_selected.connect(
+                self._handle_fence_property_selected)
             if hasattr(self.viewport, "interaction_message"):
                 self.viewport.interaction_message.connect(self.view_message.emit)
+            if hasattr(self.viewport, "fence_state_changed"):
+                self.viewport.fence_state_changed.connect(
+                    self._handle_fence_state_changed)
         layout.addWidget(self.toolbar)
         self.viewport_container = QFrame()
         self.viewport_container.setObjectName("viewContentFrame")
@@ -2144,6 +2788,7 @@ class ViewPage(QFrame):
             self._sync_layer_control_visibility()
             self.layer_control.raise_()
             QTimer.singleShot(0, self._position_layer_control)
+            self._sync_fence_controls()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2173,6 +2818,111 @@ class ViewPage(QFrame):
         label = self.layer_control.layer_label(layer_key) if self.layer_control else layer_key
         state_text = "显示" if enabled else "隐藏"
         self.view_message.emit(f"[图层] {label} 已{state_text}")
+
+    def _handle_fence_state_changed(self, state=None):
+        self._sync_fence_controls()
+
+    def _sync_fence_controls(self):
+        if self.view_type != "3d":
+            return False
+        if not hasattr(self.toolbar, "set_fence_controls_state"):
+            return False
+        if not hasattr(self.viewport, "fence_section_ui_state"):
+            return False
+
+        state = dict(self.viewport.fence_section_ui_state() or {})
+        adapter_capabilities = {
+            "can_start": "start_fence_section",
+            "can_complete": "complete_fence_section",
+            "can_cancel": "cancel_fence_section",
+            "can_clear": "clear_fence_section",
+            "can_exit": "exit_fence_section",
+        }
+        for state_key, method_name in adapter_capabilities.items():
+            if not hasattr(self.viewport, method_name):
+                state[state_key] = False
+
+        self.toolbar.set_fence_controls_state(state)
+        return True
+
+    def _handle_fence_action_requested(self, action):
+        action = str(action or "").strip().lower()
+        method_names = {
+            "start": "start_fence_section",
+            "complete": "complete_fence_section",
+            "cancel": "cancel_fence_section",
+            "clear": "clear_fence_section",
+            "exit": "exit_fence_section",
+        }
+        method_name = method_names.get(action)
+        if method_name is None:
+            message = f"[折线剖面] 不支持的操作：{action}"
+            self.view_message.emit(message)
+            return False, message
+
+        method = getattr(self.viewport, method_name, None)
+        if method is None:
+            message = f"[折线剖面] 前端适配方法尚不可用：{method_name}"
+            self.view_message.emit(message)
+            self._sync_fence_controls()
+            return False, message
+
+        self._stop_time_playback_timer()
+        try:
+            if action == "start":
+                property_name = self.toolbar.fence_property.currentText()
+                result = method(property_name)
+            else:
+                result = method()
+        except Exception as exc:
+            ok = False
+            message = f"[折线剖面] 操作失败：{exc}"
+        else:
+            if isinstance(result, tuple) and len(result) >= 2:
+                ok, message = bool(result[0]), str(result[1])
+            else:
+                ok = bool(result)
+                message = (
+                    f"[折线剖面] {action} 操作完成"
+                    if ok else f"[折线剖面] {action} 操作失败"
+                )
+
+        self.view_message.emit(message)
+        self._sync_fence_controls()
+        return ok, message
+
+    def _handle_fence_property_selected(self, property_name):
+        property_name = str(property_name or "").strip()
+        method = getattr(self.viewport, "set_fence_property", None)
+        if method is None:
+            method = getattr(
+                self.viewport,
+                "set_fence_section_property_preference",
+                None,
+            )
+        if method is None:
+            message = "[折线剖面] 当前窗口不支持剖面属性设置"
+            self.view_message.emit(message)
+            return False, message
+
+        try:
+            result = method(property_name)
+        except Exception as exc:
+            ok = False
+            message = f"[折线剖面] 属性切换失败：{exc}"
+        else:
+            if isinstance(result, tuple) and len(result) >= 2:
+                ok, message = bool(result[0]), str(result[1])
+            else:
+                ok = bool(result)
+                message = (
+                    f"[折线剖面] 当前属性：{property_name}"
+                    if ok else f"[折线剖面] 不支持的属性：{property_name}"
+                )
+
+        self.view_message.emit(message)
+        self._sync_fence_controls()
+        return ok, message
 
     def _handle_tool_requested(self, command):
         export_path = None
@@ -2406,6 +3156,7 @@ class ViewPage(QFrame):
             self._sync_time_step_control()
         self._sync_layer_control_visibility()
         self._position_layer_control()
+        self._sync_fence_controls()
 
     def set_preview_data(self, sim_data):
         if hasattr(self.viewport, "set_preview_data"):
@@ -2414,6 +3165,14 @@ class ViewPage(QFrame):
     def set_chart_data(self, chart_key, data):
         if hasattr(self.viewport, "set_chart_data"):
             self.viewport.set_chart_data(chart_key, data)
+
+    def prepare_for_close(self):
+        self._stop_time_playback_timer()
+        if hasattr(self.viewport, "shutdown_interactions"):
+            try:
+                self.viewport.shutdown_interactions()
+            except Exception:
+                pass
 
     def export_ui_state(self):
         toolbar_state = {}
@@ -2436,6 +3195,7 @@ class ViewPage(QFrame):
             self.toolbar.restore_ui_state(state.get("toolbar") or {})
         if hasattr(self.viewport, "restore_ui_state"):
             self.viewport.restore_ui_state(state.get("viewport") or {})
+        self._sync_fence_controls()
         if self.layer_control is not None:
             self.layer_control.set_layer_states(getattr(self.viewport, "layers", {}))
             self._sync_layer_control_visibility()
