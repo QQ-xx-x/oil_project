@@ -2,6 +2,7 @@ import argparse
 import csv
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,17 @@ from enkf_assimilator import ensemble_smoother_update, objective_values, summari
 from model_adapter import ForwardModelAdapter, copy_best_output, stable_json_sha256, file_sha256
 from observations import build_observations
 from parameters import ParameterManager, load_config, resolve_path
+
+
+EVENT_PREFIX = "HM_EVENT="
+
+
+def emit_event(event_type, **payload):
+    event = {"type": str(event_type), **payload}
+    print(
+        EVENT_PREFIX + json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def write_csv(path, rows, fieldnames=None):
@@ -115,7 +127,10 @@ def result_payload(config, results_dir, selected_objective, selected_source, sel
     return payload
 
 
-def evaluate_ensemble(config, manager, obs, adapter, ensemble, iteration, runs_dir):
+def evaluate_ensemble(
+    config, manager, obs, adapter, ensemble, iteration, runs_dir,
+    total_iterations, progress,
+):
     n_members = ensemble.shape[1]
     simulated = []
     objectives = []
@@ -124,7 +139,17 @@ def evaluate_ensemble(config, manager, obs, adapter, ensemble, iteration, runs_d
     for member in range(n_members):
         run_dir = Path(runs_dir) / f"iter_{iteration:02d}" / f"member_{member:03d}"
         params = manager.vector_to_params(ensemble[:, member])
+        emit_event(
+            "member_started",
+            iteration=iteration + 1,
+            total_iterations=total_iterations,
+            member=member + 1,
+            total_members=n_members,
+            completed_runs=progress["completed_runs"],
+            total_forward_runs=progress["total_forward_runs"],
+        )
         print(f"iteration={iteration} member={member} forward_start", flush=True)
+        started_at = time.monotonic()
         simulation, output_path = adapter.run_member(
             params,
             run_dir,
@@ -132,9 +157,32 @@ def evaluate_ensemble(config, manager, obs, adapter, ensemble, iteration, runs_d
         )
         y_sim = obs.transform_simulation(simulation)
         simulated.append(y_sim)
-        objectives.append(obs.objective(y_sim))
+        objective = obs.objective(y_sim)
+        objectives.append(objective)
         output_paths.append(str(output_path))
-        print(f"iteration={iteration} member={member} objective={objectives[-1]:.5f}", flush=True)
+        elapsed_seconds = max(0.0, time.monotonic() - started_at)
+        progress["completed_runs"] += 1
+        previous_best = progress.get("best_objective")
+        improved = previous_best is None or objective < previous_best
+        if improved:
+            progress["best_objective"] = float(objective)
+        emit_event(
+            "member_completed",
+            iteration=iteration + 1,
+            iteration_index=iteration,
+            total_iterations=total_iterations,
+            member=member + 1,
+            member_index=member,
+            total_members=n_members,
+            objective=float(objective),
+            best_objective=float(progress["best_objective"]),
+            best_improved=bool(improved),
+            elapsed_seconds=elapsed_seconds,
+            reused=bool(getattr(adapter, "last_run_reused", False)),
+            completed_runs=progress["completed_runs"],
+            total_forward_runs=progress["total_forward_runs"],
+        )
+        print(f"iteration={iteration} member={member} objective={objective:.5f}", flush=True)
 
     simulated_matrix = np.column_stack(simulated)
     return simulated_matrix, np.array(objectives, dtype=float), output_paths
@@ -205,10 +253,31 @@ def main():
     alphas = [float(alpha) for alpha in config["enkf"]["alphas"]]
     summary_rows = []
     best_seen = None
+    progress = {
+        "completed_runs": 0,
+        "total_forward_runs": ensemble_size * len(alphas) + 1,
+        "best_objective": None,
+    }
+    emit_event(
+        "run_started",
+        total_iterations=len(alphas),
+        total_members=ensemble_size,
+        total_forward_runs=progress["total_forward_runs"],
+    )
 
     for iteration, alpha in enumerate(alphas):
+        emit_event(
+            "iteration_started",
+            iteration=iteration + 1,
+            total_iterations=len(alphas),
+            total_members=ensemble_size,
+            alpha=alpha,
+        )
         print(f"=== EnKF/ES-MDA iteration {iteration + 1}/{len(alphas)}, alpha={alpha:g} ===", flush=True)
-        simulated, objectives, output_paths = evaluate_ensemble(config, manager, obs, adapter, ensemble, iteration, runs_dir)
+        simulated, objectives, output_paths = evaluate_ensemble(
+            config, manager, obs, adapter, ensemble, iteration, runs_dir,
+            len(alphas), progress,
+        )
         obj_summary = summarize_objectives(objectives)
         print(
             "iteration="
@@ -244,6 +313,19 @@ def main():
                 "output_path": output_paths[best_member],
             }
 
+        emit_event(
+            "iteration_completed",
+            iteration=iteration + 1,
+            iteration_index=iteration,
+            total_iterations=len(alphas),
+            objective_min=obj_summary["min"],
+            objective_mean=obj_summary["mean"],
+            objective_max=obj_summary["max"],
+            best_objective=float(progress["best_objective"]),
+            completed_runs=progress["completed_runs"],
+            total_forward_runs=progress["total_forward_runs"],
+        )
+
         ensemble = ensemble_smoother_update(
             ensemble=ensemble,
             simulated_obs=simulated,
@@ -264,9 +346,31 @@ def main():
 
     best_params, best_physical = manager.mean_params(ensemble)
     final_run_dir = Path(runs_dir) / "best_fit_mean"
+    emit_event(
+        "final_mean_started",
+        completed_runs=progress["completed_runs"],
+        total_forward_runs=progress["total_forward_runs"],
+    )
+    final_started_at = time.monotonic()
     final_simulation, final_output_path = adapter.run_member(best_params, final_run_dir, quiet=True)
     final_vector = obs.transform_simulation(final_simulation)
     final_objective = obs.objective(final_vector)
+    final_elapsed_seconds = max(0.0, time.monotonic() - final_started_at)
+    progress["completed_runs"] += 1
+    previous_best = progress.get("best_objective")
+    final_improved = previous_best is None or final_objective < previous_best
+    if final_improved:
+        progress["best_objective"] = float(final_objective)
+    emit_event(
+        "final_mean_completed",
+        objective=float(final_objective),
+        best_objective=float(progress["best_objective"]),
+        best_improved=bool(final_improved),
+        elapsed_seconds=final_elapsed_seconds,
+        reused=bool(getattr(adapter, "last_run_reused", False)),
+        completed_runs=progress["completed_runs"],
+        total_forward_runs=progress["total_forward_runs"],
+    )
 
     selected_source = "final_ensemble_mean"
     selected_params = best_params
@@ -300,7 +404,18 @@ def main():
     print(f"best_fit_params={results_dir / 'best_fit_params.json'}", flush=True)
     print(f"best_fit_output={results_dir / 'best_fit_output.csv'}", flush=True)
     print(f"RESULT_JSON={json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}", flush=True)
+    emit_event(
+        "run_completed",
+        objective=float(selected_objective),
+        selected_source=selected_source,
+        completed_runs=progress["completed_runs"],
+        total_forward_runs=progress["total_forward_runs"],
+    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        emit_event("run_failed", error_type=type(exc).__name__, message=str(exc))
+        raise

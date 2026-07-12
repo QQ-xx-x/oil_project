@@ -47,8 +47,10 @@ class ForwardModelAdapter:
         self.run_signature_context = run_signature_context or {}
         self.module = None  # 不再直接调 C++，改为走 simulation_runner
         self.module_path = Path(__file__).resolve()
+        self.last_run_reused = False
 
     def run_member(self, params, run_dir, quiet=True):
+        self.last_run_reused = False
         run_path = Path(run_dir)
         run_path.mkdir(parents=True, exist_ok=True)
         params_path = run_path / "params.json"
@@ -58,6 +60,7 @@ class ForwardModelAdapter:
         signature_path = run_path / "run_signature.json"
         signature = self._run_signature(params, output_name)
         if self._can_reuse_existing_output(params, output_path, signature_path, signature):
+            self.last_run_reused = True
             return read_simulation_output(output_path), output_path
 
         params_path.write_text(json.dumps(params, indent=2), encoding="utf-8")
