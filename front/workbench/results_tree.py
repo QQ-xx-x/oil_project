@@ -63,7 +63,7 @@ class ResultsTree(QTreeWidget):
                 "尚无仿真运行", "runs_empty", "process",
             )
             history_runs = self._run_group(
-                "历史拟合运行", "history_matching_runs", history_descriptors,
+                "历史拟合输出", "history_matching_runs", history_descriptors,
                 "尚无历史拟合运行", "history_runs_empty", "chart",
             )
             root.addChild(simulation_runs)
@@ -71,7 +71,6 @@ class ResultsTree(QTreeWidget):
 
             analysis = self._item("算例分析", "case_analysis", icon_name="chart")
             for label, key, icon_name in (
-                ("历史拟合", "history_matching", "chart"),
                 ("相对渗透率曲线", "relative_permeability_curve", "permeability"),
             ):
                 analysis.addChild(self._result_item(

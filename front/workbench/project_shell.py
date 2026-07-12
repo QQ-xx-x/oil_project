@@ -253,6 +253,7 @@ class ProjectShell(QWidget):
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
         self.input_tree.case_dataset_built.connect(self._handle_case_dataset_built)
         self.input_tree.result_requested.connect(self._handle_input_related_result_requested)
+        self.input_tree.workflow_requested.connect(self._handle_workflow_requested)
 
         self.results_tree = ResultsTree()
         self.results_tree.bind_case(self.project_state.active_case())
@@ -488,6 +489,19 @@ class ProjectShell(QWidget):
         else:
             self.message_log.append_message(f"[输入] 未找到关联结果：{result_key}")
             self._show_status(f"未找到关联结果：{result_key}")
+
+    def _handle_workflow_requested(self, workflow_key, title, view):
+        if workflow_key == "history_matching":
+            self.workspace.update_context(
+                "历史拟合",
+                "确认模型和历史数据，设置观测与拟合参数，然后运行历史拟合。",
+                view,
+                workflow_key,
+            )
+            self.message_log.append_message("[历史拟合] 已打开历史拟合工作页")
+            self._show_status("历史拟合")
+            return
+        self._handle_result_selected(workflow_key, title, view)
 
     def collect_ui_state(self):
         """Persist project-level layout and active case result context."""

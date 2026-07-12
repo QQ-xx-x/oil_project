@@ -49,6 +49,7 @@ class InputTree(QTreeWidget):
     parameters_saved = pyqtSignal(str, str, dict)
     case_dataset_built = pyqtSignal(str, dict)
     result_requested = pyqtSignal(str)
+    workflow_requested = pyqtSignal(str, str, str)
 
     def __init__(self, project_state=None, parent=None):
         super().__init__(parent)
@@ -291,6 +292,16 @@ class InputTree(QTreeWidget):
 
     def _open_settings(self, item, column):
         key = item.data(0, KEY_ROLE)
+        item_data = item.data(0, DATA_ROLE) or {}
+        if item_data.get("kind") == "module":
+            module = module_by_key(item_data.get("module_key"))
+            if module and module.get("special") == "workflow":
+                self.workflow_requested.emit(
+                    module.get("workflow_key", key),
+                    module.get("title", item.text(0)),
+                    module.get("workflow_view", "chart"),
+                )
+                return
         before_signature = self._case_data_signature()
         before_case_data = self._case_data_snapshot()
         root = self._find_item("case_data_manifest")

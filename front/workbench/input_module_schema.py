@@ -392,7 +392,40 @@ INPUT_MODULES = [
             ], page="case", icon="output"),
         ],
     },
+    {
+        "key": "history_matching_workflow",
+        "title": "历史拟合",
+        "icon": "chart",
+        "special": "workflow",
+        "workflow_key": "history_matching",
+        "workflow_view": "chart",
+        "children": [],
+    },
 ]
+
+
+# Keep the visible tree aligned with the reservoir-modeling workflow without
+# changing any project-state keys or the internal contents of existing nodes.
+INPUT_MODULE_ORDER = (
+    "input_overview",
+    "case_data_manifest",
+    "grid_spatial",
+    "rock_properties",
+    "fracture_system_inputs",
+    "fluid_pvt_inputs",
+    "initial_conditions",
+    "well_production",
+    "solver_output",
+    "history_matching_workflow",
+)
+_INPUT_MODULE_ORDER_INDEX = {
+    key: index for index, key in enumerate(INPUT_MODULE_ORDER)
+}
+INPUT_MODULES.sort(
+    key=lambda module: _INPUT_MODULE_ORDER_INDEX.get(
+        module.get("key"), len(_INPUT_MODULE_ORDER_INDEX)
+    )
+)
 
 
 def module_by_key(module_key):
