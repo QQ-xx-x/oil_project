@@ -17,26 +17,18 @@ def get_bright_jet_cmap():
         (0.16, (0.00, 1.00, 0.65)),
         (0.20, (0.00, 1.00, 0.52)),
         (0.24, (0.00, 1.00, 0.40)),
-
-        # 绿色区缩短
         (0.26, (0.00, 1.00, 0.35)),
         (0.30, (0.08, 1.00, 0.22)),
         (0.34, (0.18, 1.00, 0.10)),
-
-        # 绿到黄的过渡拉长
         (0.38, (0.32, 1.00, 0.02)),
         (0.42, (0.48, 1.00, 0.00)),
         (0.46, (0.62, 1.00, 0.00)),
         (0.50, (0.78, 1.00, 0.00)),
         (0.54, (0.92, 1.00, 0.00)),
-
-        # 黄色区加宽
         (0.58, (1.00, 1.00, 0.00)),
         (0.63, (1.00, 0.94, 0.00)),
         (0.68, (1.00, 0.86, 0.00)),
         (0.73, (1.00, 0.76, 0.00)),
-
-        # 黄橙红
         (0.78, (1.00, 0.64, 0.00)),
         (0.84, (1.00, 0.48, 0.00)),
         (0.90, (1.00, 0.34, 0.00)),
@@ -80,6 +72,54 @@ COORDINATE_LABEL_SCREEN_EPSILON_PX = 2.0
 # 相机视线与 X / Y / Z 轴足够接近时，认为是标准六向视图。
 COORDINATE_STANDARD_VIEW_COS_THRESHOLD = 0.999
 
+RESULT_PROPERTY_OPACITY = 0.95
+RESULT_GEOMETRY_OPACITY = 1.0
+RESULT_DEPTH_PEEL_COUNT = 3
+RESULT_DEPTH_PEEL_OCCLUSION_RATIO = 0.0
+RESULT_ENABLE_ANTI_ALIASING = True
+
+RESULT_GEOMETRY_ACTOR_CACHE_KEYS = (
+    "fracture_actors",
+    "well_actors",
+    "layer_frac_actors",
+    "layer_well_actors",
+    "layer_sw_frac_actors",
+    "layer_sw_well_actors",
+    "layer_phi_frac_actors",
+    "layer_phi_well_actors",
+    "layer_perm_frac_actors",
+    "layer_perm_well_actors",
+)
+
+RESULT_PROPERTY_ACTOR_CACHE_KEYS = (
+    "pressure_actor",
+    "pressure_field_actor",
+    "layer_pressure_actor",
+    "sw_field_actor",
+    "layer_sw_actor",
+    "phi_field_actor",
+    "layer_phi_actor",
+    "threshold_actor",
+    "perm_field_actor",
+    "layer_perm_actor",
+    "time_playback_actor",
+)
+
+RESULT_MAIN_SCENE_ACTOR_CACHE_KEYS = (
+    "corner_actor",
+    "corner_surface_actor",
+    "grid_lines_actor",
+    "corner_lgr_parent_grid_actor",
+    "corner_lgr_refined_grid_actor",
+    "layer_coarse_grid_actor",
+    "layer_sw_coarse_grid_actor",
+    "threshold_grid_actor",
+    "layer_phi_coarse_grid_actor",
+    "layer_perm_coarse_grid_actor",
+    *RESULT_PROPERTY_ACTOR_CACHE_KEYS,
+)
+
+
 class PyVistaRenderer:
     """基于 PyVista 的渲染器，并保留对旧 VTK 渲染器接口的兼容面。"""
 
@@ -92,10 +132,14 @@ class PyVistaRenderer:
         self.view = qt_view
         self.pv_renderer = qt_view.renderer
 
+        self._result_geometry_overlay_renderer = None
+        self._result_geometry_overlay_layer = None
+        self._result_geometry_overlay_attached = False
+        self._result_geometry_overlay_main_renderer = None
+
         pv.global_theme.allow_empty_mesh = True
 
-        self.plotter.enable_anti_aliasing()
-        self.plotter.enable_depth_peeling()
+        self._configure_result_translucent_scene()
         self._add_petrel_arrow()
 
         ren = self.renderer
@@ -111,6 +155,13 @@ class PyVistaRenderer:
         }
 
         self.camera_direction_locked = False
+
+        self._six_view_projection_active = False
+        self._six_view_left_button_down = False
+        self._six_view_press_position = None
+        self._six_view_rotation_interactor = None
+        self._six_view_rotation_observer_ids = []
+
         # 静态属性预览渲染器
         from .pyvista_static_property_preview import StaticPropertyPreviewRenderer
         self.static_property_preview = StaticPropertyPreviewRenderer(self)
@@ -118,6 +169,918 @@ class PyVistaRenderer:
         from .pyvista_geometry_preview import GeometryPreviewRenderer
         self.geometry_preview = GeometryPreviewRenderer(self)
 
+
+    def _main_result_renderer(self):
+
+        renderer = getattr(
+            self.plotter,
+            "renderer",
+            None,
+        )
+
+        if renderer is None:
+            renderer = getattr(
+                self,
+                "renderer",
+                None,
+            )
+
+        return renderer
+
+
+    def _configure_result_translucent_scene(self):
+
+        try:
+            render_window = getattr(
+                self.plotter,
+                "ren_win",
+                None,
+            )
+
+            if render_window is not None:
+                render_window.SetAlphaBitPlanes(1)
+                render_window.SetMultiSamples(0)
+        except Exception:
+            pass
+
+        renderer = self._main_result_renderer()
+
+        if renderer is not None:
+            try:
+                renderer.SetUseDepthPeeling(True)
+                renderer.SetMaximumNumberOfPeels(
+                    RESULT_DEPTH_PEEL_COUNT
+                )
+                renderer.SetOcclusionRatio(
+                    RESULT_DEPTH_PEEL_OCCLUSION_RATIO
+                )
+            except Exception:
+                pass
+
+        try:
+            self.plotter.enable_depth_peeling(
+                number_of_peels=RESULT_DEPTH_PEEL_COUNT,
+                occlusion_ratio=RESULT_DEPTH_PEEL_OCCLUSION_RATIO,
+            )
+        except TypeError:
+            try:
+                self.plotter.enable_depth_peeling()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        if RESULT_ENABLE_ANTI_ALIASING:
+            try:
+                self.plotter.enable_anti_aliasing("fxaa")
+            except TypeError:
+                try:
+                    self.plotter.enable_anti_aliasing()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            try:
+                if (
+                    renderer is not None
+                    and hasattr(renderer, "SetUseFXAA")
+                ):
+                    renderer.SetUseFXAA(True)
+            except Exception:
+                pass
+
+
+    @staticmethod
+    def _renderer_is_attached(render_window, renderer) -> bool:
+        if render_window is None or renderer is None:
+            return False
+
+        try:
+            renderers = render_window.GetRenderers()
+
+            if renderers is not None and hasattr(
+                renderers,
+                "IsItemPresent",
+            ):
+                return bool(
+                    renderers.IsItemPresent(renderer)
+                )
+        except Exception:
+            pass
+
+        return False
+
+
+    def _set_result_geometry_overlay_attached(
+        self,
+        attached: bool,
+    ) -> None:
+
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+        overlay_renderer = getattr(
+            self,
+            "_result_geometry_overlay_renderer",
+            None,
+        )
+
+        if render_window is None or overlay_renderer is None:
+            self._result_geometry_overlay_attached = False
+            return
+
+        is_attached = self._renderer_is_attached(
+            render_window,
+            overlay_renderer,
+        )
+
+        if attached and not is_attached:
+            try:
+                render_window.AddRenderer(
+                    overlay_renderer
+                )
+                is_attached = True
+            except Exception:
+                pass
+
+        elif not attached and is_attached:
+            try:
+                render_window.RemoveRenderer(
+                    overlay_renderer
+                )
+                is_attached = False
+            except Exception:
+                pass
+
+        self._result_geometry_overlay_attached = bool(
+            is_attached
+        )
+
+        if not attached:
+            main_renderer = self._main_result_renderer()
+
+            if main_renderer is not None:
+                try:
+                    main_renderer.ResetCameraClippingRange()
+                except Exception:
+                    try:
+                        self.plotter.reset_camera_clipping_range()
+                    except Exception:
+                        pass
+
+
+    def _ensure_result_geometry_overlay_renderer(
+        self,
+        attach_to_window: bool = True,
+    ):
+
+        main_renderer = self._main_result_renderer()
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+
+        if main_renderer is None or render_window is None:
+            return None
+
+        overlay_renderer = getattr(
+            self,
+            "_result_geometry_overlay_renderer",
+            None,
+        )
+        overlay_main_renderer = getattr(
+            self,
+            "_result_geometry_overlay_main_renderer",
+            None,
+        )
+
+        if (
+            overlay_renderer is not None
+            and overlay_main_renderer is not None
+            and overlay_main_renderer is not main_renderer
+        ):
+            try:
+                render_window.RemoveRenderer(overlay_renderer)
+            except Exception:
+                pass
+
+            try:
+                overlay_renderer.RemoveAllViewProps()
+            except Exception:
+                pass
+
+            overlay_renderer = None
+            self._result_geometry_overlay_renderer = None
+            self._result_geometry_overlay_layer = None
+            self._result_geometry_overlay_attached = False
+            self._result_geometry_overlay_main_renderer = None
+
+        if overlay_renderer is None:
+            try:
+                overlay_renderer = main_renderer.NewInstance()
+            except Exception:
+                return None
+
+            try:
+                main_layer = int(main_renderer.GetLayer())
+            except Exception:
+                main_layer = 0
+
+            try:
+                current_layer_count = int(
+                    render_window.GetNumberOfLayers()
+                )
+            except Exception:
+                current_layer_count = 1
+
+            overlay_layer = max(
+                main_layer + 1,
+                current_layer_count,
+            )
+
+            try:
+                render_window.SetNumberOfLayers(
+                    overlay_layer + 1
+                )
+                overlay_renderer.SetLayer(
+                    overlay_layer
+                )
+            except Exception:
+                return None
+
+            self._result_geometry_overlay_renderer = overlay_renderer
+            self._result_geometry_overlay_layer = overlay_layer
+            self._result_geometry_overlay_attached = False
+            self._result_geometry_overlay_main_renderer = main_renderer
+
+        overlay_layer = getattr(
+            self,
+            "_result_geometry_overlay_layer",
+            None,
+        )
+
+        if overlay_layer is not None:
+            try:
+                current_layer_count = int(
+                    render_window.GetNumberOfLayers()
+                )
+
+                if current_layer_count <= int(overlay_layer):
+                    render_window.SetNumberOfLayers(
+                        int(overlay_layer) + 1
+                    )
+
+                overlay_renderer.SetLayer(
+                    int(overlay_layer)
+                )
+            except Exception:
+                pass
+
+        if attach_to_window:
+            self._set_result_geometry_overlay_attached(True)
+
+        try:
+            overlay_renderer.SetActiveCamera(
+                main_renderer.GetActiveCamera()
+            )
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetViewport(
+                *main_renderer.GetViewport()
+            )
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetInteractive(False)
+        except Exception:
+            try:
+                overlay_renderer.InteractiveOff()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetPreserveColorBuffer(True)
+        except Exception:
+            try:
+                overlay_renderer.PreserveColorBufferOn()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetPreserveDepthBuffer(False)
+        except Exception:
+            try:
+                overlay_renderer.PreserveDepthBufferOff()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetBackgroundAlpha(0.0)
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetUseDepthPeeling(False)
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.DrawOn()
+        except Exception:
+            pass
+
+        if RESULT_ENABLE_ANTI_ALIASING:
+            try:
+                if hasattr(overlay_renderer, "SetUseFXAA"):
+                    overlay_renderer.SetUseFXAA(True)
+            except Exception:
+                pass
+
+        try:
+            if hasattr(overlay_renderer, "AutomaticLightCreationOn"):
+                overlay_renderer.AutomaticLightCreationOn()
+        except Exception:
+            pass
+
+        return overlay_renderer
+
+
+    @staticmethod
+    def _configure_result_property_actor(actor):
+
+        if actor is None:
+            return
+
+        try:
+            actor.ForceOpaqueOff()
+        except Exception:
+            try:
+                actor.SetForceOpaque(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceTranslucentOff()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(False)
+            except Exception:
+                pass
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                prop.SetOpacity(
+                    RESULT_PROPERTY_OPACITY
+                )
+
+                try:
+                    prop.FrontfaceCullingOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.BackfaceCullingOff()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _configure_result_geometry_actor(actor):
+
+        if actor is None:
+            return
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                prop.SetOpacity(
+                    RESULT_GEOMETRY_OPACITY
+                )
+
+                try:
+                    prop.FrontfaceCullingOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.BackfaceCullingOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.RenderPointsAsSpheresOff()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            actor.ForceTranslucentOff()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceOpaqueOn()
+        except Exception:
+            try:
+                actor.SetForceOpaque(True)
+            except Exception:
+                pass
+
+
+    @staticmethod
+    def _configure_result_fracture_actor(actor):
+
+        if actor is None:
+            return
+
+        PyVistaRenderer._configure_result_geometry_actor(actor)
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                try:
+                    prop.LightingOff()
+                except Exception:
+                    try:
+                        prop.SetLighting(False)
+                    except Exception:
+                        pass
+
+                try:
+                    prop.SetAmbient(1.0)
+                    prop.SetDiffuse(0.0)
+                    prop.SetSpecular(0.0)
+                except Exception:
+                    pass
+
+                try:
+                    prop.SetInterpolationToFlat()
+                except Exception:
+                    pass
+
+                try:
+                    prop.EdgeVisibilityOff()
+                except Exception:
+                    try:
+                        prop.SetEdgeVisibility(False)
+                    except Exception:
+                        pass
+
+                try:
+                    prop.SetLineWidth(0.0)
+                except Exception:
+                    pass
+
+                try:
+                    prop.SetRepresentationToSurface()
+                except Exception:
+                    pass
+
+                try:
+                    prop.RenderPointsAsSpheresOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.VertexVisibilityOff()
+                except Exception:
+                    try:
+                        prop.SetVertexVisibility(False)
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _build_result_fracture_polygon(points):
+
+        try:
+            array = np.asarray(
+                points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return None
+
+        finite_mask = np.isfinite(array).all(axis=1)
+        array = array[finite_mask]
+
+        if len(array) < 3:
+            return None
+
+        cleaned_points = []
+
+        for point in array:
+            if not cleaned_points:
+                cleaned_points.append(point)
+                continue
+
+            if np.linalg.norm(
+                point - cleaned_points[-1]
+            ) > 1e-8:
+                cleaned_points.append(point)
+
+        if (
+            len(cleaned_points) >= 2
+            and np.linalg.norm(
+                cleaned_points[0] - cleaned_points[-1]
+            ) <= 1e-8
+        ):
+            cleaned_points.pop()
+
+        if len(cleaned_points) < 3:
+            return None
+
+        cleaned_points = np.asarray(
+            cleaned_points,
+            dtype=np.float64,
+        )
+
+        polygon = pv.PolyData()
+        polygon.points = cleaned_points
+
+        try:
+            polygon.verts = np.empty(0, dtype=np.int64)
+        except Exception:
+            pass
+
+        try:
+            polygon.lines = np.empty(0, dtype=np.int64)
+        except Exception:
+            pass
+
+        try:
+            polygon.strips = np.empty(0, dtype=np.int64)
+        except Exception:
+            pass
+
+        polygon.faces = np.asarray(
+            [
+                len(cleaned_points),
+                *range(len(cleaned_points)),
+            ],
+            dtype=np.int64,
+        )
+
+        return polygon
+
+
+    def _add_result_fracture_actor(
+        self,
+        points,
+        color,
+        edge_color=None,
+    ):
+
+        polygon = self._build_result_fracture_polygon(
+            points
+        )
+
+        if polygon is None:
+            return None
+
+        if edge_color is None:
+            edge_color = color
+
+        try:
+            actor = self.plotter.add_mesh(
+                polygon,
+                style="surface",
+                color=color,
+                opacity=RESULT_GEOMETRY_OPACITY,
+                show_edges=False,
+                edge_color=edge_color,
+                line_width=0.0,
+                lighting=False,
+                smooth_shading=False,
+                ambient=1.0,
+                diffuse=0.0,
+                specular=0.0,
+                render=False,
+            )
+        except Exception:
+            return None
+
+        self._configure_result_fracture_actor(
+            actor
+        )
+        self._move_actor_to_result_geometry_overlay(
+            actor
+        )
+
+        return actor
+
+
+    def _add_result_well_actor(
+        self,
+        mesh,
+        color=(0.08, 0.24, 0.62),
+        lighting=True,
+        ambient=0.9,
+        diffuse=1.0,
+    ):
+
+        if mesh is None:
+            return None
+
+        try:
+            actor = self.plotter.add_mesh(
+                mesh,
+                color=color,
+                opacity=RESULT_GEOMETRY_OPACITY,
+                lighting=lighting,
+                ambient=ambient,
+                diffuse=diffuse,
+                render=False,
+            )
+        except Exception:
+            return None
+
+        self._configure_result_geometry_actor(
+            actor
+        )
+        self._move_actor_to_result_geometry_overlay(
+            actor
+        )
+
+        return actor
+
+
+    def _move_actor_to_result_main_renderer_end(self, actor) -> None:
+
+        if actor is None:
+            return
+
+        main_renderer = self._main_result_renderer()
+
+        if main_renderer is None:
+            return
+
+        overlay_renderer = getattr(
+            self,
+            "_result_geometry_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is not None:
+            try:
+                overlay_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        try:
+            main_renderer.RemoveActor(actor)
+            main_renderer.AddActor(actor)
+        except Exception:
+            pass
+
+
+    def _result_geometry_actors(self):
+
+        cache = getattr(
+            self,
+            "cache",
+            None,
+        )
+
+        if not isinstance(cache, dict):
+            return []
+
+        result = []
+        seen = set()
+
+        for cache_key in RESULT_GEOMETRY_ACTOR_CACHE_KEYS:
+            actors = cache.get(
+                cache_key,
+                [],
+            ) or []
+
+            if not isinstance(
+                actors,
+                (list, tuple),
+            ):
+                actors = [actors]
+
+            for actor in actors:
+                if actor is None:
+                    continue
+
+                actor_id = id(actor)
+
+                if actor_id in seen:
+                    continue
+
+                seen.add(actor_id)
+                result.append(
+                    (cache_key, actor)
+                )
+
+        return result
+
+
+    def _move_actor_to_result_geometry_overlay(
+        self,
+        actor,
+    ) -> None:
+
+        if actor is None:
+            return
+
+        overlay_renderer = self._ensure_result_geometry_overlay_renderer()
+        main_renderer = self._main_result_renderer()
+
+        if overlay_renderer is None:
+            if main_renderer is not None:
+                try:
+                    main_renderer.RemoveActor(actor)
+                    main_renderer.AddActor(actor)
+                except Exception:
+                    pass
+            return
+
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+
+        if render_window is not None:
+            try:
+                renderers = render_window.GetRenderers()
+                renderers.InitTraversal()
+
+                for _ in range(int(renderers.GetNumberOfItems())):
+                    renderer = renderers.GetNextItem()
+
+                    if renderer is None or renderer is overlay_renderer:
+                        continue
+
+                    try:
+                        renderer.RemoveActor(actor)
+                    except Exception:
+                        try:
+                            renderer.RemoveViewProp(actor)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.RemoveActor(actor)
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.AddActor(actor)
+        except Exception:
+            if main_renderer is not None:
+                try:
+                    main_renderer.AddActor(actor)
+                except Exception:
+                    pass
+
+
+    def _clear_result_geometry_overlay(
+        self,
+        detach: bool = True,
+        remove_renderer: bool = False,
+    ) -> None:
+
+        overlay_renderer = getattr(
+            self,
+            "_result_geometry_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is not None:
+            try:
+                overlay_renderer.RemoveAllViewProps()
+            except Exception:
+                pass
+
+        if detach:
+            self._set_result_geometry_overlay_attached(
+                False
+            )
+
+        if remove_renderer:
+            self._result_geometry_overlay_renderer = None
+            self._result_geometry_overlay_layer = None
+            self._result_geometry_overlay_attached = False
+            self._result_geometry_overlay_main_renderer = None
+
+
+    def _prepare_result_depth_rendering(self):
+
+        self._configure_result_translucent_scene()
+
+        cache = getattr(
+            self,
+            "cache",
+            None,
+        )
+
+        if not isinstance(cache, dict):
+            self._set_result_geometry_overlay_attached(
+                False
+            )
+            return
+
+        for cache_key in RESULT_MAIN_SCENE_ACTOR_CACHE_KEYS:
+            actor = cache.get(cache_key)
+
+            if actor is None:
+                continue
+
+            self._move_actor_to_result_main_renderer_end(actor)
+
+            if cache_key in RESULT_PROPERTY_ACTOR_CACHE_KEYS:
+                self._configure_result_property_actor(actor)
+
+        geometry_actors = self._result_geometry_actors()
+
+        if geometry_actors:
+            overlay_renderer = (
+                self._ensure_result_geometry_overlay_renderer(
+                    attach_to_window=True,
+                )
+            )
+
+            for cache_key, actor in geometry_actors:
+                if (
+                    cache_key == "fracture_actors"
+                    or "_frac_actors" in cache_key
+                ):
+                    self._configure_result_fracture_actor(
+                        actor
+                    )
+                else:
+                    self._configure_result_geometry_actor(
+                        actor
+                    )
+
+                self._move_actor_to_result_geometry_overlay(
+                    actor
+                )
+
+            if overlay_renderer is not None:
+                main_renderer = self._main_result_renderer()
+
+                if main_renderer is not None:
+                    try:
+                        overlay_renderer.SetActiveCamera(
+                            main_renderer.GetActiveCamera()
+                        )
+                    except Exception:
+                        pass
+
+                    try:
+                        overlay_renderer.SetViewport(
+                            *main_renderer.GetViewport()
+                        )
+                    except Exception:
+                        pass
+
+        else:
+            self._set_result_geometry_overlay_attached(
+                False
+            )
+
+        main_renderer = self._main_result_renderer()
+
+        if main_renderer is not None:
+            try:
+                main_renderer.ResetCameraClippingRange()
+            except Exception:
+                try:
+                    self.plotter.reset_camera_clipping_range()
+                except Exception:
+                    pass
 
     #箭头
     def _add_petrel_arrow(self):
@@ -177,10 +1140,7 @@ class PyVistaRenderer:
     # 动态三面三维坐标系
     # =====================================================================
     def _clear_fixed_coordinate_axes(self):
-        """
-        删除当前坐标系的网格、刻度线、边框和文字。
-        不移除相机监听器。
-        """
+
         self._remove_actor_list(
             self.cache.get(
                 "fixed_coordinate_axis_actors",
@@ -251,9 +1211,7 @@ class PyVistaRenderer:
 
     @staticmethod
     def _nice_grid_step(value):
-        """
-        将普通数值转换为适合显示的坐标刻度步长。
-        """
+
         value = float(value)
 
         if value <= 0.0:
@@ -2509,6 +3467,7 @@ class PyVistaRenderer:
         }
 
     def _render(self):
+        self._prepare_result_depth_rendering()
         self.plotter.render()
 
     def render_now(self):
@@ -2801,6 +3760,12 @@ class PyVistaRenderer:
 
         self._remove_actor_list(self.cache.get("fracture_actors", []))
         self._remove_actor_list(self.cache.get("well_actors", []))
+
+        self._remove_actor(self.cache.get("layer_pressure_actor"))
+        self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
+        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
+        self._remove_actor_list(self.cache.get("layer_well_actors", []))
+
         self._remove_actor_list(self.cache.get("selection_handle_actors", []))
 
         self._remove_actor(self.cache.get("sw_field_actor"))
@@ -2855,13 +3820,29 @@ class PyVistaRenderer:
         except Exception:
             pass
 
+        self._clear_result_geometry_overlay(
+            detach=True,
+            remove_renderer=False,
+        )
+
         self.cache = self._new_cache()
+        self._six_view_projection_active = False
+        self._six_view_left_button_down = False
+        self._six_view_press_position = None
 
         self._render()
 
     def clear_cache(self):
-        self.plotter.clear()  # 彻底清空所有actor
+        self._clear_result_geometry_overlay(
+            detach=True,
+            remove_renderer=False,
+        )
+
+        self.plotter.clear()  # 彻底清空主 Renderer 中的 actor
         self.cache = self._new_cache()
+        self._six_view_projection_active = False
+        self._six_view_left_button_down = False
+        self._six_view_press_position = None
         self._selection_overlay_state = {
             "world_bounds": None,
             "handle_radius": None,
@@ -2874,16 +3855,52 @@ class PyVistaRenderer:
     def _remove_actor(self, actor):
         if actor is None:
             return
+
+        # 正式结果的裂缝/井可能已经从主 Renderer 转移到了独立覆盖层。
+        result_overlay = getattr(
+            self,
+            "_result_geometry_overlay_renderer",
+            None,
+        )
+
+        if result_overlay is not None:
+            try:
+                result_overlay.RemoveActor(actor)
+            except Exception:
+                pass
+
+        # 几何预览也有自己的覆盖层。这里一并尝试移除，确保预览对象通过
+        # host._remove_actor() 回调时不会残留在额外 Renderer 中。
+        preview_overlay = getattr(
+            self,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if preview_overlay is not None:
+            try:
+                preview_overlay.RemoveActor(actor)
+            except Exception:
+                pass
+
+        main_renderer = self._main_result_renderer()
+
+        if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
         try:
             self.plotter.remove_actor(
                 actor,
-                render=False
+                render=False,
             )
         except Exception:
             pass
 
     def _remove_actor_list(self, actors):
-        for actor in actors:
+        for actor in actors or []:
             self._remove_actor(actor)
 
     def _replace_scalar_bar(self, cache_key, title, **kwargs):
@@ -2982,7 +3999,7 @@ class PyVistaRenderer:
             cmap=get_bright_jet_cmap(),
             clim=[min_p, max_p],
             show_scalar_bar=False,
-            opacity=0.96,
+            opacity=RESULT_PROPERTY_OPACITY,
             render=False,
         )
 
@@ -3087,7 +4104,7 @@ class PyVistaRenderer:
 
     def toggle_fractures(self, show):
         if self.cache["pressure_actor"] is not None:
-            self.cache["pressure_actor"].prop.opacity = 0.3 if show else 1.0
+            self.cache["pressure_actor"].prop.opacity = RESULT_PROPERTY_OPACITY
         for actor in self.cache["fracture_actors"]:
             actor.visibility = show
         self._render()
@@ -3115,9 +4132,6 @@ class PyVistaRenderer:
         self._render()
 
     def _get_active_parent_cells_from_leaf_data(self, sim_data):
-        
-        #根据 cell_geometry_with_pressure 中的 parent_id，
-        #获取所有参与计算的 active 父网格。
         
         cell_data = getattr(
             sim_data,
@@ -3272,7 +4286,7 @@ class PyVistaRenderer:
 
             self.setup_camera_for_corner_grid(cpg)
 
-            self.plotter.render()
+            self._render()
             return
 
         self._remove_actor(
@@ -3362,7 +4376,7 @@ class PyVistaRenderer:
         actor = self.plotter.add_mesh(
             edges,
             color=(0.5, 0.5, 0.5),
-            line_width=1.0,
+            line_width=0.6,
             render=False,
         )
 
@@ -3371,7 +4385,7 @@ class PyVistaRenderer:
         surface_actor = self.plotter.add_mesh(
             surface,
             color=(1.0, 1.0, 1.0),
-            opacity=0.2,
+            opacity=0.1,
             show_edges=False,
             render=False,
         )
@@ -3398,7 +4412,7 @@ class PyVistaRenderer:
 
         self.setup_camera_for_corner_grid(cpg)
 
-        self.plotter.render()
+        self._render()
 
     def setup_camera_for_corner_grid(self, cpg):
         min_x = min_y = min_z = float("inf")
@@ -3439,133 +4453,6 @@ class PyVistaRenderer:
         self.plotter.reset_camera(render=False)
         self.plotter.camera.Zoom(1.0)
 
-    # 旧实现（注释块，不执行）——生效版本见下方 render_corner_fractures()
-    """def render_corner_fractures(self, sim_data):
-        self._remove_actor_list(self.cache["fracture_actors"])
-        self.cache["fracture_actors"] = []
-
-        if not sim_data.fractures:
-            return
-
-        grid_min_x = grid_min_y = grid_min_z = 0.0
-        grid_max_x = sim_data.grid_info.get("Lx", 1000.0)
-        grid_max_y = sim_data.grid_info.get("Ly", 500.0)
-        grid_max_z = sim_data.grid_info.get("Lz", 100.0)
-
-        for fracture in sim_data.fractures:
-
-            # =========================================================
-            # 裂缝类型判断
-            # is_hydraulic:
-            #   1 -> 人工裂缝
-            #   0 -> 天然裂缝
-            # =========================================================
-
-            is_hydraulic = int(fracture.get("is_hydraulic", 0)) == 1 or fracture.get("type") == "hydraulic"
-
-            if is_hydraulic:
-                # 人工裂缝
-                frac_color = (1.0, 0.0, 0.0)
-                edge_color = (0.75, 0.0, 0.0)
-
-                ambient = 0.85
-                diffuse = 0.35
-                specular = 0.45
-
-            else:
-                # 天然裂缝
-                frac_color = (0.0, 0.25, 0.4)
-                edge_color = (0.0, 0.15, 0.25)
-
-                ambient = 0.85
-                diffuse = 0.65
-                specular = 0.10
-
-            all_pts = [list(pt) for pt in fracture["points"]]
-
-            margin = 1.0
-            out_of_bounds = False
-
-            for pt in all_pts:
-
-                if not (
-                    grid_min_x - margin <= pt[0] <= grid_max_x + margin
-                    and grid_min_y - margin <= pt[1] <= grid_max_y + margin
-                    and grid_min_z - margin <= pt[2] <= grid_max_z + margin
-                ):
-                    out_of_bounds = True
-                    break
-
-            if out_of_bounds:
-                continue
-
-            center = np.mean(all_pts, axis=0)
-
-            found_cell = None
-
-            if sim_data.corner_point_grid:
-
-                for cell in sim_data.corner_point_grid.cells:
-
-                    xs = [corner[0] for corner in cell.corners]
-                    ys = [corner[1] for corner in cell.corners]
-                    zs = [corner[2] for corner in cell.corners]
-
-                    if (
-                        min(xs) <= center[0] <= max(xs)
-                        and min(ys) <= center[1] <= max(ys)
-                        and min(zs) <= center[2] <= max(zs)
-                    ):
-                        found_cell = cell
-                        break
-
-            if found_cell is not None:
-
-                xs = [corner[0] for corner in found_cell.corners]
-                ys = [corner[1] for corner in found_cell.corners]
-                zs = [corner[2] for corner in found_cell.corners]
-
-                for pt in all_pts:
-
-                    pt[0] = max(min(xs), min(max(xs), pt[0]))
-                    pt[1] = max(min(ys), min(max(ys), pt[1]))
-                    pt[2] = max(min(zs), min(max(zs), pt[2]))
-
-            points = np.array(all_pts, dtype=float)
-
-            polygon = pv.PolyData(points)
-
-            polygon.faces = np.array(
-                [len(all_pts), *range(len(all_pts))],
-                dtype=np.int32
-            )
-
-            actor = self.plotter.add_mesh(
-                polygon,
-
-                color=frac_color,
-                edge_color=edge_color,
-
-                opacity=0.92,
-
-                show_edges=True,
-                line_width=1.5,
-
-                lighting=True,
-                smooth_shading=True,
-
-                ambient=ambient,
-                diffuse=diffuse,
-                specular=specular,
-                specular_power=20,
-
-                render=False,
-            )
-
-            self.cache["fracture_actors"].append(actor)
-
-        self._render()"""
-
     #不处理裂缝数据，直接渲染
     def render_corner_fractures(self, sim_data):
 
@@ -3605,51 +4492,17 @@ class PyVistaRenderer:
                 dtype=float,
             )
 
-            polygon = pv.PolyData(points)
-
-            polygon.faces = np.array(
-                [len(frac_points), *range(len(frac_points))],
-                dtype=np.int32,
-            )
-
-            actor = self.plotter.add_mesh(
-                polygon,
+            actor = self._add_result_fracture_actor(
+                points=points,
                 color=frac_color,
-                opacity=0.999,
-                show_edges=False,
                 edge_color=edge_color,
-                line_width=1.0,
-                render=False,
             )
 
-            self.cache["fracture_actors"].append(actor)
-
-            edge_lines = []
-
-            for index in range(len(frac_points)):
-                start_point = frac_points[index]
-                end_point = frac_points[
-                    (index + 1) % len(frac_points)
-                ]
-
-                edge_lines.append(
-                    pv.Line(
-                        start_point,
-                        end_point,
-                    )
-                )
-
-            if edge_lines:
-                edge_actor = self.plotter.add_mesh(
-                    pv.MultiBlock(edge_lines),
-                    color=edge_color,
-                    line_width=0,
-                    render=False,
-                )
-
+            if actor is not None:
                 self.cache["fracture_actors"].append(
-                    edge_actor
+                    actor
                 )
+
 
         self._render()
 
@@ -3850,27 +4703,20 @@ class PyVistaRenderer:
                 n_sides=16,
                 capping=True,
             )
-            actor = self.plotter.add_mesh(
-                well_tube,
+            actor = self._add_result_well_actor(
+                mesh=well_tube,
                 color=(0.08, 0.24, 0.62),
-                opacity=0.999,
                 lighting=True,
                 ambient=0.9,
                 diffuse=1.0,
-                render=False,
             )
-            self.cache["well_actors"].append(
-                actor
-            )
+
+            if actor is not None:
+                self.cache["well_actors"].append(
+                    actor
+                )
             rendered_count += 1
-            print(
-                f"[WellRender] 已渲染井：{well_name}，"
-                f"轨迹点数={len(ordered_points)}"
-            )
-        print(
-            f"[WellRender] 井渲染完成："
-            f"{rendered_count}/{len(wells)} 口井"
-        )
+
         self._render()
 
     def hide_wells(self):
@@ -3965,7 +4811,7 @@ class PyVistaRenderer:
                 scalars="Pressure",
                 cmap=get_bright_jet_cmap(),
                 clim=[pmin, pmax],
-                opacity=0.95,
+                opacity=RESULT_PROPERTY_OPACITY,
                 show_edges=False,
                 show_scalar_bar=False,
                 lighting=False,
@@ -4025,7 +4871,7 @@ class PyVistaRenderer:
             scalars="Pressure",
             cmap=get_bright_jet_cmap(),
             clim=[pressure_min, pressure_max],
-            opacity=0.7,
+            opacity=RESULT_PROPERTY_OPACITY,
             opacity_unit_distance=50,
             blending="maximum",
             shade=False,
@@ -4179,37 +5025,286 @@ class PyVistaRenderer:
 
         self._render()
 
-    def _create_grid_lines_actor(self, grid_geom, color, line_width, opacity):
-        if grid_geom is None or grid_geom.shape[0] == 0:
-            return None
+    @staticmethod
+    def _get_grid_line_tolerance(*grid_geometries):
 
-        edges = [
+        valid_points = []
+
+        for geometry in grid_geometries:
+            if geometry is None:
+                continue
+
+            try:
+                array = np.asarray(
+                    geometry,
+                    dtype=np.float64,
+                )
+            except Exception:
+                continue
+
+            if array.size == 0:
+                continue
+
+            try:
+                array = array.reshape(-1, 3)
+            except ValueError:
+                continue
+
+            finite_mask = np.isfinite(array).all(axis=1)
+            array = array[finite_mask]
+
+            if len(array) > 0:
+                valid_points.append(array)
+
+        if not valid_points:
+            return 1e-7
+
+        points = np.vstack(valid_points)
+        spans = np.ptp(points, axis=0)
+        reference_span = float(np.max(spans))
+
+        return max(reference_span * 1e-10, 1e-7)
+
+
+    @staticmethod
+    def _make_grid_point_key(point, tolerance):
+        point = np.asarray(
+            point,
+            dtype=np.float64,
+        )
+
+        return tuple(
+            np.rint(point / float(tolerance))
+            .astype(np.int64)
+            .tolist()
+        )
+
+
+    def _collect_unique_grid_line_segments(
+        self,
+        grid_geom,
+        tolerance,
+        excluded_edge_keys=None,
+    ):
+
+        if grid_geom is None:
+            return [], set()
+
+        try:
+            geometry = np.asarray(
+                grid_geom,
+                dtype=np.float64,
+            )
+        except Exception:
+            return [], set()
+
+        if geometry.size == 0:
+            return [], set()
+
+        if geometry.ndim == 2:
+            if geometry.shape[1] < 24:
+                return [], set()
+
+            geometry = geometry[:, :24].reshape(-1, 8, 3)
+
+        elif geometry.ndim == 3:
+            if geometry.shape[1:] != (8, 3):
+                return [], set()
+
+        else:
+            return [], set()
+
+        local_edges = (
             (0, 1), (1, 2), (2, 3), (3, 0),
             (4, 5), (5, 6), (6, 7), (7, 4),
             (0, 4), (1, 5), (2, 6), (3, 7),
-        ]
-        segments = []
-        for cell_index in range(grid_geom.shape[0]):
-            corners = []
-            for corner_index in range(8):
-                x = grid_geom[cell_index, corner_index * 3 + 0]
-                y = grid_geom[cell_index, corner_index * 3 + 1]
-                z = grid_geom[cell_index, corner_index * 3 + 2]
-                corners.append((x, y, z))
-            for start, end in edges:
-                segments.append((corners[start], corners[end]))
+        )
 
-        line_poly_data = self._polydata_from_line_segments(segments)
+        excluded_edge_keys = set(
+            excluded_edge_keys or ()
+        )
+
+        unique_edge_keys = set()
+        unique_segments = []
+
+        for corners in geometry:
+            if not np.isfinite(corners).all():
+                continue
+
+            for start_index, end_index in local_edges:
+                start_point = corners[start_index]
+                end_point = corners[end_index]
+
+                if np.linalg.norm(
+                    end_point - start_point
+                ) <= float(tolerance):
+                    continue
+
+                start_key = self._make_grid_point_key(
+                    start_point,
+                    tolerance,
+                )
+                end_key = self._make_grid_point_key(
+                    end_point,
+                    tolerance,
+                )
+
+                edge_key = (
+                    (start_key, end_key)
+                    if start_key <= end_key
+                    else (end_key, start_key)
+                )
+
+                if edge_key in excluded_edge_keys:
+                    continue
+
+                if edge_key in unique_edge_keys:
+                    continue
+
+                unique_edge_keys.add(edge_key)
+                unique_segments.append(
+                    (
+                        tuple(float(value) for value in start_point),
+                        tuple(float(value) for value in end_point),
+                    )
+                )
+
+        return unique_segments, unique_edge_keys
+
+
+    def _create_grid_lines_actor(
+        self,
+        grid_geom,
+        color,
+        line_width,
+        opacity,
+        excluded_edge_keys=None,
+        tolerance=None,
+        return_edge_keys=False,
+    ):
+        """创建稳定的父网格/加密网格线 actor。"""
+        if grid_geom is None:
+            return (None, set()) if return_edge_keys else None
+
+        try:
+            if np.asarray(grid_geom).size == 0:
+                return (None, set()) if return_edge_keys else None
+        except Exception:
+            return (None, set()) if return_edge_keys else None
+
+        if tolerance is None:
+            tolerance = self._get_grid_line_tolerance(
+                grid_geom
+            )
+
+        segments, edge_keys = (
+            self._collect_unique_grid_line_segments(
+                grid_geom=grid_geom,
+                tolerance=tolerance,
+                excluded_edge_keys=excluded_edge_keys,
+            )
+        )
+
+        line_poly_data = self._polydata_from_line_segments(
+            segments
+        )
+
         if line_poly_data is None:
-            return None
+            return (None, edge_keys) if return_edge_keys else None
 
-        return self.plotter.add_mesh(
-            line_poly_data,
+        # 小于 1 像素的 OpenGL 线在旋转时很容易发生亚像素跳动。
+        stable_line_width = max(
+            float(line_width),
+            0.6,
+        )
+
+        stable_opacity = float(
+            np.clip(opacity, 0.0, 1.0)
+        )
+
+        mesh_kwargs = dict(
             color=color,
-            line_width=line_width,
-            opacity=opacity,
+            line_width=stable_line_width,
+            opacity=stable_opacity,
+            lighting=False,
             render=False,
         )
+
+        try:
+            actor = self.plotter.add_mesh(
+                line_poly_data,
+                render_lines_as_tubes=True,
+                **mesh_kwargs,
+            )
+        except TypeError:
+            # 兼容较旧 PyVista 版本。
+            actor = self.plotter.add_mesh(
+                line_poly_data,
+                **mesh_kwargs,
+            )
+
+        if actor is not None:
+            try:
+                prop = actor.GetProperty()
+
+                if prop is not None:
+                    prop.SetLineWidth(stable_line_width)
+                    prop.SetOpacity(stable_opacity)
+
+                    try:
+                        prop.LightingOff()
+                    except Exception:
+                        pass
+
+                    try:
+                        prop.RenderLinesAsTubesOn()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 加密网格使用不透明线，避免它进入 Depth Peeling 的透明排序过程。
+            if stable_opacity >= 0.999:
+                try:
+                    actor.ForceTranslucentOff()
+                except Exception:
+                    try:
+                        actor.SetForceTranslucent(False)
+                    except Exception:
+                        pass
+
+                try:
+                    actor.ForceOpaqueOn()
+                except Exception:
+                    try:
+                        actor.SetForceOpaque(True)
+                    except Exception:
+                        pass
+
+            try:
+                mapper = actor.GetMapper()
+
+                if mapper is not None and hasattr(
+                    mapper,
+                    "SetResolveCoincidentTopologyToPolygonOffset",
+                ):
+                    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+
+                if mapper is not None and hasattr(
+                    mapper,
+                    "SetRelativeCoincidentTopologyLineOffsetParameters",
+                ):
+                    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(
+                        0.0,
+                        -2.0,
+                    )
+            except Exception:
+                pass
+
+        if return_edge_keys:
+            return actor, edge_keys
+
+        return actor
 
     # NOTE: 此定义会被下方第二个 render_corner_lgr_grid 覆盖，保留仅用于参考旧实现。
     def render_corner_lgr_grid(self, sim_data):
@@ -4345,33 +5440,61 @@ class PyVistaRenderer:
 
     def render_corner_lgr_grid(self, sim_data):
 
-        self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
-        self._remove_actor(self.cache["corner_lgr_refined_grid_actor"])
+        self._remove_actor(
+            self.cache["corner_lgr_parent_grid_actor"]
+        )
+        self._remove_actor(
+            self.cache["corner_lgr_refined_grid_actor"]
+        )
 
         self.cache["corner_lgr_parent_grid_actor"] = None
         self.cache["corner_lgr_refined_grid_actor"] = None
 
-        #父网格（灰色）
-        if getattr(sim_data, "corner_lgr_parent_grid_geometry", None) is not None:
+        parent_geom = getattr(
+            sim_data,
+            "corner_lgr_parent_grid_geometry",
+            None,
+        )
 
-            self.cache["corner_lgr_parent_grid_actor"] = self._create_grid_lines_actor(
-                sim_data.corner_lgr_parent_grid_geometry,
-                #(0.78, 0.82, 0.87),
-                (0.5, 0.5, 0.5),
-                0.4,
-                1.0,
+        refined_geom = getattr(
+            sim_data,
+            "corner_lgr_refined_grid_geometry",
+            None,
+        )
+
+        common_tolerance = self._get_grid_line_tolerance(
+            parent_geom,
+            refined_geom,
+        )
+
+        parent_edge_keys = set()
+
+        if parent_geom is not None:
+            parent_actor, parent_edge_keys = (
+                self._create_grid_lines_actor(
+                    grid_geom=parent_geom,
+                    color=(0.5, 0.5, 0.5),
+                    line_width=1.0,
+                    opacity=1.0,
+                    tolerance=common_tolerance,
+                    return_edge_keys=True,
+                )
             )
 
-        # 加密网格（稍深灰蓝，层次清晰）
-        refined_geom = getattr(sim_data, "corner_lgr_refined_grid_geometry", None)
+            self.cache[
+                "corner_lgr_parent_grid_actor"
+            ] = parent_actor
 
         if refined_geom is not None:
-
-            self.cache["corner_lgr_refined_grid_actor"] = self._create_grid_lines_actor(
-                refined_geom,
-                (0.64, 0.69, 0.76),
-                0.45,
-                0.0,
+            self.cache[
+                "corner_lgr_refined_grid_actor"
+            ] = self._create_grid_lines_actor(
+                grid_geom=refined_geom,
+                color=(0.64, 0.69, 0.76),
+                line_width=0.6,
+                opacity=1.0,
+                excluded_edge_keys=parent_edge_keys,
+                tolerance=common_tolerance,
             )
 
         self._render()
@@ -4431,13 +5554,6 @@ class PyVistaRenderer:
         layer_index,
         cell_data=None,
     ):
-        """
-        根据 leaf 网格的 parent_id，
-        筛选指定逻辑 I / J / K 层。
-
-        不使用粗网格的 AABB 包围盒，
-        可用于不规则角点网格。
-        """
 
         if cell_data is None:
             cell_data = getattr(
@@ -4473,13 +5589,10 @@ class PyVistaRenderer:
                 f"合法范围为 0 ~ {max_index}"
             )
 
-        # 第 1 列是 leaf 对应的 parent_id
         parent_ids = np.rint(
             cell_data[:, 1]
         ).astype(np.int64)
 
-        # C++ 的 parent_id 规则：
-        # parent_id = i + j * nx + k * nx * ny
         parent_i = parent_ids % nx
         parent_j = (parent_ids // nx) % ny
         parent_k = parent_ids // (nx * ny)
@@ -4533,7 +5646,7 @@ class PyVistaRenderer:
                 float(np.min(pressures_all)),
                 float(np.max(pressures_all))
             ],
-            opacity=0.72,
+            opacity=RESULT_PROPERTY_OPACITY,
             show_scalar_bar=False,
             show_edges=False,
             lighting=False,
@@ -4735,22 +5848,16 @@ class PyVistaRenderer:
                 if not inside:
                     continue
 
-                poly = pv.PolyData(pts)
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fcolor = (0.0, 0.25, 0.4)
-                ecolor = (0.0, 0.15, 0.25)
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.0, 0.25, 0.4),
+                    edge_color=(0.0, 0.15, 0.25),
                 )
-                self.cache["layer_frac_actors"].append(fac)
+
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
 
         # -------------------------
         # 人工裂缝显示规则：只要一个人工裂缝在层内，显示所有人工裂缝
@@ -4776,20 +5883,16 @@ class PyVistaRenderer:
                 pts = np.array(frac["points"], dtype=np.float64)
                 if len(pts) < 3:
                     continue
-                poly = pv.PolyData(pts)
-                poly.faces = [len(pts), *range(len(pts))]
-                fcolor = (0.72, 0.38, 0.38)
-                ecolor = (0.54, 0.29, 0.29)
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.72, 0.38, 0.38),
+                    edge_color=(0.54, 0.29, 0.29),
                 )
-                self.cache["layer_frac_actors"].append(fac)
+
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
 
         well_centers = []
 
@@ -4829,17 +5932,18 @@ class PyVistaRenderer:
 
             if well_line:
 
-                actor = self.plotter.add_mesh(
-                    well_line.tube(radius=2.0),
+                actor = self._add_result_well_actor(
+                    mesh=well_line.tube(radius=2.0),
                     color=(0.31, 0.35, 0.40),
-                    opacity=1.0,
                     lighting=True,
                     ambient=0.9,
                     diffuse=1.0,
-                    render=False
                 )
 
-                self.cache["layer_well_actors"].append(actor)
+                if actor is not None:
+                    self.cache["layer_well_actors"].append(
+                        actor
+                    )
 
         self._render()
 
@@ -5072,25 +6176,16 @@ class PyVistaRenderer:
                 if not inside:
                     continue
 
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fcolor = (0.0, 0.25, 0.4)
-
-                ecolor = (0.0, 0.15, 0.25)
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.0, 0.25, 0.4),
+                    edge_color=(0.0, 0.15, 0.25),
                 )
 
-                self.cache["layer_frac_actors"].append(fac)
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
         #人工裂缝
         if hasattr(sim_data, "fractures"):
 
@@ -5120,25 +6215,16 @@ class PyVistaRenderer:
                 if not inside:
                     continue
 
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fcolor = (0.72, 0.38, 0.38)
-
-                ecolor = (0.54, 0.29, 0.29)
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.72, 0.38, 0.38),
+                    edge_color=(0.54, 0.29, 0.29),
                 )
 
-                self.cache["layer_frac_actors"].append(fac)
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
 
         # -------------------------------------------------
         # 井线（只连接当前层内人工裂缝）
@@ -5192,17 +6278,18 @@ class PyVistaRenderer:
 
             if well_line:
 
-                actor = self.plotter.add_mesh(
-                    well_line.tube(radius=2.0),
+                actor = self._add_result_well_actor(
+                    mesh=well_line.tube(radius=2.0),
                     color=(0.31, 0.35, 0.40),
-                    opacity=1.0,
                     lighting=True,
                     ambient=0.9,
                     diffuse=1.0,
-                    render=False
                 )
 
-                self.cache["layer_well_actors"].append(actor)
+                if actor is not None:
+                    self.cache["layer_well_actors"].append(
+                        actor
+                    )
 
         self._render()
 
@@ -5430,25 +6517,16 @@ class PyVistaRenderer:
                 if not inside:
                     continue
 
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fcolor = (0.0, 0.25, 0.4)
-
-                ecolor = (0.0, 0.15, 0.25)
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.0, 0.25, 0.4),
+                    edge_color=(0.0, 0.15, 0.25),
                 )
 
-                self.cache["layer_frac_actors"].append(fac)
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
 
         # -------------------------------------------------
         # 人工裂缝
@@ -5480,25 +6558,16 @@ class PyVistaRenderer:
                 if not inside:
                     continue
 
-                poly = pv.PolyData(pts)
-
-                poly.faces = [len(pts), *range(len(pts))]
-
-                fcolor = (0.72, 0.38, 0.38)
-
-                ecolor = (0.54, 0.29, 0.29)
-
-                fac = self.plotter.add_mesh(
-                    poly,
-                    color=fcolor,
-                    edge_color=ecolor,
-                    show_edges=True,
-                    line_width=1.5,
-                    opacity=0.9,
-                    render=False
+                fac = self._add_result_fracture_actor(
+                    points=pts,
+                    color=(0.72, 0.38, 0.38),
+                    edge_color=(0.54, 0.29, 0.29),
                 )
 
-                self.cache["layer_frac_actors"].append(fac)
+                if fac is not None:
+                    self.cache["layer_frac_actors"].append(
+                        fac
+                    )
 
         # -------------------------------------------------
         # 井线
@@ -5552,17 +6621,18 @@ class PyVistaRenderer:
 
             if well_line:
 
-                actor = self.plotter.add_mesh(
-                    well_line.tube(radius=2.0),
+                actor = self._add_result_well_actor(
+                    mesh=well_line.tube(radius=2.0),
                     color=(0.31, 0.35, 0.40),
-                    opacity=1.0,
                     lighting=True,
                     ambient=0.9,
                     diffuse=1.0,
-                    render=False
                 )
 
-                self.cache["layer_well_actors"].append(actor)
+                if actor is not None:
+                    self.cache["layer_well_actors"].append(
+                        actor
+                    )
 
         self._render()
 
@@ -5669,7 +6739,7 @@ class PyVistaRenderer:
                 scalars="Sw",
                 cmap=get_bright_jet_cmap(),
                 clim=[smin, smax],
-                opacity=0.95,
+                opacity=RESULT_PROPERTY_OPACITY,
                 show_edges=False,
                 show_scalar_bar=False,
                 lighting=False,
@@ -5731,7 +6801,7 @@ class PyVistaRenderer:
         sim_data,
         axis="k",
         layer_index=0,
-        opacity=0.72,
+        opacity=RESULT_PROPERTY_OPACITY,
         show_edges=False,
         show_grid=True,
         show_fractures=True,
@@ -6224,32 +7294,16 @@ class PyVistaRenderer:
                     if not inside:
                         continue
 
-                    poly = pv.PolyData(pts)
-
-                    poly.faces = np.asarray(
-                        [
-                            len(pts),
-                            *range(len(pts)),
-                        ],
-                        dtype=np.int32,
-                    )
-
-                    frac_actor = self.plotter.add_mesh(
-                        poly,
+                    frac_actor = self._add_result_fracture_actor(
+                        points=pts,
                         color=(0.0, 0.25, 0.40),
                         edge_color=(0.0, 0.15, 0.25),
-                        show_edges=True,
-                        line_width=1.5,
-                        opacity=0.9,
-                        lighting=False,
-                        render=False,
                     )
 
-                    self.cache[
-                        "layer_sw_frac_actors"
-                    ].append(
-                        frac_actor
-                    )
+                    if frac_actor is not None:
+                        self.cache["layer_sw_frac_actors"].append(
+                            frac_actor
+                        )
 
                 # -----------------------------------------------------
                 # 8.2 按 I/J/K 的规则显示人工裂缝
@@ -6286,32 +7340,16 @@ class PyVistaRenderer:
                     if len(pts) < 3:
                         continue
 
-                    poly = pv.PolyData(pts)
-
-                    poly.faces = np.asarray(
-                        [
-                            len(pts),
-                            *range(len(pts)),
-                        ],
-                        dtype=np.int32,
-                    )
-
-                    frac_actor = self.plotter.add_mesh(
-                        poly,
+                    frac_actor = self._add_result_fracture_actor(
+                        points=pts,
                         color=(0.72, 0.38, 0.38),
                         edge_color=(0.54, 0.29, 0.29),
-                        show_edges=True,
-                        line_width=1.5,
-                        opacity=0.9,
-                        lighting=False,
-                        render=False,
                     )
 
-                    self.cache[
-                        "layer_sw_frac_actors"
-                    ].append(
-                        frac_actor
-                    )
+                    if frac_actor is not None:
+                        self.cache["layer_sw_frac_actors"].append(
+                            frac_actor
+                        )
 
             # =========================================================
             # 9. 当前层 / 剖面井线显示
@@ -6400,21 +7438,18 @@ class PyVistaRenderer:
 
                     if well_line is not None:
 
-                        well_actor = self.plotter.add_mesh(
-                            well_line.tube(radius=2.0),
+                        well_actor = self._add_result_well_actor(
+                            mesh=well_line.tube(radius=2.0),
                             color=(0.31, 0.35, 0.40),
-                            opacity=1.0,
                             lighting=True,
                             ambient=0.9,
                             diffuse=1.0,
-                            render=False,
                         )
 
-                        self.cache[
-                            "layer_sw_well_actors"
-                        ].append(
-                            well_actor
-                        )
+                        if well_actor is not None:
+                            self.cache["layer_sw_well_actors"].append(
+                                well_actor
+                            )
 
             # =========================================================
             # 10. 输出检查信息
@@ -6573,7 +7608,7 @@ class PyVistaRenderer:
                 scalars="Phi",
                 cmap=get_bright_jet_cmap(),
                 clim=[pmin, pmax],
-                opacity=0.95,
+                opacity=RESULT_PROPERTY_OPACITY,
                 show_edges=False,
                 show_scalar_bar=False,
                 lighting=False,
@@ -6625,7 +7660,7 @@ class PyVistaRenderer:
         sim_data,
         axis="k",
         layer_index=0,
-        opacity=0.72,
+        opacity=RESULT_PROPERTY_OPACITY,
         show_edges=False,
         show_grid=True,
         show_fractures=True,
@@ -7001,23 +8036,16 @@ class PyVistaRenderer:
                     if not inside:
                         continue
 
-                    poly = pv.PolyData(pts)
-                    poly.faces = np.array(
-                        [len(pts), *range(len(pts))],
-                        dtype=np.int32
-                    )
-
-                    fac = self.plotter.add_mesh(
-                        poly,
+                    fac = self._add_result_fracture_actor(
+                        points=pts,
                         color=(0.0, 0.25, 0.4),
                         edge_color=(0.0, 0.15, 0.25),
-                        show_edges=True,
-                        line_width=1.5,
-                        opacity=0.9,
-                        render=False,
                     )
 
-                    self.cache["layer_phi_frac_actors"].append(fac)
+                    if fac is not None:
+                        self.cache["layer_phi_frac_actors"].append(
+                            fac
+                        )
 
                 # -----------------------------------------------------
                 # 7.2 根据 I/J/K 规则渲染人工裂缝
@@ -7042,23 +8070,16 @@ class PyVistaRenderer:
                     if len(pts) < 3:
                         continue
 
-                    poly = pv.PolyData(pts)
-                    poly.faces = np.array(
-                        [len(pts), *range(len(pts))],
-                        dtype=np.int32
-                    )
-
-                    fac = self.plotter.add_mesh(
-                        poly,
+                    fac = self._add_result_fracture_actor(
+                        points=pts,
                         color=(0.72, 0.38, 0.38),
                         edge_color=(0.54, 0.29, 0.29),
-                        show_edges=True,
-                        line_width=1.5,
-                        opacity=0.9,
-                        render=False,
                     )
 
-                    self.cache["layer_phi_frac_actors"].append(fac)
+                    if fac is not None:
+                        self.cache["layer_phi_frac_actors"].append(
+                            fac
+                        )
 
             # =========================================================
             # 8. 当前层/剖面井显示
@@ -7128,17 +8149,18 @@ class PyVistaRenderer:
                     well_line = self._polydata_from_line_segments(segments)
 
                     if well_line is not None:
-                        wactor = self.plotter.add_mesh(
-                            well_line.tube(radius=2.0),
+                        wactor = self._add_result_well_actor(
+                            mesh=well_line.tube(radius=2.0),
                             color=(0.31, 0.35, 0.40),
-                            opacity=1.0,
                             lighting=True,
                             ambient=0.9,
                             diffuse=1.0,
-                            render=False,
                         )
 
-                        self.cache["layer_phi_well_actors"].append(wactor)
+                        if wactor is not None:
+                            self.cache["layer_phi_well_actors"].append(
+                                wactor
+                            )
 
             self._render()
 
@@ -7185,7 +8207,7 @@ class PyVistaRenderer:
         property_name="Pressure",
         min_value=None,
         max_value=None,
-        opacity=0.95,
+        opacity=RESULT_PROPERTY_OPACITY,
         show_edges=False,
     ):
 
@@ -7669,6 +8691,431 @@ class PyVistaRenderer:
         return None
 
 
+    #六视图
+    def _get_native_interactor(self):
+        """获取底层 VTK RenderWindowInteractor。"""
+        try:
+            iren = getattr(self.plotter, "iren", None)
+            native = getattr(iren, "interactor", None)
+            if native is not None:
+                return native
+        except Exception:
+            pass
+
+        try:
+            iren = getattr(self.vtk_widget, "iren", None)
+            native = getattr(iren, "interactor", None)
+            if native is not None:
+                return native
+        except Exception:
+            pass
+
+        # 兼容某些版本：iren 本身就是底层交互器。
+        for owner in (self.plotter, self.vtk_widget):
+            try:
+                candidate = getattr(owner, "iren", None)
+                if candidate is not None and hasattr(candidate, "AddObserver"):
+                    return candidate
+            except Exception:
+                pass
+
+        return None
+
+
+    def _ensure_six_view_rotation_observers(self):
+
+        if self._six_view_rotation_observer_ids:
+            return True
+
+        interactor = self._get_native_interactor()
+        if interactor is None:
+            print("Six-view observer setup failed: interactor unavailable")
+            return False
+
+        observer_ids = []
+
+        try:
+            press_id = interactor.AddObserver(
+                "LeftButtonPressEvent",
+                self._on_six_view_left_button_press,
+                1.0,
+            )
+            move_id = interactor.AddObserver(
+                "MouseMoveEvent",
+                self._on_six_view_mouse_move,
+                1.0,
+            )
+            release_id = interactor.AddObserver(
+                "LeftButtonReleaseEvent",
+                self._on_six_view_left_button_release,
+                1.0,
+            )
+
+            observer_ids = [press_id, move_id, release_id]
+
+        except TypeError:
+            press_id = interactor.AddObserver(
+                "LeftButtonPressEvent",
+                self._on_six_view_left_button_press,
+            )
+            move_id = interactor.AddObserver(
+                "MouseMoveEvent",
+                self._on_six_view_mouse_move,
+            )
+            release_id = interactor.AddObserver(
+                "LeftButtonReleaseEvent",
+                self._on_six_view_left_button_release,
+            )
+
+            observer_ids = [press_id, move_id, release_id]
+
+        except Exception as exc:
+            print("Six-view observer setup failed:", exc)
+            return False
+
+        self._six_view_rotation_interactor = interactor
+        self._six_view_rotation_observer_ids = observer_ids
+        return True
+
+
+    def _on_six_view_left_button_press(self, obj, event):
+
+        if not self._six_view_projection_active:
+            return
+
+        if bool(getattr(self, "camera_direction_locked", False)):
+            return
+
+        try:
+            x, y = obj.GetEventPosition()
+            self._six_view_press_position = (int(x), int(y))
+            self._six_view_left_button_down = True
+        except Exception:
+            self._six_view_press_position = None
+            self._six_view_left_button_down = True
+
+        self._restore_perspective_for_free_rotation()
+
+        self._six_view_projection_active = False
+
+
+    def _on_six_view_mouse_move(self, obj, event):
+        """
+        兼容保留的移动监听。
+
+        正常情况下投影已经在 LeftButtonPressEvent 中切换完成；
+        此处不再等待移动距离，也不在松开鼠标时切换。
+        """
+        return
+
+
+    def _on_six_view_left_button_release(self, obj, event):
+        self._six_view_left_button_down = False
+        self._six_view_press_position = None
+
+
+    def _get_current_camera_visible_half_height(self):
+
+        cam = self.plotter.camera
+
+        try:
+            if bool(getattr(cam, "parallel_projection", False)):
+                scale = float(getattr(cam, "parallel_scale", 1.0))
+                if np.isfinite(scale) and scale > 1e-12:
+                    return scale
+
+            position, focal_point, _ = self.plotter.camera_position
+            position = np.asarray(position, dtype=np.float64)
+            focal_point = np.asarray(focal_point, dtype=np.float64)
+
+            distance = float(np.linalg.norm(position - focal_point))
+            if not np.isfinite(distance) or distance <= 1e-12:
+                return None
+
+            view_angle = float(getattr(cam, "view_angle", 30.0))
+            view_angle = min(max(view_angle, 1.0), 170.0)
+
+            half_height = distance * float(
+                np.tan(np.deg2rad(view_angle * 0.5))
+            )
+
+            if np.isfinite(half_height) and half_height > 1e-12:
+                return half_height
+
+        except Exception:
+            pass
+
+        return None
+
+
+    @staticmethod
+    def _camera_bounds_corners(bounds):
+
+        if bounds is None or len(bounds) != 6:
+            return None
+
+        try:
+            xmin, xmax, ymin, ymax, zmin, zmax = [
+                float(value)
+                for value in bounds
+            ]
+        except Exception:
+            return None
+
+        corners = np.asarray(
+            [
+                (xmin, ymin, zmin),
+                (xmin, ymin, zmax),
+                (xmin, ymax, zmin),
+                (xmin, ymax, zmax),
+                (xmax, ymin, zmin),
+                (xmax, ymin, zmax),
+                (xmax, ymax, zmin),
+                (xmax, ymax, zmax),
+            ],
+            dtype=np.float64,
+        )
+
+        if not np.isfinite(corners).all():
+            return None
+
+        return corners
+
+
+    def _get_safe_camera_distance_for_rotation(
+        self,
+        focal_point,
+        requested_distance,
+        bounds=None,
+    ):
+
+        focal_point = np.asarray(
+            focal_point,
+            dtype=np.float64,
+        )
+
+        requested_distance = max(
+            float(requested_distance),
+            1e-6,
+        )
+
+        if bounds is None:
+            bounds = self._get_current_model_bounds()
+
+        corners = self._camera_bounds_corners(bounds)
+
+        if corners is None:
+            return requested_distance
+
+        try:
+            radius = float(
+                np.max(
+                    np.linalg.norm(
+                        corners - focal_point,
+                        axis=1,
+                    )
+                )
+            )
+        except Exception:
+            return requested_distance
+
+        if not np.isfinite(radius) or radius <= 1e-12:
+            return requested_distance
+
+        clearance = max(
+            radius * 0.12,
+            1.0,
+        )
+
+        return max(
+            requested_distance,
+            radius + clearance,
+        )
+
+
+    def _set_safe_camera_clipping_range(
+        self,
+        bounds=None,
+        focal_point=None,
+    ):
+
+        try:
+            cam = self.plotter.camera
+            position, current_focal, _ = self.plotter.camera_position
+
+            position = np.asarray(
+                position,
+                dtype=np.float64,
+            )
+
+            if focal_point is None:
+                focal_point = current_focal
+
+            focal_point = np.asarray(
+                focal_point,
+                dtype=np.float64,
+            )
+
+            distance = float(
+                np.linalg.norm(
+                    position - focal_point
+                )
+            )
+
+            if not np.isfinite(distance) or distance <= 1e-12:
+                return False
+
+            if bounds is None:
+                bounds = self._get_current_model_bounds()
+
+            corners = self._camera_bounds_corners(bounds)
+
+            if corners is None:
+                self.plotter.reset_camera_clipping_range()
+                return True
+
+            radius = float(
+                np.max(
+                    np.linalg.norm(
+                        corners - focal_point,
+                        axis=1,
+                    )
+                )
+            )
+
+            if not np.isfinite(radius) or radius <= 1e-12:
+                self.plotter.reset_camera_clipping_range()
+                return True
+
+            padding = max(
+                radius * 0.08,
+                1.0,
+            )
+
+            near_value = distance - radius - padding
+            far_value = distance + radius + padding
+
+            # near 不能为 0，但也不能因为过小造成严重的深度精度损失。
+            minimum_near = max(
+                far_value * 1e-6,
+                1e-3,
+            )
+
+            near_value = max(
+                near_value,
+                minimum_near,
+            )
+
+            far_value = max(
+                far_value,
+                near_value + 1.0,
+            )
+
+            cam.clipping_range = (
+                float(near_value),
+                float(far_value),
+            )
+
+            return True
+
+        except Exception:
+            try:
+                self.plotter.reset_camera_clipping_range()
+                return True
+            except Exception:
+                return False
+
+
+    def _restore_perspective_for_free_rotation(self):
+
+        cam = self.plotter.camera
+
+        if not bool(getattr(cam, "parallel_projection", False)):
+            return False
+
+        try:
+            position, focal_point, view_up = self.plotter.camera_position
+
+            position = np.asarray(position, dtype=np.float64)
+            focal_point = np.asarray(focal_point, dtype=np.float64)
+            view_up = np.asarray(view_up, dtype=np.float64)
+
+            backward = position - focal_point
+            old_distance = float(np.linalg.norm(backward))
+
+            if old_distance <= 1e-12:
+                backward = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+            else:
+                backward = backward / old_distance
+
+            parallel_scale = max(
+                float(getattr(cam, "parallel_scale", 1.0)),
+                1e-6,
+            )
+
+            view_angle = float(getattr(cam, "view_angle", 30.0))
+            view_angle = min(max(view_angle, 1.0), 170.0)
+
+            half_angle = np.deg2rad(view_angle * 0.5)
+            tangent = max(float(np.tan(half_angle)), 1e-6)
+
+            requested_distance = parallel_scale / tangent
+
+            bounds = self._get_current_model_bounds()
+
+            new_distance = self._get_safe_camera_distance_for_rotation(
+                focal_point=focal_point,
+                requested_distance=requested_distance,
+                bounds=bounds,
+            )
+
+            matched_half_angle = float(
+                np.arctan(
+                    parallel_scale / max(new_distance, 1e-6)
+                )
+            )
+
+            matched_view_angle = float(
+                np.rad2deg(
+                    matched_half_angle * 2.0
+                )
+            )
+
+            matched_view_angle = min(
+                max(matched_view_angle, 0.1),
+                170.0,
+            )
+
+            new_position = focal_point + backward * new_distance
+
+            cam.parallel_projection = False
+            cam.view_angle = matched_view_angle
+
+            self.plotter.camera_position = (
+                tuple(float(v) for v in new_position),
+                tuple(float(v) for v in focal_point),
+                tuple(float(v) for v in view_up),
+            )
+
+            self._set_safe_camera_clipping_range(
+                bounds=bounds,
+                focal_point=focal_point,
+            )
+
+            if self.cache.get(
+                "camera_aware_coordinate_enabled",
+                False,
+            ):
+                self._update_camera_aware_coordinate_axes()
+
+            self._render()
+            return True
+
+        except Exception as exc:
+            print("Restore perspective for free rotation failed:", exc)
+            return False
+
+
     def set_camera_by_direction(self, direction="front"):
         """
         设置标准六向视图。
@@ -7701,6 +9148,14 @@ class PyVistaRenderer:
         span = max(dx, dy, dz, 1.0)
         dist = span * 2.5
 
+        current_visible_half_height = (
+            self._get_current_camera_visible_half_height()
+        )
+
+        if current_visible_half_height is None:
+
+            current_visible_half_height = max(span * 0.5, 1.0)
+
         direction = str(direction).lower()
 
         if direction == "front":
@@ -7710,7 +9165,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 0.0, 1.0)
             )
-            parallel_scale = max(dx, dz) * 0.6
 
         elif direction == "back":
             # 从 +Y 方向看向模型
@@ -7719,7 +9173,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 0.0, 1.0)
             )
-            parallel_scale = max(dx, dz) * 0.6
 
         elif direction == "left":
             # 从 -X 方向看向模型
@@ -7728,7 +9181,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 0.0, 1.0)
             )
-            parallel_scale = max(dy, dz) * 0.6
 
         elif direction == "right":
             # 从 +X 方向看向模型
@@ -7737,7 +9189,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 0.0, 1.0)
             )
-            parallel_scale = max(dy, dz) * 0.6
 
         elif direction == "top":
             # 俯视图：从 +Z 往下看
@@ -7746,7 +9197,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 1.0, 0.0)
             )
-            parallel_scale = max(dx, dy) * 0.6
 
         elif direction == "bottom":
             # 仰视图：从 -Z 往上看
@@ -7755,7 +9205,6 @@ class PyVistaRenderer:
                 (cx, cy, cz),
                 (0.0, 1.0, 0.0)
             )
-            parallel_scale = max(dx, dy) * 0.6
 
         else:
             print(f"Unknown camera direction: {direction}")
@@ -7763,10 +9212,20 @@ class PyVistaRenderer:
 
         cam = self.plotter.camera
         cam.parallel_projection = True
-        cam.parallel_scale = parallel_scale
+        cam.parallel_scale = float(current_visible_half_height)
 
         self.plotter.camera_position = camera_position
-        self.plotter.reset_camera_clipping_range()
+
+        self._set_safe_camera_clipping_range(
+            bounds=bounds,
+            focal_point=(cx, cy, cz),
+        )
+
+        self._six_view_projection_active = True
+        self._six_view_left_button_down = False
+        self._six_view_press_position = None
+        self._ensure_six_view_rotation_observers()
+
         if self.cache.get(
             "camera_aware_coordinate_enabled",
             False,
@@ -7948,7 +9407,7 @@ class PyVistaRenderer:
                 scalars=prop_name,
                 cmap=get_bright_jet_cmap(),
                 clim=[kmin, kmax],
-                opacity=0.95,
+                opacity=RESULT_PROPERTY_OPACITY,
                 show_edges=False,
                 show_scalar_bar=False,
                 lighting=False,
@@ -8031,7 +9490,7 @@ class PyVistaRenderer:
         perm_direction="x",
         axis="k",
         layer_index=0,
-        opacity=0.72,
+        opacity=RESULT_PROPERTY_OPACITY,
         show_edges=False,
         show_grid=True,
         show_fractures=True,
@@ -8405,23 +9864,16 @@ class PyVistaRenderer:
                     if not inside:
                         continue
 
-                    poly = pv.PolyData(pts)
-                    poly.faces = np.array(
-                        [len(pts), *range(len(pts))],
-                        dtype=np.int32
-                    )
-
-                    fac = self.plotter.add_mesh(
-                        poly,
+                    fac = self._add_result_fracture_actor(
+                        points=pts,
                         color=(0.0, 0.25, 0.4),
                         edge_color=(0.0, 0.15, 0.25),
-                        show_edges=True,
-                        line_width=1.5,
-                        opacity=0.9,
-                        render=False,
                     )
 
-                    self.cache["layer_perm_frac_actors"].append(fac)
+                    if fac is not None:
+                        self.cache["layer_perm_frac_actors"].append(
+                            fac
+                        )
 
                 # 8.2 人工裂缝：只要一个在层内，就显示所有人工裂缝
                 if show_all_hydraulic:
@@ -8440,23 +9892,16 @@ class PyVistaRenderer:
                         if len(pts) < 3:
                             continue
 
-                        poly = pv.PolyData(pts)
-                        poly.faces = np.array(
-                            [len(pts), *range(len(pts))],
-                            dtype=np.int32
-                        )
-
-                        fac = self.plotter.add_mesh(
-                            poly,
+                        fac = self._add_result_fracture_actor(
+                            points=pts,
                             color=(0.72, 0.38, 0.38),
                             edge_color=(0.54, 0.29, 0.29),
-                            show_edges=True,
-                            line_width=1.5,
-                            opacity=0.9,
-                            render=False,
                         )
 
-                        self.cache["layer_perm_frac_actors"].append(fac)
+                        if fac is not None:
+                            self.cache["layer_perm_frac_actors"].append(
+                                fac
+                            )
 
             # =========================================================
             # 9. 当前层井显示
@@ -8502,17 +9947,18 @@ class PyVistaRenderer:
                     well_line = self._polydata_from_line_segments(segments)
 
                     if well_line is not None:
-                        wactor = self.plotter.add_mesh(
-                            well_line.tube(radius=2.0),
+                        wactor = self._add_result_well_actor(
+                            mesh=well_line.tube(radius=2.0),
                             color=(0.31, 0.35, 0.40),
-                            opacity=1.0,
                             lighting=True,
                             ambient=0.9,
                             diffuse=1.0,
-                            render=False,
                         )
 
-                        self.cache["layer_perm_well_actors"].append(wactor)
+                        if wactor is not None:
+                            self.cache["layer_perm_well_actors"].append(
+                                wactor
+                            )
 
             self._render()
 
@@ -9306,7 +10752,6 @@ class PyVistaRenderer:
     # =========================================================
     def enable_petrel_distance_measure(self):
 
-        # 如果之前已经开过，先关闭旧事件，保留干净状态
         self.disable_petrel_distance_measure(clear_line=True)
 
         self.cache["measure_enabled"] = True
@@ -9341,9 +10786,6 @@ class PyVistaRenderer:
 
 
     def disable_petrel_distance_measure(self, clear_line=True):
-        """
-        关闭测距工具。
-        """
 
         observer_ids = self.cache.get("measure_observer_ids", [])
 
@@ -9373,9 +10815,6 @@ class PyVistaRenderer:
 
 
     def clear_petrel_distance_measure(self):
-        """
-        清除当前测距线。
-        """
 
         self._remove_actor(self.cache.get("measure_line_actor"))
 
@@ -9390,14 +10829,6 @@ class PyVistaRenderer:
 
 
     def _measure_pick_world_point(self):
-        """
-        拾取鼠标当前位置对应的模型表面三维坐标。
-
-        规则：
-            1. 鼠标点在模型上，返回真实拾取点。
-            2. 鼠标点在模型外，返回 None。
-            3. 不再使用起点所在 Z 平面做退化计算，避免模型外也更新距离。
-        """
 
         try:
             from vtkmodules.vtkRenderingCore import vtkCellPicker
@@ -9766,11 +11197,7 @@ class PyVistaRenderer:
 
 
     def toggle_camera_direction_lock(self):
-        """
-        工具栏按钮用这个：
-        第一次点击锁定当前角度；
-        第二次点击恢复自由旋转。
-        """
+
         current = getattr(self, "camera_direction_locked", False)
         self.lock_camera_direction(not current)
 
@@ -9888,10 +11315,6 @@ class PyVistaRenderer:
         self,
         render=True,
     ):
-        """
-        删除通用时间步播放 actor 并清空播放缓存。
-        不恢复静态场。
-        """
 
         self._remove_actor(
             self.cache.get("time_playback_actor")
@@ -10536,7 +11959,7 @@ class PyVistaRenderer:
                 scalars=config["scalar_name"],
                 cmap=config["cmap"],
                 clim=[value_min, value_max],
-                opacity=0.95,
+                opacity=RESULT_PROPERTY_OPACITY,
                 show_edges=bool(show_edges),
                 show_scalar_bar=False,
                 lighting=False,
@@ -15123,21 +16546,12 @@ class PyVistaRenderer:
     # 2. 自动切到俯视图；
     #
     # 3. 左键单击：
-    #    依次加入路径点 P1 -> P2 -> P3 ...
+    #    依次加入路径点
     #
     # 4. 双击左键：
     #    当前路径结束；
     #    最后一个点自动作为 End；
     #    生成沿路径、沿 Z 方向贯穿模型的竖向折线剖面。
-    #
-    # 注意：
-    #
-    # 本功能只使用每个点的 XY 坐标。
-    #
-    # 即使用户点击的几个点原始 Z 不一样，
-    # 也不会生成一张倾斜平面，
-    # 而是按每一个 XY 线段向 Z 方向拉通，
-    # 形成“折线幕布式 / Fence Section”剖面。
     # =========================================================
 
     def _get_fence_section_interactor(self):
@@ -15273,10 +16687,7 @@ class PyVistaRenderer:
 
 
     def _restore_fence_section_context(self):
-        """
-        恢复进入剖面功能前，
-        压力场 / 孔隙度 / 渗透率等外部模型 actor 的透明度。
-        """
+
         states = self.cache.get(
             "fence_section_context_actor_states",
             [],

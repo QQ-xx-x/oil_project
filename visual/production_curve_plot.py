@@ -16,12 +16,6 @@ import pyqtgraph as pg
 
 
 class _LegendLineSample(QWidget):
-    """
-    底部图例中的真实线型示例控件。
-
-    不使用字符“━━━━”“----”模拟线型，
-    直接使用 QPainter 按曲线的真实颜色、宽度和 Qt 线型绘制。
-    """
 
     def __init__(
         self,
@@ -36,7 +30,6 @@ class _LegendLineSample(QWidget):
         self._line_width = float(line_width)
         self._qt_line_style = qt_line_style
 
-        # 宽度稍大，保证点划线、双点划线也能看清。
         self.setFixedSize(54, 18)
 
     def paintEvent(self, event):
@@ -45,7 +38,6 @@ class _LegendLineSample(QWidget):
 
         pen = QPen(self._color)
 
-        # 图例线宽至少为 1，避免很细时看不见。
         pen.setWidthF(max(1.0, self._line_width))
         pen.setStyle(self._qt_line_style)
         pen.setCosmetic(True)
@@ -63,22 +55,6 @@ class _LegendLineSample(QWidget):
 
 
 class ProductionCurvePlotWidget(QWidget):
-    """
-    Production curve line chart widget.
-
-    功能：
-    1. 从 output_sim_lgr_noWR.csv 读取生产动态数据
-    2. 时间列：Time
-    3. 曲线字段：CumWater / CumGas / Qw / Qg
-    4. 支持中文属性名显示
-    5. 支持固定属性颜色
-    6. 支持外部修改曲线颜色、粗细和线型
-    7. 鼠标悬停在真实数据点上时显示时间和该点的值
-    8. 支持表格点击某一行后，高亮线图对应时间点
-    9. 支持点击线图真实数据点后，向外发送 point_selected(row_index)，用于表格自动跳转
-    10. 支持用户选择时间范围，只绘制该时间范围内的曲线
-    11. 支持导出当前线图图片
-    """
 
     point_selected = pyqtSignal(int)
 
@@ -90,9 +66,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.curve_data = {}
         self.current_property_names = []
 
-        # =========================
-        # 英文 key -> 中文显示名
-        # =========================
         self.property_display_names = {
             "CumOil": "累积产油量",
             "CumWater": "累积产水量",
@@ -104,13 +77,11 @@ class ProductionCurvePlotWidget(QWidget):
             "AvgPressure": "平均压力",
         }
 
-        # 中文显示名 -> 英文 key
         self.display_name_to_key = {
             display_name: key
             for key, display_name in self.property_display_names.items()
         }
 
-        # 控制属性显示顺序
         self.property_order = [
             "CumOil",
             "CumWater",
@@ -122,9 +93,6 @@ class ProductionCurvePlotWidget(QWidget):
             "AvgPressure",
         ]
 
-        # =========================
-        # 默认固定颜色
-        # =========================
         self.default_property_colors = {
             "CumOil": (30, 120, 60),
             "CumWater": (0, 0, 255),
@@ -148,9 +116,6 @@ class ProductionCurvePlotWidget(QWidget):
             for key in self.property_order
         }
 
-        # =========================
-        # 默认线型
-        # =========================
         self.default_line_style = "solid"
 
         self.property_line_styles = {
@@ -158,7 +123,6 @@ class ProductionCurvePlotWidget(QWidget):
             for key in self.property_order
         }
 
-        # 内部线型 key -> Qt 线型
         self.line_style_map = {
             "solid": Qt.SolidLine,
             "dash": Qt.DashLine,
@@ -175,14 +139,20 @@ class ProductionCurvePlotWidget(QWidget):
             "dashdotdot": "双点划线",
         }
 
-        # 当前视图范围
         self.current_view_x_range = None
         self.current_view_y_range = None
 
-        # Y 轴上下预留比例
+        self._date_axis_dates = []
+        self._date_axis_row_indices = []
+        self._date_axis_last_signature = None
+
+        self.date_axis_min_tick_count = 7
+        self.date_axis_max_tick_count = 8
+
+        self.date_axis_min_label_spacing_px = 82
+
         self.view_y_padding_ratio = 0.05
 
-        # 悬停提示
         self.hover_text = None
         self.hover_point = None
         self.mouse_move_proxy = None
@@ -232,7 +202,7 @@ class ProductionCurvePlotWidget(QWidget):
         pg.setConfigOptions(antialias=True)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setContentsMargins(12, 0, 12, 0)
         root_layout.setSpacing(0)
 
         self.plot_widget = pg.PlotWidget()
@@ -249,8 +219,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.plot_widget.setLabel("bottom", "时间")
         self.plot_widget.setLabel("left", "数值")
 
-        # 坐标轴自身不绘制边框，
-        # 统一由 ViewBox 绘制一圈黑色边框。
         for axis_name in ["bottom", "left", "top", "right"]:
             axis = self.plot_widget.getAxis(axis_name)
 
@@ -293,9 +261,19 @@ class ProductionCurvePlotWidget(QWidget):
             slot=self._on_mouse_clicked,
         )
 
-        # =========================
-        # Bottom centered legend
-        # =========================
+        self.date_axis_update_timer = QTimer(self)
+        self.date_axis_update_timer.setSingleShot(True)
+        self.date_axis_update_timer.timeout.connect(
+            self._refresh_visible_date_axis_ticks
+        )
+
+        try:
+            self.plot_widget.getViewBox().sigXRangeChanged.connect(
+                self._on_x_range_changed
+            )
+        except Exception:
+            pass
+
         self.legend_widget = QWidget()
 
         self.legend_layout = QHBoxLayout(self.legend_widget)
@@ -311,9 +289,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 图表交互对象
     # =========================================================
     def _create_hover_items(self):
-        """
-        创建悬停点和悬停提示框。
-        """
 
         self.hover_point = pg.ScatterPlotItem(
             size=9,
@@ -332,8 +307,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.hover_point.setZValue(5000)
         self.hover_point.hide()
 
-        # 使用 QLabel 而不是 TextItem，
-        # 可按像素坐标定位，避免文字框超出图表边缘。
         self.hover_text = QLabel(self.plot_widget)
         self.hover_text.setTextFormat(Qt.RichText)
         self.hover_text.setFrameShape(QFrame.Box)
@@ -351,9 +324,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.hover_text.hide()
 
     def _create_table_marker_items(self):
-        """
-        创建表格联动时的红色竖直虚线。
-        """
 
         pen = pg.mkPen(
             color=(255, 0, 0),
@@ -377,10 +347,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.selected_time_line.hide()
 
     def _create_probe_items(self):
-        """
-        创建双击探针对象：
-        灰色十字线、点位、数值框。
-        """
 
         probe_pen = pg.mkPen(
             color=(125, 125, 125),
@@ -462,16 +428,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.data = data
 
     def load_data_from_csv(self, csv_path, time_column="Time"):
-        """
-        从 output_sim_lgr_noWR.csv 加载生产动态曲线数据。
-
-        读取字段：
-            Time
-            CumWater
-            CumGas
-            Qw
-            Qg
-        """
 
         if not csv_path:
             print("CSV path is empty.")
@@ -628,9 +584,6 @@ class ProductionCurvePlotWidget(QWidget):
         return detected
 
     def get_available_property_keys(self):
-        """
-        获取当前数据中可绘制的英文字段 key。
-        """
 
         if not self.data:
             return []
@@ -650,9 +603,6 @@ class ProductionCurvePlotWidget(QWidget):
         return ordered + extra
 
     def get_available_properties(self):
-        """
-        获取当前可绘制属性，返回中文显示名。
-        """
 
         if not self.data:
             return []
@@ -663,9 +613,6 @@ class ProductionCurvePlotWidget(QWidget):
         ]
 
     def get_time_labels(self):
-        """
-        获取当前数据中的时间标签列表。
-        """
 
         if self.data is None:
             return []
@@ -682,9 +629,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 时间范围
     # =========================================================
     def set_time_range_by_index(self, start_index, end_index):
-        """
-        设置线图显示的时间范围。
-        """
 
         if not self.data or "date" not in self.data:
             return
@@ -722,9 +666,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def clear_time_range(self):
-        """
-        清除时间范围限制，恢复显示全部时间。
-        """
 
         self.time_range_start_index = None
         self.time_range_end_index = None
@@ -734,9 +675,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def _get_active_row_indices(self):
-        """
-        获取当前应该绘制的数据行索引。
-        """
 
         if self.data is None or "date" not in self.data:
             return []
@@ -780,6 +718,9 @@ class ProductionCurvePlotWidget(QWidget):
         self.hover_delay_timer.stop()
         self.single_click_timer.stop()
 
+        if hasattr(self, "date_axis_update_timer"):
+            self.date_axis_update_timer.stop()
+
         self.pending_hover_scene_pos = None
         self.pending_single_click_scene_pos = None
 
@@ -803,6 +744,15 @@ class ProductionCurvePlotWidget(QWidget):
         self.current_view_x_range = None
         self.current_view_y_range = None
 
+        self._date_axis_dates = []
+        self._date_axis_row_indices = []
+        self._date_axis_last_signature = None
+
+        try:
+            self.plot_widget.getAxis("bottom").setTicks([[]])
+        except Exception:
+            pass
+
         self._create_hover_items()
         self._create_table_marker_items()
         self._create_probe_items()
@@ -818,10 +768,6 @@ class ProductionCurvePlotWidget(QWidget):
         self.legend_layout.addStretch()
 
     def plot_selected_properties(self, property_names):
-        """
-        绘制选中的属性。
-        property_names 可以传中文，也可以传英文。
-        """
 
         if self.data is None:
             print("No data. Cannot plot curves.")
@@ -949,16 +895,10 @@ class ProductionCurvePlotWidget(QWidget):
             self.clear_table_marker()
 
     def plot_one_property(self, property_name):
-        """
-        只绘制一个属性。
-        """
 
         self.plot_selected_properties([property_name])
 
     def set_chart_title(self, title):
-        """
-        设置图表标题。
-        """
 
         self.plot_widget.setTitle(
             title,
@@ -967,16 +907,10 @@ class ProductionCurvePlotWidget(QWidget):
         )
 
     def set_y_axis_title(self, title):
-        """
-        设置 Y 轴标题。
-        """
 
         self.plot_widget.setLabel("left", title)
 
     def reset_view(self):
-        """
-        重置为当前数据范围。
-        """
 
         self._fit_view_to_current_data_range()
 
@@ -986,13 +920,6 @@ class ProductionCurvePlotWidget(QWidget):
             )
 
     def _fit_view_to_current_data_range(self):
-        """
-        根据当前正在绘制的曲线，固定 X/Y 显示范围。
-
-        X 轴严格使用当前数据范围；
-        Y 轴上下保留一定比例的空白；
-        防止缩放或拖动后显示到无意义的空区域。
-        """
 
         if not self.curve_data:
             return
@@ -1048,7 +975,6 @@ class ProductionCurvePlotWidget(QWidget):
 
         view_box = self.plot_widget.getViewBox()
 
-        # 先清除旧范围限制。
         view_box.setLimits(
             xMin=None,
             xMax=None,
@@ -1056,14 +982,12 @@ class ProductionCurvePlotWidget(QWidget):
             yMax=None,
         )
 
-        # 设置当前显示范围。
         view_box.setRange(
             xRange=self.current_view_x_range,
             yRange=self.current_view_y_range,
             padding=0.0,
         )
 
-        # 再限制缩放和平移不可超出数据范围。
         view_box.setLimits(
             xMin=x_min,
             xMax=x_max,
@@ -1073,14 +997,13 @@ class ProductionCurvePlotWidget(QWidget):
 
         view_box.disableAutoRange()
 
+        self._refresh_visible_date_axis_ticks()
+
     # =========================================================
     # 表格联动
     # =========================================================
     def highlight_time_index(self, row_index):
-        """
-        表格点击某行时调用。
-        显示红色竖直虚线。
-        """
+
 
         try:
             row_index = int(row_index)
@@ -1095,9 +1018,7 @@ class ProductionCurvePlotWidget(QWidget):
         self.show_table_marker(row_index)
 
     def show_table_marker(self, row_index):
-        """
-        显示指定时间点的红色竖直虚线。
-        """
+
 
         self.hover_delay_timer.stop()
         self.pending_hover_scene_pos = None
@@ -1129,9 +1050,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._render_plot()
 
     def clear_table_marker(self):
-        """
-        清除表格联动产生的红色竖线。
-        """
 
         self.selected_time_index = None
 
@@ -1144,9 +1062,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 双击探针
     # =========================================================
     def _clear_probe_and_hover(self):
-        """
-        清除探针、悬停和延迟点击状态。
-        """
 
         self.hover_delay_timer.stop()
         self.single_click_timer.stop()
@@ -1161,9 +1076,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._hide_probe_items()
 
     def _activate_probe(self, scene_pos):
-        """
-        激活双击探针。
-        """
 
         self.hover_delay_timer.stop()
         self.pending_hover_scene_pos = None
@@ -1175,9 +1087,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._update_probe_from_scene_pos(scene_pos)
 
     def _deactivate_probe(self):
-        """
-        关闭双击探针。
-        """
 
         self.probe_active = False
         self.probe_time_index = None
@@ -1186,10 +1095,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._render_plot()
 
     def _get_nearest_active_time_index(self, x_value):
-        """
-        根据鼠标所在 X 坐标，返回最近的有效时间索引。
-        """
-
         active_indices = self._get_active_row_indices()
 
         if not active_indices:
@@ -1325,9 +1230,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 悬停与点击
     # =========================================================
     def _render_plot(self):
-        """
-        强制刷新图表。
-        """
 
         try:
             self.plot_widget.repaint()
@@ -1335,9 +1237,6 @@ class ProductionCurvePlotWidget(QWidget):
             pass
 
     def leaveEvent(self, event):
-        """
-        鼠标离开组件后隐藏悬停提示。
-        """
 
         self.hover_delay_timer.stop()
         self.pending_hover_scene_pos = None
@@ -1347,10 +1246,6 @@ class ProductionCurvePlotWidget(QWidget):
         super().leaveEvent(event)
 
     def _find_nearest_curve_point(self, scene_pos):
-        """
-        根据鼠标在 scene 中的位置，
-        寻找距离最近的真实曲线数据点。
-        """
 
         if not self.data or not self.curve_data:
             return None
@@ -1418,10 +1313,6 @@ class ProductionCurvePlotWidget(QWidget):
         return nearest
 
     def _get_data_value(self, property_key, row_index):
-        """
-        获取指定属性、指定行的数据值。
-        无效时返回 None。
-        """
 
         if self.data is None:
             return None
@@ -1450,15 +1341,6 @@ class ProductionCurvePlotWidget(QWidget):
         return value
 
     def _on_mouse_clicked(self, event):
-        """
-        鼠标左键事件：
-
-        1. 单击真实曲线点：
-           向外发送 point_selected(row_index)，联动表格。
-
-        2. 双击：
-           开启或关闭十字探针。
-        """
 
         if not self.data or not self.curve_data:
             return
@@ -1493,9 +1375,6 @@ class ProductionCurvePlotWidget(QWidget):
         )
 
     def _is_double_click_event(self, mouse_event):
-        """
-        判断是否为双击。
-        """
 
         try:
             return bool(mouse_event.double())
@@ -1503,9 +1382,6 @@ class ProductionCurvePlotWidget(QWidget):
             return False
 
     def _handle_pending_single_click(self):
-        """
-        延迟处理单击，避免双击时单击事件被触发。
-        """
 
         scene_pos = self.pending_single_click_scene_pos
         self.pending_single_click_scene_pos = None
@@ -1523,24 +1399,14 @@ class ProductionCurvePlotWidget(QWidget):
 
         row_index = int(nearest["x"])
 
-        # 点击曲线时清除表格点击产生的红线。
         self.clear_table_marker()
 
-        # 通知表格高亮对应行。
         self.point_selected.emit(row_index)
 
     # =========================================================
     # 曲线样式接口
     # =========================================================
     def set_curve_color(self, property_name, color):
-        """
-        修改某条曲线颜色。
-
-        color 支持：
-        - (r, g, b)
-        - "#rrggbb"
-        - QColor
-        """
 
         key = self._normalize_property_name(property_name)
 
@@ -1561,9 +1427,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def set_curve_width(self, property_name, width):
-        """
-        修改某条曲线线宽。
-        """
 
         key = self._normalize_property_name(property_name)
 
@@ -1591,15 +1454,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def set_curve_line_style(self, property_name, line_style):
-        """
-        修改某条曲线线型。
-
-        支持：
-        solid / dash / dot / dashdot / dashdotdot
-
-        也支持：
-        实线 / 虚线 / 点线 / 点划线 / 双点划线
-        """
 
         key = self._normalize_property_name(property_name)
 
@@ -1626,17 +1480,6 @@ class ProductionCurvePlotWidget(QWidget):
         width=None,
         line_style=None,
     ):
-        """
-        同时修改颜色、线宽和线型。
-
-        示例：
-        self.set_curve_style(
-            "累计产水量",
-            color=(0, 90, 220),
-            width=1.5,
-            line_style="dash",
-        )
-        """
 
         key = self._normalize_property_name(property_name)
 
@@ -1686,12 +1529,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def reset_curve_style(self, property_name=None):
-        """
-        恢复默认颜色、线宽和线型。
-
-        property_name 为 None 时，
-        恢复所有曲线的默认样式。
-        """
 
         if property_name is None:
             self.property_colors = dict(
@@ -1733,9 +1570,6 @@ class ProductionCurvePlotWidget(QWidget):
         self._refresh_current_plot()
 
     def get_curve_style(self, property_name):
-        """
-        获取某条曲线当前样式。
-        """
 
         key = self._normalize_property_name(property_name)
 
@@ -1776,9 +1610,6 @@ class ProductionCurvePlotWidget(QWidget):
         ]
 
     def _refresh_current_plot(self):
-        """
-        曲线样式、时间范围改变后刷新当前图表。
-        """
 
         if not self.current_property_names:
             return
@@ -1791,10 +1622,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 属性、颜色、线型工具
     # =========================================================
     def _normalize_property_name(self, property_name):
-        """
-        中文属性名转英文 key。
-        若本来就是英文 key，则直接返回。
-        """
 
         if property_name in self.display_name_to_key:
             return self.display_name_to_key[property_name]
@@ -1802,9 +1629,6 @@ class ProductionCurvePlotWidget(QWidget):
         return property_name
 
     def _is_known_property_key(self, key):
-        """
-        判断属性是否允许设置样式。
-        """
 
         if key in self.property_order:
             return True
@@ -1886,15 +1710,6 @@ class ProductionCurvePlotWidget(QWidget):
         return normalized_style
 
     def _normalize_color(self, color):
-        """
-        把不同颜色格式转换成 RGB tuple。
-
-        支持：
-        - (r, g, b)
-        - [r, g, b]
-        - "#rrggbb"
-        - QColor
-        """
 
         if isinstance(color, (tuple, list)):
             if len(color) < 3:
@@ -1943,9 +1758,6 @@ class ProductionCurvePlotWidget(QWidget):
         return None
 
     def _is_valid_rgb_value(self, value):
-        """
-        判断 RGB 数值是否合法。
-        """
 
         return 0 <= value <= 255
 
@@ -1954,12 +1766,6 @@ class ProductionCurvePlotWidget(QWidget):
         property_key,
         is_history=False,
     ):
-        """
-        获取该曲线真实使用的 Qt 线型。
-
-        历史曲线始终优先使用虚线，
-        与 _make_curve_pen() 的规则完全一致。
-        """
 
         if is_history:
             return Qt.DashLine
@@ -1975,12 +1781,6 @@ class ProductionCurvePlotWidget(QWidget):
         )
 
     def _make_curve_pen(self, property_key, color, is_history=False):
-        """
-        根据当前颜色、线宽和线型创建曲线画笔。
-
-        普通曲线使用用户设置的线型；
-        历史曲线沿用原有规则，始终优先使用虚线。
-        """
 
         line_width = self.property_line_widths.get(
             property_key,
@@ -2006,74 +1806,383 @@ class ProductionCurvePlotWidget(QWidget):
     # 坐标轴与文字位置
     # =========================================================
     def _update_date_axis(self, dates, row_indices=None):
-        """
-        更新 X 轴时间刻度。
-        """
 
         axis = self.plot_widget.getAxis("bottom")
 
         if not dates:
+            self._date_axis_dates = []
+            self._date_axis_row_indices = []
+            self._date_axis_last_signature = None
             axis.setTicks([[]])
             return
 
         if row_indices is None:
             row_indices = list(range(len(dates)))
 
-        if not row_indices:
+        valid_indices = []
+        seen = set()
+
+        for value in row_indices:
+            try:
+                index = int(value)
+            except Exception:
+                continue
+
+            if index in seen:
+                continue
+
+            if 0 <= index < len(dates):
+                valid_indices.append(index)
+                seen.add(index)
+
+        valid_indices.sort()
+
+        self._date_axis_dates = [
+            str(value)
+            for value in dates
+        ]
+        self._date_axis_row_indices = valid_indices
+        self._date_axis_last_signature = None
+
+        if not valid_indices:
             axis.setTicks([[]])
             return
 
-        row_indices = list(row_indices)
-        total = len(row_indices)
+        self._set_date_axis_ticks_for_range(
+            float(valid_indices[0]),
+            float(valid_indices[-1]),
+        )
 
-        if total <= 8:
-            ticks = [
-                (i, str(dates[i]))
-                for i in row_indices
-                if 0 <= i < len(dates)
-            ]
 
-            axis.setTicks([ticks])
+    def _on_x_range_changed(self, *args):
+
+        if not self._date_axis_dates:
             return
 
-        target_tick_count = 8
-        tick_step = max(1, total // target_tick_count)
+        if not self._date_axis_row_indices:
+            return
 
-        tick_indices = row_indices[::tick_step]
+        timer = getattr(
+            self,
+            "date_axis_update_timer",
+            None,
+        )
 
-        first_index = row_indices[0]
+        if timer is None:
+            self._refresh_visible_date_axis_ticks()
+            return
 
-        if first_index not in tick_indices:
-            tick_indices.insert(0, first_index)
+        timer.stop()
+        timer.start(15)
 
-        last_index = row_indices[-1]
 
-        if tick_indices:
-            prev_index = tick_indices[-1]
-            min_gap = max(1, tick_step // 2)
+    def _refresh_visible_date_axis_ticks(self):
 
-            if last_index - prev_index >= min_gap:
-                tick_indices.append(last_index)
-        else:
-            tick_indices.append(last_index)
+        if not self._date_axis_dates:
+            return
 
-        final_indices = []
-        seen = set()
+        if not self._date_axis_row_indices:
+            return
 
-        for i in tick_indices:
-            if i in seen:
-                continue
+        try:
+            x_range = (
+                self.plot_widget
+                .getViewBox()
+                .viewRange()[0]
+            )
 
-            if 0 <= i < len(dates):
-                final_indices.append(i)
-                seen.add(i)
+            x_min = float(x_range[0])
+            x_max = float(x_range[1])
 
-        ticks = [
-            (i, str(dates[i]))
-            for i in final_indices
+        except Exception:
+            return
+
+        self._set_date_axis_ticks_for_range(
+            x_min,
+            x_max,
+        )
+
+
+    def _get_date_axis_pixel_width(self):
+
+        try:
+            width = float(
+                self.plot_widget
+                .getViewBox()
+                .sceneBoundingRect()
+                .width()
+            )
+
+            if math.isfinite(width) and width > 1.0:
+                return width
+
+        except Exception:
+            pass
+
+        try:
+            width = float(self.plot_widget.width())
+
+            if math.isfinite(width) and width > 1.0:
+                return width
+
+        except Exception:
+            pass
+
+        return 700.0
+
+
+    def _visible_date_axis_indices(
+        self,
+        x_min,
+        x_max,
+    ):
+
+        if x_max < x_min:
+            x_min, x_max = x_max, x_min
+
+        tolerance = max(
+            abs(x_max - x_min) * 1e-9,
+            1e-9,
+        )
+
+        return [
+            index
+            for index in self._date_axis_row_indices
+            if (
+                float(index) >= x_min - tolerance
+                and float(index) <= x_max + tolerance
+            )
         ]
 
+
+    def _calculate_dynamic_date_tick_count(
+        self,
+        visible_count,
+    ):
+
+        if visible_count <= 0:
+            return 0
+
+        if visible_count <= int(
+            self.date_axis_max_tick_count
+        ):
+            return int(visible_count)
+
+        pixel_width = self._get_date_axis_pixel_width()
+
+        min_spacing = max(
+            float(self.date_axis_min_label_spacing_px),
+            35.0,
+        )
+
+        max_by_width = max(
+            2,
+            int(pixel_width // min_spacing),
+        )
+
+        preferred_count = (
+            int(self.date_axis_max_tick_count)
+            if max_by_width >= int(
+                self.date_axis_max_tick_count
+            )
+            else int(self.date_axis_min_tick_count)
+        )
+
+        return max(
+            1,
+            min(
+                int(visible_count),
+                int(max_by_width),
+                int(preferred_count),
+            ),
+        )
+
+
+    @staticmethod
+    def _sample_evenly_spaced_indices(
+        indices,
+        target_count,
+    ):
+
+        if not indices or target_count <= 0:
+            return []
+
+        ordered_indices = sorted(
+            {
+                int(index)
+                for index in indices
+            }
+        )
+
+        count = len(ordered_indices)
+
+        if count <= target_count:
+            return ordered_indices
+
+        first_index = ordered_indices[0]
+        last_index = ordered_indices[-1]
+        span = last_index - first_index
+
+        if span <= 0:
+            return [first_index]
+
+        target_count = max(
+            2,
+            int(target_count),
+        )
+
+        raw_step = (
+            float(span)
+            / float(target_count - 1)
+        )
+
+        base_step = max(
+            1,
+            int(round(raw_step)),
+        )
+
+        candidate_steps = {
+            max(1, base_step + offset)
+            for offset in range(-3, 4)
+        }
+
+        best_step = base_step
+        best_score = None
+
+        for step in sorted(candidate_steps):
+            tick_count = (
+                int(span // step) + 1
+            )
+
+            score = (
+                abs(tick_count - target_count),
+                abs(float(step) - raw_step),
+                step,
+            )
+
+            if (
+                best_score is None
+                or score < best_score
+            ):
+                best_score = score
+                best_step = step
+
+        available_set = set(ordered_indices)
+
+        ticks = []
+
+        current = first_index
+
+        while current <= last_index:
+            if current in available_set:
+                ticks.append(current)
+
+            current += best_step
+
+        if len(ticks) < 2:
+            ticks = [
+                ordered_indices[
+                    min(
+                        count - 1,
+                        int(
+                            round(
+                                position
+                                * float(count - 1)
+                                / float(target_count - 1)
+                            )
+                        ),
+                    )
+                ]
+                for position in range(target_count)
+            ]
+
+            ticks = list(dict.fromkeys(ticks))
+
+        return ticks
+
+
+    def _set_date_axis_ticks_for_range(
+        self,
+        x_min,
+        x_max,
+    ):
+
+        if not self._date_axis_dates:
+            return
+
+        visible_indices = self._visible_date_axis_indices(
+            x_min,
+            x_max,
+        )
+
+        axis = self.plot_widget.getAxis("bottom")
+
+        if not visible_indices:
+            signature = ()
+
+            if signature != self._date_axis_last_signature:
+                axis.setTicks([[]])
+                self._date_axis_last_signature = signature
+
+            return
+
+        target_count = (
+            self._calculate_dynamic_date_tick_count(
+                len(visible_indices)
+            )
+        )
+
+        tick_indices = (
+            self._sample_evenly_spaced_indices(
+                visible_indices,
+                target_count,
+            )
+        )
+
+        ticks = [
+            (
+                index,
+                self._date_axis_dates[index],
+            )
+            for index in tick_indices
+            if (
+                0 <= index
+                < len(self._date_axis_dates)
+            )
+        ]
+
+        signature = tuple(
+            (
+                int(index),
+                str(label),
+            )
+            for index, label in ticks
+        )
+
+        if signature == self._date_axis_last_signature:
+            return
+
         axis.setTicks([ticks])
+        self._date_axis_last_signature = signature
+
+
+    def resizeEvent(self, event):
+
+        super().resizeEvent(event)
+
+        if not self._date_axis_dates:
+            return
+
+        timer = getattr(
+            self,
+            "date_axis_update_timer",
+            None,
+        )
+
+        if timer is not None:
+            timer.stop()
+            timer.start(20)
+
 
     def _place_text_inside_view(
         self,
@@ -2082,9 +2191,6 @@ class ProductionCurvePlotWidget(QWidget):
         desired_y,
         margin_px=8,
     ):
-        """
-        将 TextItem 尽量限制在绘图区内部。
-        """
 
         if text_item is None:
             return
@@ -2148,10 +2254,6 @@ class ProductionCurvePlotWidget(QWidget):
             pass
 
     def _is_history_property(self, property_name):
-        """
-        判断是否为历史数据曲线。
-        历史曲线始终优先使用虚线。
-        """
 
         name = str(property_name).lower()
 
@@ -2168,16 +2270,6 @@ class ProductionCurvePlotWidget(QWidget):
         color,
         is_history=False,
     ):
-        """
-        添加底部居中图例。
-
-        图例左侧线段由 _LegendLineSample 绘制，
-        会与对应曲线保持完全一致的：
-        - 颜色；
-        - 线宽；
-        - 线型；
-        - 历史曲线的虚线规则。
-        """
 
         line_width = self.property_line_widths.get(
             property_key,
@@ -2228,11 +2320,6 @@ class ProductionCurvePlotWidget(QWidget):
     # 悬停
     # =========================================================
     def _on_mouse_moved(self, event):
-        """
-        鼠标移动时：
-        - 探针开启：更新探针；
-        - 探针关闭：等待 150ms 后显示悬停提示。
-        """
 
         scene_pos = event[0]
 
@@ -2348,7 +2435,6 @@ class ProductionCurvePlotWidget(QWidget):
         x = widget_pos.x() + 12
         y = widget_pos.y() - self.hover_text.height() - 8
 
-        # 右侧空间不足时，放到点的左边。
         if x + self.hover_text.width() > self.plot_widget.width():
             x = (
                 widget_pos.x()
@@ -2356,11 +2442,9 @@ class ProductionCurvePlotWidget(QWidget):
                 - 12
             )
 
-        # 上方空间不足时，放到点的下方。
         if y < 0:
             y = widget_pos.y() + 12
 
-        # 仍超出下方边界时，贴近下边缘。
         if y + self.hover_text.height() > self.plot_widget.height():
             y = (
                 self.plot_widget.height()

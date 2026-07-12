@@ -19,28 +19,46 @@ from .pyvista_static_property_preview import StaticPropertyPreviewRenderer
 
 PREVIEW_ENABLE_ANTI_ALIASING = True
 PREVIEW_ENABLE_DEPTH_PEELING = True
+PREVIEW_DEPTH_PEEL_COUNT = 100
+PREVIEW_DEPTH_PEEL_OCCLUSION_RATIO = 0.0
 PREVIEW_MAIN_LIGHT_INTENSITY = 1.6
 
 GRID_SHOW_SURFACE = True
 GRID_SHOW_EDGES = True
 GRID_SURFACE_COLOR = (1.0, 1.0, 1.0)
-GRID_SURFACE_OPACITY = 0.2
+GRID_SURFACE_OPACITY = 0.7
 GRID_EDGE_COLOR = (0.5, 0.5, 0.5)
-GRID_EDGE_LINE_WIDTH = 1.0
+
+GRID_EDGE_LINE_WIDTH = 0.6
+GRID_RENDER_LINES_AS_TUBES = True
+
+GRID_POINT_MERGE_TOLERANCE_RATIO = 1e-9
+GRID_POINT_MERGE_ABSOLUTE_TOLERANCE = 1e-8
+
+GRID_LINE_OFFSET_FACTOR = -1.0
+GRID_LINE_OFFSET_UNITS = -1.0
+GRID_SURFACE_OFFSET_FACTOR = 1.0
+GRID_SURFACE_OFFSET_UNITS = 1.0
 
 WELL_COLOR = (0.08, 0.24, 0.62)
 WELL_RADIUS = 2.0
-WELL_OPACITY = 0.999
-WELL_TUBE_SIDES = 16
+WELL_OPACITY = 1.0
+WELL_TUBE_SIDES = 32
 WELL_FALLBACK_LINE_WIDTH = 4.0
 
 NATURAL_FRACTURE_COLOR = (0.0, 0.25, 0.4)
 NATURAL_FRACTURE_EDGE_COLOR = (0.0, 0.15, 0.25)
 HYDRAULIC_FRACTURE_COLOR = (0.72, 0.38, 0.38)
 HYDRAULIC_FRACTURE_EDGE_COLOR = (0.54, 0.29, 0.29)
-FRACTURE_OPACITY = 0.999
+FRACTURE_OPACITY = 1.0
 FRACTURE_SHOW_EDGES = False
 FRACTURE_EDGE_LINE_WIDTH = 0
+
+FRACTURE_LIGHTING = False
+FRACTURE_SMOOTH_SHADING = False
+FRACTURE_AMBIENT = 1.0
+FRACTURE_DIFFUSE = 0.0
+FRACTURE_SPECULAR = 0.0
 
 GEOMETRY_Z_TOL_RATIO = 0.02
 GEOMETRY_Z_LOCAL_DEPTH_TOL_RATIO = 0.10
@@ -62,16 +80,58 @@ class GeometryPreviewRenderer:
         self.natural_fracture_actors = []
         self.hydraulic_fracture_actors = []
 
+
     def _configure_preview_scene(self):
-        if PREVIEW_ENABLE_ANTI_ALIASING:
-            try:
-                self.plotter.enable_anti_aliasing()
-            except Exception:
-                pass
+        try:
+            render_window = getattr(self.plotter, "ren_win", None)
+
+            if render_window is not None:
+                render_window.SetAlphaBitPlanes(1)
+                render_window.SetMultiSamples(0)
+        except Exception:
+            pass
+
+        try:
+            renderer = getattr(self.plotter, "renderer", None)
+
+            if renderer is not None:
+                renderer.SetUseDepthPeeling(True)
+                renderer.SetMaximumNumberOfPeels(PREVIEW_DEPTH_PEEL_COUNT)
+                renderer.SetOcclusionRatio(PREVIEW_DEPTH_PEEL_OCCLUSION_RATIO)
+        except Exception:
+            pass
 
         if PREVIEW_ENABLE_DEPTH_PEELING:
             try:
-                self.plotter.enable_depth_peeling()
+                self.plotter.enable_depth_peeling(
+                    number_of_peels=PREVIEW_DEPTH_PEEL_COUNT,
+                    occlusion_ratio=PREVIEW_DEPTH_PEEL_OCCLUSION_RATIO,
+                )
+            except TypeError:
+                try:
+                    self.plotter.enable_depth_peeling()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        if PREVIEW_ENABLE_ANTI_ALIASING:
+            try:
+                self.plotter.enable_anti_aliasing("fxaa")
+            except TypeError:
+                try:
+                    self.plotter.enable_anti_aliasing()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        if PREVIEW_ENABLE_ANTI_ALIASING:
+            try:
+                renderer = getattr(self.plotter, "renderer", None)
+
+                if renderer is not None and hasattr(renderer, "SetUseFXAA"):
+                    renderer.SetUseFXAA(True)
             except Exception:
                 pass
 
@@ -195,6 +255,8 @@ class GeometryPreviewRenderer:
         self._remove_actor_list(self.well_actors)
         self.well_actors = []
 
+        self._sync_geometry_overlay_attachment()
+
         if render_now:
             self._render()
 
@@ -202,12 +264,16 @@ class GeometryPreviewRenderer:
         self._remove_actor_list(self.natural_fracture_actors)
         self.natural_fracture_actors = []
 
+        self._sync_geometry_overlay_attachment()
+
         if render_now:
             self._render()
 
     def clear_hydraulic_fractures(self, render_now=True):
         self._remove_actor_list(self.hydraulic_fracture_actors)
         self.hydraulic_fracture_actors = []
+
+        self._sync_geometry_overlay_attachment()
 
         if render_now:
             self._render()
@@ -223,6 +289,17 @@ class GeometryPreviewRenderer:
         self.clear_grid(render_now=False)
         self.clear_wells(render_now=False)
         self.clear_fractures(render_now=False)
+
+        setattr(
+            self.host,
+            "_preview_camera_session_key",
+            None,
+        )
+        setattr(
+            self.host,
+            "_preview_camera_initialized",
+            False,
+        )
 
         if render_now:
             self._render()
@@ -241,6 +318,770 @@ class GeometryPreviewRenderer:
 
     def is_fractures_visible(self) -> bool:
         return self.is_natural_fractures_visible() or self.is_hydraulic_fractures_visible()
+
+    def _initialize_preview_camera_once(
+        self,
+        sim_data,
+        bounds,
+    ) -> bool:
+
+        if bounds is None or len(bounds) != 6:
+            return False
+
+        session_key = id(sim_data)
+
+        old_session_key = getattr(
+            self.host,
+            "_preview_camera_session_key",
+            None,
+        )
+
+        if old_session_key != session_key:
+            setattr(
+                self.host,
+                "_preview_camera_session_key",
+                session_key,
+            )
+            setattr(
+                self.host,
+                "_preview_camera_initialized",
+                False,
+            )
+
+        if bool(
+            getattr(
+                self.host,
+                "_preview_camera_initialized",
+                False,
+            )
+        ):
+            return False
+
+        self._setup_camera_for_corner_grid_bounds(
+            bounds,
+        )
+
+        setattr(
+            self.host,
+            "_preview_camera_initialized",
+            True,
+        )
+
+        return True
+
+    @staticmethod
+    def _actor_bounds(actor):
+        if actor is None:
+            return None
+
+        try:
+            bounds = actor.GetBounds()
+        except Exception:
+            try:
+                bounds = actor.bounds
+            except Exception:
+                return None
+
+        if bounds is None or len(bounds) != 6:
+            return None
+
+        values = np.asarray(
+            bounds,
+            dtype=np.float64,
+        )
+
+        if values.size != 6 or not np.isfinite(values).all():
+            return None
+
+        if (
+            values[1] < values[0]
+            or values[3] < values[2]
+            or values[5] < values[4]
+        ):
+            return None
+
+        return tuple(
+            float(value)
+            for value in values
+        )
+
+    def _actors_bounds(self, actors):
+        valid_bounds = []
+
+        for actor in actors or []:
+            bounds = self._actor_bounds(actor)
+
+            if bounds is not None:
+                valid_bounds.append(bounds)
+
+        if not valid_bounds:
+            return None
+
+        return (
+            min(bounds[0] for bounds in valid_bounds),
+            max(bounds[1] for bounds in valid_bounds),
+            min(bounds[2] for bounds in valid_bounds),
+            max(bounds[3] for bounds in valid_bounds),
+            min(bounds[4] for bounds in valid_bounds),
+            max(bounds[5] for bounds in valid_bounds),
+        )
+
+    def _main_renderer(self):
+        renderer = getattr(
+            self.plotter,
+            "renderer",
+            None,
+        )
+
+        if renderer is None:
+            renderer = getattr(
+                self.host,
+                "renderer",
+                None,
+            )
+
+        return renderer
+
+    def _geometry_top_actors(self):
+        return [
+            actor
+            for actor in [
+                *(self.natural_fracture_actors or []),
+                *(self.hydraulic_fracture_actors or []),
+                *(self.well_actors or []),
+            ]
+            if actor is not None
+        ]
+
+    @staticmethod
+    def _renderer_is_attached(render_window, renderer) -> bool:
+        if render_window is None or renderer is None:
+            return False
+
+        try:
+            renderers = render_window.GetRenderers()
+
+            if renderers is not None and hasattr(renderers, "IsItemPresent"):
+                return bool(renderers.IsItemPresent(renderer))
+        except Exception:
+            pass
+
+        return False
+
+    def _set_geometry_overlay_attached(self, attached: bool) -> None:
+
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+        overlay_renderer = getattr(
+            self.host,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if render_window is None or overlay_renderer is None:
+            return
+
+        is_attached = self._renderer_is_attached(
+            render_window,
+            overlay_renderer,
+        )
+
+        if attached and not is_attached:
+            try:
+                render_window.AddRenderer(overlay_renderer)
+                is_attached = True
+            except Exception:
+                pass
+
+        elif not attached and is_attached:
+            try:
+                render_window.RemoveRenderer(overlay_renderer)
+                is_attached = False
+            except Exception:
+                pass
+
+        setattr(
+            self.host,
+            "_geometry_preview_overlay_attached",
+            bool(is_attached),
+        )
+
+        if not attached:
+            main_renderer = self._main_renderer()
+
+            if main_renderer is not None:
+                try:
+                    main_renderer.ResetCameraClippingRange()
+                except Exception:
+                    try:
+                        self.plotter.reset_camera_clipping_range()
+                    except Exception:
+                        pass
+
+    def _sync_geometry_overlay_attachment(self) -> None:
+
+        has_geometry = bool(self._geometry_top_actors())
+
+        if has_geometry:
+            self._ensure_geometry_overlay_renderer(
+                attach_to_window=True,
+            )
+        else:
+            self._set_geometry_overlay_attached(False)
+
+    def _ensure_geometry_overlay_renderer(
+        self,
+        attach_to_window: bool = True,
+    ):
+
+        main_renderer = self._main_renderer()
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+
+        if main_renderer is None or render_window is None:
+            return None
+
+        overlay_renderer = getattr(
+            self.host,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is None:
+            try:
+                overlay_renderer = main_renderer.NewInstance()
+            except Exception:
+                return None
+
+            try:
+                main_layer = int(main_renderer.GetLayer())
+            except Exception:
+                main_layer = 0
+
+            try:
+                current_layer_count = int(
+                    render_window.GetNumberOfLayers()
+                )
+            except Exception:
+                current_layer_count = 1
+
+            overlay_layer = max(
+                main_layer + 1,
+                current_layer_count,
+            )
+
+            try:
+                render_window.SetNumberOfLayers(
+                    overlay_layer + 1
+                )
+                overlay_renderer.SetLayer(
+                    overlay_layer
+                )
+            except Exception:
+                return None
+
+            setattr(
+                self.host,
+                "_geometry_preview_overlay_renderer",
+                overlay_renderer,
+            )
+            setattr(
+                self.host,
+                "_geometry_preview_overlay_layer",
+                overlay_layer,
+            )
+            setattr(
+                self.host,
+                "_geometry_preview_overlay_attached",
+                False,
+            )
+
+        if attach_to_window:
+            self._set_geometry_overlay_attached(True)
+
+        try:
+            overlay_renderer.SetActiveCamera(
+                main_renderer.GetActiveCamera()
+            )
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetViewport(
+                *main_renderer.GetViewport()
+            )
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetInteractive(False)
+        except Exception:
+            try:
+                overlay_renderer.InteractiveOff()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetPreserveColorBuffer(True)
+        except Exception:
+            try:
+                overlay_renderer.PreserveColorBufferOn()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetPreserveDepthBuffer(False)
+        except Exception:
+            try:
+                overlay_renderer.PreserveDepthBufferOff()
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.SetBackgroundAlpha(0.0)
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.SetUseDepthPeeling(False)
+        except Exception:
+            pass
+
+        if PREVIEW_ENABLE_ANTI_ALIASING:
+            try:
+                if hasattr(overlay_renderer, "SetUseFXAA"):
+                    overlay_renderer.SetUseFXAA(True)
+            except Exception:
+                pass
+
+        try:
+            if hasattr(overlay_renderer, "AutomaticLightCreationOn"):
+                overlay_renderer.AutomaticLightCreationOn()
+        except Exception:
+            pass
+
+        return overlay_renderer
+
+    @staticmethod
+    def _configure_depth_sorted_geometry_actor(actor) -> None:
+
+        if actor is None:
+            return
+
+        try:
+            actor.ForceTranslucentOff()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceOpaqueOn()
+        except Exception:
+            try:
+                actor.SetForceOpaque(True)
+            except Exception:
+                pass
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                try:
+                    prop.FrontfaceCullingOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.BackfaceCullingOff()
+                except Exception:
+                    pass
+
+                try:
+                    prop.RenderPointsAsSpheresOff()
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+    def _move_actor_to_renderer_end(self, actor) -> None:
+        if actor is None:
+            return
+
+        main_renderer = self._main_renderer()
+
+        if main_renderer is None:
+            return
+
+        overlay_renderer = getattr(
+            self.host,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is not None:
+            try:
+                overlay_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        try:
+            main_renderer.RemoveActor(actor)
+            main_renderer.AddActor(actor)
+        except Exception:
+            pass
+
+    def _move_actor_to_geometry_overlay(self, actor) -> None:
+        if actor is None:
+            return
+
+        overlay_renderer = self._ensure_geometry_overlay_renderer()
+
+        if overlay_renderer is None:
+            self._move_actor_to_renderer_end(actor)
+            return
+
+        main_renderer = self._main_renderer()
+
+        if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        try:
+            overlay_renderer.RemoveActor(actor)
+        except Exception:
+            pass
+
+        try:
+            overlay_renderer.AddActor(actor)
+        except Exception:
+            if main_renderer is not None:
+                try:
+                    main_renderer.AddActor(actor)
+                except Exception:
+                    pass
+
+    def refresh_preview_stack(
+        self,
+        render_now=False,
+    ) -> None:
+
+        self._move_actor_to_renderer_end(
+            self.grid_actor,
+        )
+        self._move_actor_to_renderer_end(
+            self.grid_edge_actor,
+        )
+
+        static_preview = getattr(
+            self.host,
+            "static_property_preview",
+            None,
+        )
+
+        if static_preview is not None and hasattr(
+            static_preview,
+            "refresh_render_order",
+        ):
+            static_preview.refresh_render_order(
+                render_now=False,
+            )
+
+        top_actors = self._geometry_top_actors()
+
+        if top_actors:
+            overlay_renderer = self._ensure_geometry_overlay_renderer(
+                attach_to_window=True,
+            )
+
+            for actor in top_actors:
+                self._configure_depth_sorted_geometry_actor(actor)
+                self._move_actor_to_geometry_overlay(actor)
+
+            if overlay_renderer is not None:
+                main_renderer = self._main_renderer()
+
+                if main_renderer is not None:
+                    try:
+                        overlay_renderer.SetActiveCamera(
+                            main_renderer.GetActiveCamera()
+                        )
+                    except Exception:
+                        pass
+        else:
+            self._set_geometry_overlay_attached(False)
+
+        if render_now:
+            self._render()
+
+    @staticmethod
+    def _corner_grid_clean_tolerance(bounds):
+
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+
+            spans = np.asarray(
+                [
+                    abs(values[1] - values[0]),
+                    abs(values[3] - values[2]),
+                    abs(values[5] - values[4]),
+                ],
+                dtype=np.float64,
+            )
+
+            finite_spans = spans[
+                np.isfinite(spans)
+            ]
+
+            reference_span = (
+                float(np.max(finite_spans))
+                if finite_spans.size > 0
+                else 0.0
+            )
+
+        except Exception:
+            reference_span = 0.0
+
+        return max(
+            reference_span
+            * GRID_POINT_MERGE_TOLERANCE_RATIO,
+            GRID_POINT_MERGE_ABSOLUTE_TOLERANCE,
+        )
+
+
+    def _build_stable_corner_grid_surface_and_edges(
+        self,
+        grid,
+    ):
+
+        if grid is None:
+            return None, None
+
+        tolerance = self._corner_grid_clean_tolerance(
+            grid.bounds,
+        )
+
+        stable_grid = grid
+
+        try:
+            stable_grid = grid.clean(
+                tolerance=tolerance,
+                remove_unused_points=True,
+            )
+        except TypeError:
+            try:
+                stable_grid = grid.clean(
+                    tolerance=tolerance,
+                )
+            except Exception:
+                stable_grid = grid
+        except Exception:
+            stable_grid = grid
+
+        if (
+            stable_grid is None
+            or stable_grid.n_cells == 0
+        ):
+            stable_grid = grid
+
+        surface = None
+        edges = None
+
+        try:
+            surface = stable_grid.extract_surface()
+        except Exception:
+            surface = None
+
+        if GRID_SHOW_EDGES:
+            try:
+                edges = stable_grid.extract_all_edges()
+            except Exception:
+                edges = None
+
+        return surface, edges
+
+
+    @staticmethod
+    def _configure_stable_grid_edge_actor(actor):
+
+        if actor is None:
+            return
+
+        try:
+            actor.ForceTranslucentOff()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceOpaqueOn()
+        except Exception:
+            try:
+                actor.SetForceOpaque(True)
+            except Exception:
+                pass
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                try:
+                    prop.SetOpacity(1.0)
+                except Exception:
+                    pass
+
+                try:
+                    prop.LightingOff()
+                except Exception:
+                    try:
+                        prop.SetLighting(False)
+                    except Exception:
+                        pass
+
+                try:
+                    prop.SetLineWidth(
+                        max(
+                            float(GRID_EDGE_LINE_WIDTH),
+                            1.0,
+                        )
+                    )
+                except Exception:
+                    pass
+
+                if GRID_RENDER_LINES_AS_TUBES:
+                    try:
+                        prop.RenderLinesAsTubesOn()
+                    except Exception:
+                        try:
+                            prop.SetRenderLinesAsTubes(True)
+                        except Exception:
+                            pass
+
+        except Exception:
+            pass
+
+        try:
+            mapper = actor.GetMapper()
+
+            if mapper is not None:
+                try:
+                    mapper.ScalarVisibilityOff()
+                except Exception:
+                    try:
+                        mapper.SetScalarVisibility(False)
+                    except Exception:
+                        pass
+
+                try:
+                    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                except Exception:
+                    pass
+
+                try:
+                    mapper.SetRelativeCoincidentTopologyLineOffsetParameters(
+                        GRID_LINE_OFFSET_FACTOR,
+                        GRID_LINE_OFFSET_UNITS,
+                    )
+                except Exception:
+                    try:
+                        mapper.SetResolveCoincidentTopologyLineOffsetParameters(
+                            GRID_LINE_OFFSET_FACTOR,
+                            GRID_LINE_OFFSET_UNITS,
+                        )
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+
+    @staticmethod
+    def _configure_stable_grid_surface_actor(actor):
+        """
+        关闭网格面光照，并将半透明面轻微压到线后方。
+        """
+        if actor is None:
+            return
+
+        try:
+            actor.ForceOpaqueOff()
+        except Exception:
+            try:
+                actor.SetForceOpaque(False)
+            except Exception:
+                pass
+
+        try:
+            prop = actor.GetProperty()
+
+            if prop is not None:
+                try:
+                    prop.SetOpacity(
+                        float(GRID_SURFACE_OPACITY)
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    prop.LightingOff()
+                except Exception:
+                    try:
+                        prop.SetLighting(False)
+                    except Exception:
+                        pass
+
+                try:
+                    prop.EdgeVisibilityOff()
+                except Exception:
+                    try:
+                        prop.SetEdgeVisibility(False)
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+        try:
+            mapper = actor.GetMapper()
+
+            if mapper is not None:
+                try:
+                    mapper.SetResolveCoincidentTopologyToPolygonOffset()
+                except Exception:
+                    pass
+
+                try:
+                    mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(
+                        GRID_SURFACE_OFFSET_FACTOR,
+                        GRID_SURFACE_OFFSET_UNITS,
+                    )
+                except Exception:
+                    try:
+                        mapper.SetResolveCoincidentTopologyPolygonOffsetParameters(
+                            GRID_SURFACE_OFFSET_FACTOR,
+                            GRID_SURFACE_OFFSET_UNITS,
+                        )
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
 
     def render_grid(
         self,
@@ -310,36 +1151,68 @@ class GeometryPreviewRenderer:
                 self._render()
             return None
 
-        if GRID_SHOW_EDGES:
-            edges = grid.extract_all_edges()
+        surface, edges = (
+            self._build_stable_corner_grid_surface_and_edges(
+                grid
+            )
+        )
 
-            if edges is not None and edges.n_points > 0:
-                self.grid_edge_actor = self.plotter.add_mesh(
-                    edges,
-                    color=GRID_EDGE_COLOR,
-                    line_width=GRID_EDGE_LINE_WIDTH,
-                    render=False,
-                )
+        if (
+            GRID_SHOW_EDGES
+            and edges is not None
+            and edges.n_points > 0
+            and edges.n_cells > 0
+        ):
+            self.grid_edge_actor = self.plotter.add_mesh(
+                edges,
+                color=GRID_EDGE_COLOR,
+                line_width=max(
+                    float(GRID_EDGE_LINE_WIDTH),
+                    1.0,
+                ),
+                opacity=1.0,
+                lighting=False,
+                render=False,
+            )
 
-        if GRID_SHOW_SURFACE:
-            surface = grid.extract_surface()
+            self._configure_stable_grid_edge_actor(
+                self.grid_edge_actor
+            )
 
+        if (
+            GRID_SHOW_SURFACE
+            and surface is not None
+            and surface.n_points > 0
+            and surface.n_cells > 0
+        ):
             self.grid_actor = self.plotter.add_mesh(
                 surface,
                 color=GRID_SURFACE_COLOR,
                 opacity=GRID_SURFACE_OPACITY,
                 show_edges=False,
+                lighting=False,
+                smooth_shading=False,
                 render=False,
             )
 
-        self._setup_camera_for_corner_grid_bounds(
-            grid.bounds
+            self._configure_stable_grid_surface_actor(
+                self.grid_actor
+            )
+
+        self._initialize_preview_camera_once(
+            sim_data=sim_data,
+            bounds=grid.bounds,
+        )
+
+        self.refresh_preview_stack(
+            render_now=False,
         )
 
         if render_now:
             self._render()
 
         return self.grid_actor or self.grid_edge_actor
+
 
     def render_wells(
         self,
@@ -459,8 +1332,11 @@ class GeometryPreviewRenderer:
                     color=WELL_COLOR,
                     opacity=WELL_OPACITY,
                     lighting=True,
-                    ambient=0.9,
-                    diffuse=1.0,
+                    smooth_shading=True,
+                    ambient=0.75,
+                    diffuse=0.90,
+                    specular=0.20,
+                    specular_power=20.0,
                     render=False,
                 )
 
@@ -474,8 +1350,20 @@ class GeometryPreviewRenderer:
                     render=False,
                 )
 
+            self._configure_depth_sorted_geometry_actor(actor)
             self.well_actors.append(actor)
             count += 1
+
+        if count > 0:
+            self._initialize_preview_camera_once(
+                sim_data=sim_data,
+                bounds=self._actors_bounds(
+                    self.well_actors,
+                ),
+            )
+            self.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -498,6 +1386,17 @@ class GeometryPreviewRenderer:
         count = self._render_natural_fractures(
             sim_data,
         )
+
+        if count > 0:
+            self._initialize_preview_camera_once(
+                sim_data=sim_data,
+                bounds=self._actors_bounds(
+                    self.natural_fracture_actors,
+                ),
+            )
+            self.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -584,6 +1483,17 @@ class GeometryPreviewRenderer:
         count = self._render_hydraulic_fractures(
             sim_data,
         )
+
+        if count > 0:
+            self._initialize_preview_camera_once(
+                sim_data=sim_data,
+                bounds=self._actors_bounds(
+                    self.hydraulic_fracture_actors,
+                ),
+            )
+            self.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -727,6 +1637,22 @@ class GeometryPreviewRenderer:
         total_count += self._render_hydraulic_fractures(
             sim_data,
         )
+
+        if total_count > 0:
+            fracture_actors = [
+                *(self.natural_fracture_actors or []),
+                *(self.hydraulic_fracture_actors or []),
+            ]
+
+            self._initialize_preview_camera_once(
+                sim_data=sim_data,
+                bounds=self._actors_bounds(
+                    fracture_actors,
+                ),
+            )
+            self.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -1176,26 +2102,58 @@ class GeometryPreviewRenderer:
         if points is None or len(points) < 3:
             return []
 
+        cleaned_points = []
+
+        for point in points:
+            if not cleaned_points:
+                cleaned_points.append(point)
+                continue
+
+            if np.linalg.norm(point - cleaned_points[-1]) > 1e-8:
+                cleaned_points.append(point)
+
+        if (
+            len(cleaned_points) >= 2
+            and np.linalg.norm(cleaned_points[0] - cleaned_points[-1]) <= 1e-8
+        ):
+            cleaned_points.pop()
+
+        if len(cleaned_points) < 3:
+            return []
+
+        points = np.asarray(
+            cleaned_points,
+            dtype=np.float64,
+        )
+
         actors = []
 
         try:
-            polygon = pv.PolyData(points)
-
+            polygon = pv.PolyData()
+            polygon.points = points
             polygon.faces = np.asarray(
                 [len(points), *range(len(points))],
-                dtype=np.int32,
+                dtype=np.int64,
             )
 
             actor = self.plotter.add_mesh(
                 polygon,
+                style="surface",
                 color=color,
                 opacity=FRACTURE_OPACITY,
-                show_edges=FRACTURE_SHOW_EDGES,
+                show_edges=False,
                 edge_color=edge_color,
-                line_width=1.0,
+                line_width=0.0,
+                lighting=FRACTURE_LIGHTING,
+                smooth_shading=FRACTURE_SMOOTH_SHADING,
+                ambient=FRACTURE_AMBIENT,
+                diffuse=FRACTURE_DIFFUSE,
+                specular=FRACTURE_SPECULAR,
+
                 render=False,
             )
 
+            self._configure_depth_sorted_geometry_actor(actor)
             actors.append(actor)
 
             if FRACTURE_EDGE_LINE_WIDTH > 0:
@@ -1216,10 +2174,13 @@ class GeometryPreviewRenderer:
                     edge_actor = self.plotter.add_mesh(
                         pv.MultiBlock(edge_lines),
                         color=edge_color,
+                        opacity=FRACTURE_OPACITY,
                         line_width=FRACTURE_EDGE_LINE_WIDTH,
+                        lighting=False,
                         render=False,
                     )
 
+                    self._configure_depth_sorted_geometry_actor(edge_actor)
                     actors.append(edge_actor)
 
             return actors
@@ -1230,6 +2191,26 @@ class GeometryPreviewRenderer:
     def _remove_actor(self, actor):
         if actor is None:
             return
+
+        overlay_renderer = getattr(
+            self.host,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is not None:
+            try:
+                overlay_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        main_renderer = self._main_renderer()
+
+        if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor(actor)
+            except Exception:
+                pass
 
         if hasattr(self.host, "_remove_actor"):
             try:

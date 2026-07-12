@@ -51,7 +51,7 @@ def get_bright_jet_cmap():
     )
 
 
-STATIC_PROPERTY_OPACITY = 0.95
+STATIC_PROPERTY_OPACITY = 0.9
 STATIC_PROPERTY_SHOW_EDGES = False
 STATIC_PROPERTY_EDGE_COLOR = (0.18, 0.18, 0.18)
 STATIC_PROPERTY_EDGE_LINE_WIDTH = 0.3
@@ -61,6 +61,8 @@ STATIC_PROPERTY_AMBIENT = 1.0
 STATIC_PROPERTY_DIFFUSE = 0.0
 STATIC_PROPERTY_SPECULAR = 0.0
 STATIC_PROPERTY_INTERPOLATE_BEFORE_MAP = False
+STATIC_PROPERTY_DEPTH_PEEL_COUNT = 100
+STATIC_PROPERTY_DEPTH_PEEL_OCCLUSION_RATIO = 0.0
 
 STATIC_PROPERTY_SCALAR_BAR_ARGS = {
     "position_x": 0.02,
@@ -309,6 +311,8 @@ class StaticPropertyPreviewRenderer:
         self.host = host
         self.plotter = host.plotter
 
+        self._configure_translucent_scene()
+
         self.actor = None
         self.edge_actor = None
         self.scalar_bar_actor = None
@@ -318,6 +322,61 @@ class StaticPropertyPreviewRenderer:
         self.current_property_key = None
         self.current_axis = None
         self.current_layer_index = None
+
+    def _configure_translucent_scene(self):
+        try:
+            render_window = getattr(self.plotter, "ren_win", None)
+
+            if render_window is not None:
+                render_window.SetAlphaBitPlanes(1)
+                render_window.SetMultiSamples(0)
+        except Exception:
+            pass
+
+        try:
+            renderer = getattr(self.plotter, "renderer", None)
+
+            if renderer is not None:
+                renderer.SetUseDepthPeeling(True)
+                renderer.SetMaximumNumberOfPeels(STATIC_PROPERTY_DEPTH_PEEL_COUNT)
+                renderer.SetOcclusionRatio(STATIC_PROPERTY_DEPTH_PEEL_OCCLUSION_RATIO)
+        except Exception:
+            pass
+
+        try:
+            self.plotter.enable_depth_peeling(
+                number_of_peels=STATIC_PROPERTY_DEPTH_PEEL_COUNT,
+                occlusion_ratio=STATIC_PROPERTY_DEPTH_PEEL_OCCLUSION_RATIO,
+            )
+        except TypeError:
+            try:
+                self.plotter.enable_depth_peeling()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _configure_translucent_actor(actor):
+
+        if actor is None:
+            return
+
+        try:
+            actor.ForceOpaqueOff()
+        except Exception:
+            try:
+                actor.SetForceOpaque(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceTranslucentOff()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(False)
+            except Exception:
+                pass
 
     def clear(self, render_now: bool = True):
         self._remove_actor(self.actor)
@@ -409,6 +468,7 @@ class StaticPropertyPreviewRenderer:
         )
 
         return self._render_grid(
+            sim_data=sim_data,
             grid=grid,
             property_key=canonical_key,
             scalar_name=scalar_name,
@@ -497,6 +557,7 @@ class StaticPropertyPreviewRenderer:
         )
 
         return self._render_grid(
+            sim_data=sim_data,
             grid=grid,
             property_key=canonical_key,
             scalar_name=scalar_name,
@@ -913,6 +974,7 @@ class StaticPropertyPreviewRenderer:
 
     def _render_grid(
         self,
+        sim_data,
         grid: Optional[pv.UnstructuredGrid],
         property_key: str,
         scalar_name: str,
@@ -965,6 +1027,7 @@ class StaticPropertyPreviewRenderer:
         )
 
         self._force_actor_unlit(self.actor)
+        self._configure_translucent_actor(self.actor)
 
         self.scalar_bar_actor = self._replace_scalar_bar(
             title=title,
@@ -978,12 +1041,140 @@ class StaticPropertyPreviewRenderer:
         self.current_axis = axis
         self.current_layer_index = layer_index0
 
-        self._reset_camera_to_grid(surface)
+        self._initialize_preview_camera_once(
+            sim_data=sim_data,
+            bounds=surface.bounds,
+        )
+
+        self.refresh_render_order(render_now=False)
+
+        geometry_preview = getattr(
+            self.host,
+            "geometry_preview",
+            None,
+        )
+
+        if geometry_preview is not None and hasattr(
+            geometry_preview,
+            "refresh_preview_stack",
+        ):
+            geometry_preview.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
 
         return self.actor
+
+    def _initialize_preview_camera_once(
+        self,
+        sim_data,
+        bounds,
+    ) -> bool:
+
+        if bounds is None or len(bounds) != 6:
+            return False
+
+        session_key = id(sim_data)
+
+        old_session_key = getattr(
+            self.host,
+            "_preview_camera_session_key",
+            None,
+        )
+
+        if old_session_key != session_key:
+            setattr(
+                self.host,
+                "_preview_camera_session_key",
+                session_key,
+            )
+            setattr(
+                self.host,
+                "_preview_camera_initialized",
+                False,
+            )
+
+        if bool(
+            getattr(
+                self.host,
+                "_preview_camera_initialized",
+                False,
+            )
+        ):
+            return False
+
+        self._setup_camera_for_corner_grid_bounds(
+            bounds,
+        )
+
+        setattr(
+            self.host,
+            "_preview_camera_initialized",
+            True,
+        )
+
+        return True
+
+    def _main_renderer(self):
+        renderer = getattr(
+            self.plotter,
+            "renderer",
+            None,
+        )
+
+        if renderer is None:
+            renderer = getattr(
+                self.host,
+                "renderer",
+                None,
+            )
+
+        return renderer
+
+    def _move_actor_to_renderer_end(self, actor) -> None:
+
+        if actor is None:
+            return
+
+        main_renderer = self._main_renderer()
+
+        if main_renderer is None:
+            return
+
+        overlay_renderer = getattr(
+            self.host,
+            "_geometry_preview_overlay_renderer",
+            None,
+        )
+
+        if overlay_renderer is not None:
+            try:
+                overlay_renderer.RemoveActor(actor)
+            except Exception:
+                pass
+
+        try:
+            main_renderer.RemoveActor(actor)
+            main_renderer.AddActor(actor)
+        except Exception:
+            pass
+
+    def refresh_render_order(
+        self,
+        render_now: bool = False,
+    ) -> None:
+
+        self._move_actor_to_renderer_end(
+            self.actor,
+        )
+        self._move_actor_to_renderer_end(
+            self.edge_actor,
+        )
+
+        if render_now:
+            self._render()
 
     @staticmethod
     def _safe_clim(values: np.ndarray) -> Tuple[float, float]:
