@@ -3464,7 +3464,10 @@ class PyVistaRenderer:
             "fence_section_last_click_time": None,
             "fence_section_last_click_display": None,
             "fence_section_previous_camera_locked": None,
+            "fence_section_previous_camera_state": None,
             "fence_section_context_actor_states": [],
+            "fence_section_context_captured": False,
+            "fence_section_context_hidden_once": False,
         }
 
     def _render(self):
@@ -16687,8 +16690,141 @@ class PyVistaRenderer:
             pass
 
 
-    def _restore_fence_section_context(self):
+    def _iter_fence_section_context_actors(self):
+        """
+        遍历进入剖面前需要保存、剖面显示时需要临时隐藏的对象。
 
+        包括：
+        1. 原属性场及其颜色条；
+        2. 井和裂缝；
+        3. 所有模型网格，包括粗网格和加密网格。
+
+        这些对象只修改 visibility，不会删除，因此用户仍可通过
+        原有按钮在剖面显示期间重新打开。
+        """
+        property_actor_keys = (
+            "pressure_actor",
+            "pressure_field_actor",
+            "sw_field_actor",
+            "phi_field_actor",
+            "perm_field_actor",
+            "threshold_actor",
+            "time_playback_actor",
+
+            "layer_pressure_actor",
+            "layer_sw_actor",
+            "layer_phi_actor",
+            "layer_perm_actor",
+        )
+
+        property_scalar_bar_keys = (
+            "scalar_bar",
+            "pressure_scalar_bar",
+            "sw_scalar_bar",
+            "phi_scalar_bar",
+            "perm_scalar_bar",
+            "threshold_scalar_bar",
+            "time_playback_scalar_bar",
+
+            "layer_pressure_scalar_bar",
+            "layer_sw_scalar_bar",
+            "layer_phi_scalar_bar",
+            "layer_perm_scalar_bar",
+        )
+
+        fracture_and_well_keys = (
+            "fracture_actors",
+            "well_actors",
+            "layer_frac_actors",
+            "layer_well_actors",
+            "layer_sw_frac_actors",
+            "layer_sw_well_actors",
+            "layer_phi_frac_actors",
+            "layer_phi_well_actors",
+            "layer_perm_frac_actors",
+            "layer_perm_well_actors",
+        )
+
+        all_grid_keys = (
+            # 普通角点网格及其边线/表面。
+            "grid_lines_actor",
+            "corner_actor",
+            "corner_surface_actor",
+
+            # LGR 粗网格和加密网格全部隐藏。
+            "corner_lgr_parent_grid_actor",
+            "corner_lgr_refined_grid_actor",
+
+            # 各属性分层/阈值结果中的网格。
+            "layer_coarse_grid_actor",
+            "layer_sw_coarse_grid_actor",
+            "threshold_grid_actor",
+            "layer_phi_coarse_grid_actor",
+            "layer_perm_coarse_grid_actor",
+        )
+
+        seen = set()
+
+        for key in (
+            *property_actor_keys,
+            *property_scalar_bar_keys,
+            *fracture_and_well_keys,
+            *all_grid_keys,
+        ):
+            cached_value = self.cache.get(key)
+
+            if isinstance(cached_value, (list, tuple, set)):
+                actors = cached_value
+            else:
+                actors = (cached_value,)
+
+            for actor in actors:
+                if actor is None:
+                    continue
+
+                actor_id = id(actor)
+
+                if actor_id in seen:
+                    continue
+
+                seen.add(actor_id)
+                yield actor
+
+
+    def _capture_fence_section_context(self):
+        """
+        在切换俯视图和进入选点模式之前，保存原模型显示状态。
+        """
+        self._restore_fence_section_context()
+
+        states = []
+
+        for actor in self._iter_fence_section_context_actors():
+            states.append(
+                {
+                    "actor": actor,
+                    "opacity": self._fence_get_actor_opacity(actor),
+                    "visible": self._fence_get_actor_visible(actor),
+                }
+            )
+
+        self.cache[
+            "fence_section_context_actor_states"
+        ] = states
+
+        self.cache[
+            "fence_section_context_captured"
+        ] = True
+
+        self.cache[
+            "fence_section_context_hidden_once"
+        ] = False
+
+
+    def _restore_fence_section_context(self):
+        """
+        恢复点击剖面按钮之前的模型显示状态。
+        """
         states = self.cache.get(
             "fence_section_context_actor_states",
             [],
@@ -16711,53 +16847,115 @@ class PyVistaRenderer:
             "fence_section_context_actor_states"
         ] = []
 
-
-    def _make_fence_section_context_transparent(self):
-
-        self._restore_fence_section_context()
-
-        actor_keys = (
-            "pressure_field_actor",
-            "sw_field_actor",
-            "phi_field_actor",
-            "perm_field_actor",
-            "threshold_actor",
-            "time_playback_actor",
-
-            "layer_pressure_actor",
-            "layer_sw_actor",
-            "layer_phi_actor",
-            "layer_perm_actor",
-        )
-
-        states = []
-
-        for key in actor_keys:
-            actor = self.cache.get(key)
-
-            if actor is None:
-                continue
-
-            opacity = self._fence_get_actor_opacity(actor)
-            visible = self._fence_get_actor_visible(actor)
-
-            states.append(
-                {
-                    "actor": actor,
-                    "opacity": opacity,
-                    "visible": visible,
-                }
-            )
-
-            if opacity is not None:
-                self._fence_set_actor_opacity(
-                    actor,
-                    min(float(opacity), 0.18),
-                )
+        self.cache[
+            "fence_section_context_captured"
+        ] = False
 
         self.cache[
-            "fence_section_context_actor_states"
-        ] = states
+            "fence_section_context_hidden_once"
+        ] = False
+
+
+    def _hide_fence_section_context(self):
+        """
+        第一次生成剖面结果时，临时隐藏原属性场、颜色条、井、裂缝和所有网格。
+
+        这里只修改 visibility，不删除 actor。剖面首次显示时只保留剖面
+        结果及其专用颜色条；之后用户仍可通过原有按钮重新显示井、裂缝
+        或任意网格。
+        """
+        if self.cache.get(
+            "fence_section_context_hidden_once",
+            False,
+        ):
+            return
+
+        if not self.cache.get(
+            "fence_section_context_captured",
+            False,
+        ):
+            self._capture_fence_section_context()
+
+        for actor in self._iter_fence_section_context_actors():
+            self._fence_set_actor_visible(
+                actor,
+                False,
+            )
+
+        self.cache[
+            "fence_section_context_hidden_once"
+        ] = True
+
+
+    def _capture_fence_section_camera_state(self):
+        """
+        保存点击剖面按钮前的完整相机状态。
+        """
+        try:
+            state = self.capture_camera_state()
+        except Exception:
+            state = None
+
+        self.cache[
+            "fence_section_previous_camera_state"
+        ] = state
+
+
+    def _restore_fence_section_camera_state(self):
+        """
+        恢复点击剖面按钮前的视角，但不在此处单独触发 render。
+        """
+        state = self.cache.get(
+            "fence_section_previous_camera_state"
+        )
+
+        self.cache[
+            "fence_section_previous_camera_state"
+        ] = None
+
+        if not state:
+            return
+
+        try:
+            position = state.get("position")
+            focal_point = state.get("focal_point")
+            view_up = state.get("view_up")
+
+            if (
+                position is not None
+                and focal_point is not None
+                and view_up is not None
+            ):
+                self.plotter.camera_position = (
+                    position,
+                    focal_point,
+                    view_up,
+                )
+
+            camera = self.plotter.camera
+
+            if "parallel_projection" in state:
+                camera.parallel_projection = bool(
+                    state.get("parallel_projection")
+                )
+
+            if state.get("parallel_scale") is not None:
+                camera.parallel_scale = float(
+                    state["parallel_scale"]
+                )
+
+            if state.get("view_angle") is not None:
+                camera.view_angle = float(
+                    state["view_angle"]
+                )
+
+            if state.get("clipping_range") is not None:
+                camera.clipping_range = tuple(
+                    state["clipping_range"]
+                )
+
+        except Exception:
+            pass
 
 
     def _get_fence_section_property_config(
@@ -18479,8 +18677,9 @@ class PyVistaRenderer:
             property_config=property_config,
         )
 
-        # 外部模型变透明，剖面保持不透明。
-        self._make_fence_section_context_transparent()
+        # 只显示剖面结果和剖面专用颜色条；
+        # 原属性场及其颜色条暂时隐藏，清除剖面时恢复。
+        self._hide_fence_section_context()
 
         # 自动切换到便于观察剖面的角度。
         self._set_fence_section_result_camera()
@@ -18576,6 +18775,11 @@ class PyVistaRenderer:
             )
             return False
 
+        # 必须在 view_top() 之前保存，确保清除或关闭剖面时
+        # 能回到点击剖面按钮前的模型和视角。
+        self._capture_fence_section_context()
+        self._capture_fence_section_camera_state()
+
         self.cache[
             "fence_section_sim_data"
         ] = sim_data
@@ -18657,6 +18861,10 @@ class PyVistaRenderer:
                 )
             )
 
+            self._restore_fence_section_context()
+            self._restore_fence_section_camera_state()
+            self._render()
+
             self._emit_fence_section_info(
                 "[Vertical Fence Section] "
                 "interactor is unavailable."
@@ -18699,6 +18907,10 @@ class PyVistaRenderer:
                     False,
                 )
             )
+
+            self._restore_fence_section_context()
+            self._restore_fence_section_camera_state()
+            self._render()
 
             self._emit_fence_section_info(
                 "[Vertical Fence Section] "
@@ -18820,6 +19032,9 @@ class PyVistaRenderer:
             render=False,
         )
 
+        self._restore_fence_section_context()
+        self._restore_fence_section_camera_state()
+
         self._emit_fence_section_info(
             "[Vertical Fence Section] "
             "drawing cancelled."
@@ -18855,6 +19070,7 @@ class PyVistaRenderer:
         )
 
         self._restore_fence_section_context()
+        self._restore_fence_section_camera_state()
 
         self.cache[
             "fence_section_points"
@@ -18937,6 +19153,10 @@ class PyVistaRenderer:
             self.cache[
                 "fence_section_property"
             ] = "Pressure"
+
+        elif was_drawing:
+            self._restore_fence_section_context()
+            self._restore_fence_section_camera_state()
 
         if render:
             self._render()

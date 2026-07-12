@@ -454,6 +454,28 @@ class GeometryPreviewRenderer:
         ]
 
     @staticmethod
+    def _actor_is_visible(actor) -> bool:
+        if actor is None:
+            return False
+
+        try:
+            return bool(actor.GetVisibility())
+        except Exception:
+            try:
+                return bool(actor.visibility)
+            except Exception:
+                return True
+
+    def get_visible_geometry_bounds(self):
+        actors = [
+            actor
+            for actor in self._geometry_top_actors()
+            if self._actor_is_visible(actor)
+        ]
+
+        return self._actors_bounds(actors)
+
+    @staticmethod
     def _renderer_is_attached(render_window, renderer) -> bool:
         if render_window is None or renderer is None:
             return False
@@ -820,6 +842,14 @@ class GeometryPreviewRenderer:
                         pass
         else:
             self._set_geometry_overlay_attached(False)
+
+        if static_preview is not None and hasattr(
+            static_preview,
+            "refresh_layer_clipping_range",
+        ):
+            static_preview.refresh_layer_clipping_range(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -2236,3 +2266,25 @@ class GeometryPreviewRenderer:
             self.host._render()
         else:
             self.plotter.render()
+
+        static_preview = getattr(
+            self.host,
+            "static_property_preview",
+            None,
+        )
+
+        if static_preview is not None and hasattr(
+            static_preview,
+            "refresh_layer_clipping_range",
+        ):
+            layer_preview_active = (
+                static_preview.refresh_layer_clipping_range(
+                    render_now=False,
+                )
+            )
+
+            if layer_preview_active:
+                try:
+                    self.plotter.render()
+                except Exception:
+                    pass

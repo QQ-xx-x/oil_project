@@ -323,6 +323,11 @@ class StaticPropertyPreviewRenderer:
         self.current_axis = None
         self.current_layer_index = None
 
+        self._layer_clipping_observers = []
+        self._layer_clipping_interactor_style = None
+        self._layer_clipping_auto_adjust_previous = None
+        self._updating_layer_clipping_range = False
+
     def _configure_translucent_scene(self):
         try:
             render_window = getattr(self.plotter, "ren_win", None)
@@ -379,6 +384,10 @@ class StaticPropertyPreviewRenderer:
                 pass
 
     def clear(self, render_now: bool = True):
+        self._disable_layer_clipping_support(
+            reset_clipping=False,
+        )
+
         self._remove_actor(self.actor)
         self._remove_actor(self.edge_actor)
 
@@ -1041,9 +1050,24 @@ class StaticPropertyPreviewRenderer:
         self.current_axis = axis
         self.current_layer_index = layer_index0
 
+        camera_bounds = surface.bounds
+
+        if (
+            axis in ("i", "j", "k")
+            and layer_index0 is not None
+        ):
+            full_grid_bounds = (
+                self._get_full_static_grid_bounds(
+                    sim_data
+                )
+            )
+
+            if full_grid_bounds is not None:
+                camera_bounds = full_grid_bounds
+
         self._initialize_preview_camera_once(
             sim_data=sim_data,
-            bounds=surface.bounds,
+            bounds=camera_bounds,
         )
 
         self.refresh_render_order(render_now=False)
@@ -1062,10 +1086,110 @@ class StaticPropertyPreviewRenderer:
                 render_now=False,
             )
 
+        if axis in ("i", "j", "k"):
+            self.refresh_layer_clipping_range(
+                render_now=False,
+            )
+        else:
+            self._disable_layer_clipping_support(
+                reset_clipping=True,
+            )
+
         if render_now:
             self._render()
 
         return self.actor
+
+    def _get_full_static_grid_bounds(
+        self,
+        sim_data,
+    ):
+
+        grid_data = getattr(
+            sim_data,
+            "static_grid_data",
+            None,
+        )
+
+        if not isinstance(grid_data, dict):
+            return None
+
+        coord = grid_data.get(
+            "coord",
+            None,
+        )
+
+        zcorn = grid_data.get(
+            "zcorn",
+            None,
+        )
+
+        if coord is None or zcorn is None:
+            return None
+
+        try:
+            coord_array = np.asarray(
+                coord,
+                dtype=np.float64,
+            ).reshape(-1, 6)
+
+            zcorn_array = np.asarray(
+                zcorn,
+                dtype=np.float64,
+            ).reshape(-1)
+        except Exception:
+            return None
+
+        if (
+            coord_array.shape[0] == 0
+            or zcorn_array.size == 0
+        ):
+            return None
+
+        finite_coord_mask = np.isfinite(
+            coord_array
+        ).all(axis=1)
+
+        coord_array = coord_array[
+            finite_coord_mask
+        ]
+
+        zcorn_array = zcorn_array[
+            np.isfinite(zcorn_array)
+        ]
+
+        if (
+            coord_array.shape[0] == 0
+            or zcorn_array.size == 0
+        ):
+            return None
+
+        x_values = np.concatenate(
+            [
+                coord_array[:, 0],
+                coord_array[:, 3],
+            ]
+        )
+
+        y_values = np.concatenate(
+            [
+                coord_array[:, 1],
+                coord_array[:, 4],
+            ]
+        )
+
+        bounds = (
+            float(np.min(x_values)),
+            float(np.max(x_values)),
+            float(np.min(y_values)),
+            float(np.max(y_values)),
+            float(np.min(zcorn_array)),
+            float(np.max(zcorn_array)),
+        )
+
+        return self._normalize_bounds(
+            bounds
+        )
 
     def _initialize_preview_camera_once(
         self,
@@ -1133,6 +1257,483 @@ class StaticPropertyPreviewRenderer:
 
         return renderer
 
+    @staticmethod
+    def _normalize_bounds(bounds):
+        if bounds is None or len(bounds) != 6:
+            return None
+
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+        except Exception:
+            return None
+
+        if not np.isfinite(values).all():
+            return None
+
+        if (
+            values[1] < values[0]
+            or values[3] < values[2]
+            or values[5] < values[4]
+        ):
+            return None
+
+        return tuple(
+            float(value)
+            for value in values
+        )
+
+    @classmethod
+    def _union_bounds(cls, *bounds_items):
+        valid = []
+
+        for bounds in bounds_items:
+            normalized = cls._normalize_bounds(bounds)
+
+            if normalized is not None:
+                valid.append(normalized)
+
+        if not valid:
+            return None
+
+        return (
+            min(bounds[0] for bounds in valid),
+            max(bounds[1] for bounds in valid),
+            min(bounds[2] for bounds in valid),
+            max(bounds[3] for bounds in valid),
+            min(bounds[4] for bounds in valid),
+            max(bounds[5] for bounds in valid),
+        )
+
+    @staticmethod
+    def _expand_bounds(bounds, margin_ratio=0.02):
+        if bounds is None:
+            return None
+
+        values = np.asarray(
+            bounds,
+            dtype=np.float64,
+        ).reshape(6)
+
+        spans = np.asarray(
+            [
+                values[1] - values[0],
+                values[3] - values[2],
+                values[5] - values[4],
+            ],
+            dtype=np.float64,
+        )
+
+        reference_span = max(
+            float(np.max(np.abs(spans))),
+            1.0,
+        )
+
+        margins = np.maximum(
+            np.abs(spans) * float(margin_ratio),
+            reference_span * 1e-6,
+        )
+
+        return (
+            float(values[0] - margins[0]),
+            float(values[1] + margins[0]),
+            float(values[2] - margins[1]),
+            float(values[3] + margins[1]),
+            float(values[4] - margins[2]),
+            float(values[5] + margins[2]),
+        )
+
+    def _is_layer_preview_active(self) -> bool:
+        return (
+            self.actor is not None
+            and self.current_grid is not None
+            and self.current_axis in ("i", "j", "k")
+            and self.current_layer_index is not None
+        )
+
+    def _current_layer_bounds(self):
+        if self.actor is not None:
+            try:
+                bounds = self.actor.GetBounds()
+            except Exception:
+                try:
+                    bounds = self.actor.bounds
+                except Exception:
+                    bounds = None
+
+            normalized = self._normalize_bounds(bounds)
+
+            if normalized is not None:
+                return normalized
+
+        if self.current_grid is not None:
+            try:
+                return self._normalize_bounds(
+                    self.current_grid.bounds
+                )
+            except Exception:
+                pass
+
+        return None
+
+    def _visible_geometry_bounds(self):
+        geometry_preview = getattr(
+            self.host,
+            "geometry_preview",
+            None,
+        )
+
+        if geometry_preview is None:
+            return None
+
+        if hasattr(
+            geometry_preview,
+            "get_visible_geometry_bounds",
+        ):
+            try:
+                return self._normalize_bounds(
+                    geometry_preview.get_visible_geometry_bounds()
+                )
+            except Exception:
+                pass
+
+        try:
+            actors = geometry_preview._geometry_top_actors()
+            return self._normalize_bounds(
+                geometry_preview._actors_bounds(actors)
+            )
+        except Exception:
+            return None
+
+    def _combined_layer_clipping_bounds(self):
+        if not self._is_layer_preview_active():
+            return None
+
+        bounds = self._union_bounds(
+            self._current_layer_bounds(),
+            self._visible_geometry_bounds(),
+        )
+
+        return self._expand_bounds(
+            bounds,
+            margin_ratio=0.02,
+        )
+
+    def _get_layer_clipping_interactor(self):
+        candidates = [
+            getattr(self.plotter, "iren", None),
+            getattr(self.host, "iren", None),
+            getattr(self.plotter, "interactor", None),
+            getattr(self.host, "interactor", None),
+        ]
+
+        for candidate in candidates:
+            if candidate is None:
+                continue
+
+            if (
+                hasattr(candidate, "add_observer")
+                or hasattr(candidate, "AddObserver")
+            ):
+                return candidate
+
+            inner = getattr(
+                candidate,
+                "interactor",
+                None,
+            )
+
+            if (
+                inner is not None
+                and (
+                    hasattr(inner, "add_observer")
+                    or hasattr(inner, "AddObserver")
+                )
+            ):
+                return inner
+
+        return None
+
+    @staticmethod
+    def _unwrap_vtk_interactor(interactor):
+        if interactor is None:
+            return None
+
+        inner = getattr(
+            interactor,
+            "interactor",
+            None,
+        )
+
+        if inner is not None and hasattr(
+            inner,
+            "GetInteractorStyle",
+        ):
+            return inner
+
+        if hasattr(
+            interactor,
+            "GetInteractorStyle",
+        ):
+            return interactor
+
+        return None
+
+    def _disable_interactor_auto_clipping(self):
+        if self._layer_clipping_interactor_style is not None:
+            return
+
+        interactor = self._get_layer_clipping_interactor()
+        vtk_interactor = self._unwrap_vtk_interactor(
+            interactor
+        )
+
+        if vtk_interactor is None:
+            return
+
+        try:
+            style = vtk_interactor.GetInteractorStyle()
+        except Exception:
+            style = None
+
+        if style is None or not hasattr(
+            style,
+            "SetAutoAdjustCameraClippingRange",
+        ):
+            return
+
+        previous = None
+
+        try:
+            previous = bool(
+                style.GetAutoAdjustCameraClippingRange()
+            )
+        except Exception:
+            pass
+
+        try:
+            style.SetAutoAdjustCameraClippingRange(
+                False
+            )
+        except Exception:
+            return
+
+        self._layer_clipping_interactor_style = style
+        self._layer_clipping_auto_adjust_previous = previous
+
+    def _restore_interactor_auto_clipping(self):
+        style = self._layer_clipping_interactor_style
+        previous = self._layer_clipping_auto_adjust_previous
+
+        self._layer_clipping_interactor_style = None
+        self._layer_clipping_auto_adjust_previous = None
+
+        if style is None:
+            return
+
+        if previous is None:
+            previous = True
+
+        try:
+            style.SetAutoAdjustCameraClippingRange(
+                bool(previous)
+            )
+        except Exception:
+            pass
+
+    def _remove_layer_clipping_observers(self):
+        observers = list(
+            self._layer_clipping_observers or []
+        )
+
+        for interactor, observer_id in observers:
+            if interactor is None or observer_id is None:
+                continue
+
+            try:
+                if hasattr(interactor, "remove_observer"):
+                    interactor.remove_observer(observer_id)
+                elif hasattr(interactor, "RemoveObserver"):
+                    interactor.RemoveObserver(observer_id)
+            except Exception:
+                pass
+
+        self._layer_clipping_observers = []
+
+    def _ensure_layer_clipping_observers(self):
+        self._disable_interactor_auto_clipping()
+
+        if self._layer_clipping_observers:
+            return
+
+        interactor = self._get_layer_clipping_interactor()
+
+        if interactor is None:
+            return
+
+        def _callback(*_args):
+            if not self._is_layer_preview_active():
+                return
+
+            self.refresh_layer_clipping_range(
+                render_now=False,
+            )
+
+        for event_name in (
+            "InteractionEvent",
+            "EndInteractionEvent",
+            "MouseWheelForwardEvent",
+            "MouseWheelBackwardEvent",
+        ):
+            try:
+                if hasattr(interactor, "add_observer"):
+                    observer_id = interactor.add_observer(
+                        event_name,
+                        _callback,
+                    )
+                else:
+                    observer_id = interactor.AddObserver(
+                        event_name,
+                        _callback,
+                    )
+
+                self._layer_clipping_observers.append(
+                    (
+                        interactor,
+                        observer_id,
+                    )
+                )
+            except Exception:
+                pass
+
+    def _reset_layer_camera_clipping(self, bounds):
+        bounds = self._normalize_bounds(bounds)
+
+        if bounds is None:
+            return False
+
+        if self._updating_layer_clipping_range:
+            return False
+
+        renderer = self._main_renderer()
+
+        if renderer is None:
+            return False
+
+        self._updating_layer_clipping_range = True
+
+        try:
+            reset_ok = False
+
+            try:
+                renderer.ResetCameraClippingRange(
+                    *bounds
+                )
+                reset_ok = True
+            except Exception:
+                pass
+
+            if not reset_ok:
+                try:
+                    renderer.ResetCameraClippingRange(
+                        bounds
+                    )
+                    reset_ok = True
+                except Exception:
+                    pass
+
+            if not reset_ok:
+                return False
+
+            try:
+                camera = renderer.GetActiveCamera()
+            except Exception:
+                camera = None
+
+            if camera is not None:
+                try:
+                    near_value, far_value = (
+                        camera.GetClippingRange()
+                    )
+
+                    near_value = float(near_value)
+                    far_value = float(far_value)
+
+                    if (
+                        np.isfinite(near_value)
+                        and np.isfinite(far_value)
+                        and far_value > near_value
+                    ):
+                        safe_near = max(
+                            near_value * 0.5,
+                            1e-6,
+                        )
+                        safe_far = max(
+                            far_value * 1.5,
+                            safe_near + 1.0,
+                        )
+
+                        camera.SetClippingRange(
+                            safe_near,
+                            safe_far,
+                        )
+                except Exception:
+                    pass
+
+            return True
+
+        finally:
+            self._updating_layer_clipping_range = False
+
+    def _disable_layer_clipping_support(
+        self,
+        reset_clipping=False,
+    ):
+        self._remove_layer_clipping_observers()
+        self._restore_interactor_auto_clipping()
+
+        if reset_clipping:
+            renderer = self._main_renderer()
+
+            if renderer is not None:
+                try:
+                    renderer.ResetCameraClippingRange()
+                except Exception:
+                    try:
+                        self.plotter.reset_camera_clipping_range()
+                    except Exception:
+                        pass
+
+    def refresh_layer_clipping_range(
+        self,
+        render_now=False,
+    ) -> bool:
+        if not self._is_layer_preview_active():
+            self._disable_layer_clipping_support(
+                reset_clipping=False,
+            )
+            return False
+
+        bounds = self._combined_layer_clipping_bounds()
+
+        if bounds is None:
+            return False
+
+        self._ensure_layer_clipping_observers()
+        updated = self._reset_layer_camera_clipping(
+            bounds
+        )
+
+        if render_now and updated:
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
+
+        return updated
+
     def _move_actor_to_renderer_end(self, actor) -> None:
 
         if actor is None:
@@ -1171,6 +1772,10 @@ class StaticPropertyPreviewRenderer:
         )
         self._move_actor_to_renderer_end(
             self.edge_actor,
+        )
+
+        self.refresh_layer_clipping_range(
+            render_now=False,
         )
 
         if render_now:
@@ -1290,13 +1895,56 @@ class StaticPropertyPreviewRenderer:
                     ),
                 ]
 
-            self.plotter.reset_camera(
-                render=False,
-            )
+            camera = self.plotter.camera
 
-            self.plotter.camera.Zoom(
-                1.0,
-            )
+            try:
+                camera.SetFocalPoint(
+                    float(cx),
+                    float(cy),
+                    float(cz),
+                )
+            except Exception:
+                pass
+
+            try:
+                if bool(camera.GetParallelProjection()):
+                    camera.SetParallelScale(
+                        max(
+                            float(dx),
+                            float(dy),
+                            float(dz),
+                            1.0,
+                        ) * 0.60
+                    )
+            except Exception:
+                pass
+
+            renderer = self._main_renderer()
+
+            if renderer is not None:
+                try:
+                    renderer.ResetCameraClippingRange(
+                        (
+                            float(min_x),
+                            float(max_x),
+                            float(min_y),
+                            float(max_y),
+                            float(min_z),
+                            float(max_z),
+                        )
+                    )
+                except TypeError:
+                    try:
+                        renderer.ResetCameraClippingRange()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            try:
+                camera.Modified()
+            except Exception:
+                pass
 
         except Exception:
             pass
@@ -1422,3 +2070,11 @@ class StaticPropertyPreviewRenderer:
             self.host._render()
         else:
             self.plotter.render()
+
+        if self.refresh_layer_clipping_range(
+            render_now=False,
+        ):
+            try:
+                self.plotter.render()
+            except Exception:
+                pass
