@@ -192,6 +192,13 @@ class ThreeDViewport(QWidget):
         self.fence_section_property = "Pressure"
         self._fence_section_state = FENCE_SECTION_STATE_INACTIVE
         self._fence_qt_event_filter_installed = False
+        self._simulation_data_revision = 0
+        self._pending_post_show_render_revision = None
+        self._post_show_render_timer = QTimer(self)
+        self._post_show_render_timer.setSingleShot(True)
+        self._post_show_render_timer.timeout.connect(
+            self._finalize_post_show_simulation_render
+        )
         self.coordinate_axes_visible = False
         self.camera_direction_locked = False
         self.layers = {
@@ -876,14 +883,48 @@ class ThreeDViewport(QWidget):
     def set_simulation_data(self, sim_data):
         if sim_data is not self.simulation_data:
             self._reset_fence_section_for_context_change(render=False)
+            self._simulation_data_revision += 1
+        self._post_show_render_timer.stop()
+        self._pending_post_show_render_revision = None
+
+        needs_post_show_refresh = self._real_view is None
+        if self._real_view is not None:
+            try:
+                needs_post_show_refresh = bool(self._real_view.isHidden())
+            except Exception:
+                needs_post_show_refresh = False
+
         self.simulation_data = sim_data
         if sim_data is None:
+            self._rendered_display_key = None
             if self._real_view is not None:
                 self._real_view.hide()
             self.update()
             return
         if sim_data is not None and self._ensure_real_view():
             self._restore_saved_visual_state()
+            if needs_post_show_refresh:
+                self._pending_post_show_render_revision = (
+                    self._simulation_data_revision
+                )
+                # show() and the first VTK rebuild happen in the same call
+                # stack after a case/project switch. Render once more after
+                # Qt has delivered the pending show/OpenGL events.
+                self._post_show_render_timer.start(0)
+        self.update()
+
+    def _finalize_post_show_simulation_render(self):
+        revision = self._pending_post_show_render_revision
+        self._pending_post_show_render_revision = None
+        if (
+            revision is None
+            or revision != self._simulation_data_revision
+            or self.simulation_data is None
+        ):
+            return
+        if not self._ensure_real_view():
+            return
+        self._restore_saved_visual_state()
         self.update()
 
     def set_preview_data(self, sim_data):

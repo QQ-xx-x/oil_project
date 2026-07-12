@@ -99,10 +99,6 @@ class CaseManagerPanel(QTreeWidget):
         case_actions = self._group("算例操作")
         case_actions.addChild(
             self._action_item("新建算例(NEW CASE)", "new_case", "new"))
-        case_actions.addChild(
-            self._action_item("导入算例(ECLIPSE CASE)", "import_eclipse_case", "import"))
-        case_actions.addChild(
-            self._action_item("导入算例(IMPORT CASE)", "import_case", "import"))
         self.addTopLevelItem(case_actions)
         case_actions.setExpanded(True)
 
