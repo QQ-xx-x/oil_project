@@ -51,7 +51,7 @@ def get_bright_jet_cmap():
     )
 
 
-STATIC_PROPERTY_OPACITY = 0.9
+STATIC_PROPERTY_OPACITY = 0.8
 STATIC_PROPERTY_SHOW_EDGES = False
 STATIC_PROPERTY_EDGE_COLOR = (0.18, 0.18, 0.18)
 STATIC_PROPERTY_EDGE_LINE_WIDTH = 0.3
@@ -63,6 +63,16 @@ STATIC_PROPERTY_SPECULAR = 0.0
 STATIC_PROPERTY_INTERPOLATE_BEFORE_MAP = False
 STATIC_PROPERTY_DEPTH_PEEL_COUNT = 100
 STATIC_PROPERTY_DEPTH_PEEL_OCCLUSION_RATIO = 0.0
+
+# 将相邻单元的重复角点合并后再提取外表面，避免每个内部单元面都以
+# 0.3 透明度重复叠加，导致井和裂缝被“透明属性场”实际遮成不透明。
+STATIC_PROPERTY_MERGE_SHARED_POINTS = True
+STATIC_PROPERTY_POINT_MERGE_TOLERANCE_RATIO = 1.0e-9
+STATIC_PROPERTY_POINT_MERGE_ABSOLUTE_TOLERANCE = 1.0e-8
+
+# 仅绘制朝向相机的属性场外壳面。这样内部井和裂缝只穿过一层
+# 半透明外壳，而不会再被远侧外壳重复染色。
+STATIC_PROPERTY_BACKFACE_CULLING = True
 
 STATIC_PROPERTY_SCALAR_BAR_ARGS = {
     "position_x": 0.02,
@@ -376,10 +386,10 @@ class StaticPropertyPreviewRenderer:
                 pass
 
         try:
-            actor.ForceTranslucentOff()
+            actor.ForceTranslucentOn()
         except Exception:
             try:
-                actor.SetForceTranslucent(False)
+                actor.SetForceTranslucent(True)
             except Exception:
                 pass
 
@@ -400,6 +410,20 @@ class StaticPropertyPreviewRenderer:
         self.current_layer_index = None
 
         self._remove_scalar_bar()
+
+        geometry_preview = getattr(
+            self.host,
+            "geometry_preview",
+            None,
+        )
+
+        if geometry_preview is not None and hasattr(
+            geometry_preview,
+            "refresh_preview_stack",
+        ):
+            geometry_preview.refresh_preview_stack(
+                render_now=False,
+            )
 
         if render_now:
             self._render()
@@ -981,6 +1005,108 @@ class StaticPropertyPreviewRenderer:
     ) -> int:
         return int(k * nx * ny + j * nx + i)
 
+    @staticmethod
+    def _property_clean_tolerance(bounds) -> float:
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+
+            spans = np.asarray(
+                [
+                    abs(values[1] - values[0]),
+                    abs(values[3] - values[2]),
+                    abs(values[5] - values[4]),
+                ],
+                dtype=np.float64,
+            )
+
+            finite_spans = spans[np.isfinite(spans)]
+            reference_span = (
+                float(np.max(finite_spans))
+                if finite_spans.size > 0
+                else 0.0
+            )
+        except Exception:
+            reference_span = 0.0
+
+        return max(
+            reference_span
+            * STATIC_PROPERTY_POINT_MERGE_TOLERANCE_RATIO,
+            STATIC_PROPERTY_POINT_MERGE_ABSOLUTE_TOLERANCE,
+        )
+
+    def _build_property_shell_surface(
+        self,
+        grid: pv.UnstructuredGrid,
+    ):
+        stable_grid = grid
+
+        if STATIC_PROPERTY_MERGE_SHARED_POINTS:
+            tolerance = self._property_clean_tolerance(
+                grid.bounds
+            )
+
+            try:
+                stable_grid = grid.clean(
+                    tolerance=tolerance,
+                    remove_unused_points=True,
+                )
+            except TypeError:
+                try:
+                    stable_grid = grid.clean(
+                        tolerance=tolerance,
+                    )
+                except Exception:
+                    stable_grid = grid
+            except Exception:
+                stable_grid = grid
+
+            if (
+                stable_grid is None
+                or stable_grid.n_cells == 0
+            ):
+                stable_grid = grid
+
+        try:
+            surface = stable_grid.extract_surface()
+        except Exception:
+            surface = grid.extract_surface()
+
+        return surface
+
+    @staticmethod
+    def _configure_property_shell_actor(actor):
+        if actor is None:
+            return
+
+        try:
+            prop = actor.GetProperty()
+        except Exception:
+            prop = None
+
+        if prop is None:
+            return
+
+        try:
+            prop.FrontfaceCullingOff()
+        except Exception:
+            pass
+
+        try:
+            if STATIC_PROPERTY_BACKFACE_CULLING:
+                prop.BackfaceCullingOn()
+            else:
+                prop.BackfaceCullingOff()
+        except Exception:
+            try:
+                prop.SetBackfaceCulling(
+                    bool(STATIC_PROPERTY_BACKFACE_CULLING)
+                )
+            except Exception:
+                pass
+
     def _render_grid(
         self,
         sim_data,
@@ -1006,7 +1132,9 @@ class StaticPropertyPreviewRenderer:
 
         clim = self._safe_clim(values)
 
-        surface = grid.extract_surface()
+        surface = self._build_property_shell_surface(
+            grid
+        )
 
         try:
             surface = surface.compute_normals(
@@ -1037,6 +1165,7 @@ class StaticPropertyPreviewRenderer:
 
         self._force_actor_unlit(self.actor)
         self._configure_translucent_actor(self.actor)
+        self._configure_property_shell_actor(self.actor)
 
         self.scalar_bar_actor = self._replace_scalar_bar(
             title=title,
