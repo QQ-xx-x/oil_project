@@ -85,6 +85,19 @@ GEOMETRY_PREVIEW_LABELS = {
     "fractures": "全部裂缝",
 }
 
+GEOMETRY_PREVIEW_STYLE_KEYS = frozenset({
+    "well_color",
+    "well_radius",
+    "perforation_color",
+    "show_perforations",
+    "natural_fracture_color",
+    "hydraulic_fracture_color",
+    "fracture_show_edges",
+    "natural_fracture_edge_color",
+    "hydraulic_fracture_edge_color",
+    "fracture_edge_line_width",
+})
+
 RESULT_STYLES = {
     "pressure_field": {
         "legend": "压力",
@@ -179,6 +192,7 @@ class ThreeDViewport(QWidget):
         self._real_view_error = ""
         self.simulation_data = None
         self.preview_data = None
+        self._geometry_preview_style = None
         self._preview_mode_active = False
         self.context_title = "当前结果：三维视图"
         self.context_detail = "在结果树中选择结果或图层后，这里显示对应占位视图。"
@@ -940,6 +954,104 @@ class ThreeDViewport(QWidget):
 
     def _preview_source_data(self):
         return self.preview_data or self.simulation_data
+
+    def _geometry_preview_controller(self, ensure=True):
+        if self._real_renderer is None:
+            if not ensure or not self._ensure_real_view():
+                detail = self._real_view_error or "未知错误"
+                return None, f"[预览样式] 无法初始化 3D 渲染器：{detail}"
+
+        preview = getattr(
+            self._real_renderer,
+            "geometry_preview",
+            None,
+        )
+        if preview is None:
+            return None, "[预览样式] 渲染端缺少 geometry_preview"
+        return preview, ""
+
+    def get_geometry_preview_style(self):
+        """Return ``(ok, message, style)`` for the current 3D viewport."""
+        if self._real_renderer is None and self._geometry_preview_style is not None:
+            return True, "[预览样式] 已读取缓存样式", dict(
+                self._geometry_preview_style)
+
+        preview, error = self._geometry_preview_controller(ensure=True)
+        if preview is None:
+            return False, error, {}
+
+        getter = getattr(preview, "get_geometry_style", None)
+        if getter is None:
+            return False, "[预览样式] 渲染端缺少 get_geometry_style", {}
+
+        try:
+            style = getter()
+        except Exception as exc:
+            return False, f"[预览样式] 读取失败：{exc}", {}
+
+        if not isinstance(style, dict):
+            return False, "[预览样式] 渲染端返回了无效的样式数据", {}
+
+        self._geometry_preview_style = dict(style)
+        return True, "[预览样式] 已读取当前样式", dict(style)
+
+    def set_geometry_preview_style(
+        self,
+        style=None,
+        render_now=True,
+        **style_changes,
+    ):
+        """Validate and forward geometry-preview style changes to rendering."""
+        if style is None:
+            payload = {}
+        elif isinstance(style, dict):
+            payload = dict(style)
+        else:
+            return False, "[预览样式] 样式参数必须是字典", {}
+
+        payload.update(style_changes)
+        unknown_keys = sorted(
+            set(payload) - GEOMETRY_PREVIEW_STYLE_KEYS
+        )
+        if unknown_keys:
+            names = ", ".join(unknown_keys)
+            return False, f"[预览样式] 不支持的样式参数：{names}", {}
+
+        preview, error = self._geometry_preview_controller(ensure=True)
+        if preview is None:
+            return False, error, {}
+
+        setter = getattr(preview, "set_geometry_style", None)
+        if setter is None:
+            return False, "[预览样式] 渲染端缺少 set_geometry_style", {}
+
+        try:
+            normalized = setter(
+                **payload,
+                sim_data=self._preview_source_data(),
+                render_now=bool(render_now),
+            )
+        except (TypeError, ValueError) as exc:
+            return False, f"[预览样式] 参数无效：{exc}", {}
+        except Exception as exc:
+            return False, f"[预览样式] 更新失败：{exc}", {}
+
+        if not isinstance(normalized, dict):
+            return False, "[预览样式] 渲染端返回了无效的样式数据", {}
+
+        self._geometry_preview_style = dict(normalized)
+        if render_now:
+            self.update()
+        return True, "[预览样式] 已更新几何预览样式", dict(normalized)
+
+    def _apply_cached_geometry_preview_style(self, render_now=False):
+        if self._geometry_preview_style is None:
+            return True, ""
+        ok, message, _ = self.set_geometry_preview_style(
+            dict(self._geometry_preview_style),
+            render_now=render_now,
+        )
+        return ok, message
 
     def _enter_preview_mode(self):
         self._reset_fence_section_for_context_change(render=False)
@@ -1902,6 +2014,10 @@ class ThreeDViewport(QWidget):
         if hasattr(self._real_view, "interaction_message"):
             self._real_view.interaction_message.connect(
                 self._handle_renderer_interaction_message)
+        style_ok, style_message = self._apply_cached_geometry_preview_style(
+            render_now=False)
+        if not style_ok:
+            self.interaction_message.emit(style_message)
         self._real_view.show()
         return True
 
