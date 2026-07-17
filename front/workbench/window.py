@@ -157,6 +157,16 @@ class WorkbenchWindow(QMainWindow):
                 self.active_log().append_message(message)
                 self.statusBar().showMessage(message, 4500)
             return
+        if command == "生成 Dataset":
+            current = self.pages.currentWidget()
+            if isinstance(current, ProjectShell):
+                current.generate_case_dataset()
+                self._sync_run_button_state()
+            else:
+                message = "[Dataset] 请先打开工程"
+                self.active_log().append_message(message)
+                self.statusBar().showMessage(message, 4500)
+            return
         if command in {"运行模拟", "扫描结果", "刷新结果"}:
             current = self.pages.currentWidget()
             if isinstance(current, ProjectShell):
@@ -385,6 +395,7 @@ class WorkbenchWindow(QMainWindow):
             lambda *_args: self._sync_run_button_state())
         shell.simulation_service.run_failed.connect(
             lambda *_args: self._sync_run_button_state())
+        shell.dataset_state_changed.connect(self._sync_run_button_state)
         self.pages.addWidget(shell)
         self.pages.setCurrentWidget(shell)
         self.setWindowTitle("储层建模与模拟平台")
@@ -401,6 +412,14 @@ class WorkbenchWindow(QMainWindow):
         shell = self._current_project_shell()
         active = bool(
             shell is not None and shell.simulation_service.is_running())
+        ready = bool(
+            shell is not None
+            and shell.project_state.is_case_dataset_ready())
+        reason = (
+            shell.project_state.case_dataset_readiness_reason()
+            if shell is not None else "请先打开工程"
+        )
+        self.command_bar.set_dataset_state(ready, reason)
         self.command_bar.set_run_active(active)
 
     def _open_module_workspace(self, module_key):

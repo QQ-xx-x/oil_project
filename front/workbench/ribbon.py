@@ -365,10 +365,23 @@ class MinimalCommandBar(QWidget):
         self.file_button.clicked.connect(self._show_file_menu)
         layout.addWidget(self.file_button)
 
+        self.dataset_button = QToolButton()
+        self.dataset_button.setObjectName("minimalDatasetButton")
+        self.dataset_button.setText("生成 Dataset")
+        self.dataset_button.setIcon(painted_icon(
+            _semantic_icon_kind("database", "生成 Dataset"), 18))
+        self.dataset_button.setIconSize(QSize(18, 18))
+        self.dataset_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.dataset_button.setFixedSize(126, 28)
+        self.dataset_button.setToolTip("校验模块数据并生成当前算例 Dataset")
+        self.dataset_button.clicked.connect(
+            lambda checked=False: self.command_requested.emit("生成 Dataset"))
+        layout.addWidget(self.dataset_button)
+
         self.run_button = QToolButton()
         self.run_button.setObjectName("minimalRunButton")
-        self.run_button.setText("开始模拟")
-        self.run_button.setIcon(painted_icon(_semantic_icon_kind("monitor", "开始模拟"), 18))
+        self.run_button.setText("运行模拟")
+        self.run_button.setIcon(painted_icon(_semantic_icon_kind("monitor", "运行模拟"), 18))
         self.run_button.setIconSize(QSize(18, 18))
         self.run_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.run_button.setFixedSize(108, 28)
@@ -382,13 +395,10 @@ class MinimalCommandBar(QWidget):
 
     def set_project_mode(self, enabled):
         self._project_mode = bool(enabled)
-        self.run_button.setEnabled(self._project_mode)
+        self.dataset_button.setEnabled(self._project_mode)
         if not self._project_mode:
             self.set_run_active(False)
-        if self._project_mode:
-            self.run_button.setToolTip("运行当前工程的模拟流程")
-        else:
-            self.run_button.setToolTip("请先打开工程")
+        self._sync_run_enabled()
         if self.file_menu is not None:
             self.file_menu.set_project_mode(self._project_mode)
 
@@ -398,13 +408,32 @@ class MinimalCommandBar(QWidget):
 
     def set_run_active(self, active):
         active = bool(active)
+        self._run_active = active
         self.run_button.setText(
-            "\u505c\u6b62\u6a21\u62df" if active else "\u5f00\u59cb\u6a21\u62df")
-        self.run_button.setToolTip(
-            "\u505c\u6b62\u5f53\u524d\u5de5\u7a0b\u7684\u6a21\u62df\u8fd0\u884c"
-            if active
-            else "\u8fd0\u884c\u5f53\u524d\u5de5\u7a0b\u7684\u6a21\u62df\u6d41\u7a0b"
-        )
+            "停止模拟" if active else "运行模拟")
+        self._sync_run_enabled()
+
+    def set_dataset_state(self, ready, reason=""):
+        self._dataset_ready = bool(ready)
+        self._dataset_reason = str(reason or "")
+        self._sync_run_enabled()
+
+    def _sync_run_enabled(self):
+        active = bool(getattr(self, "_run_active", False))
+        ready = bool(getattr(self, "_dataset_ready", False))
+        reason = str(getattr(self, "_dataset_reason", "") or "")
+        self.dataset_button.setEnabled(bool(self._project_mode and not active))
+        self.run_button.setEnabled(
+            bool(self._project_mode and (active or ready)))
+        if not self._project_mode:
+            self.run_button.setToolTip("请先打开工程")
+        elif active:
+            self.run_button.setToolTip("停止当前工程的模拟运行")
+        elif ready:
+            self.run_button.setToolTip("使用当前已就绪 Dataset 运行模拟")
+        else:
+            self.run_button.setToolTip(
+                reason or "请先生成当前算例的 Dataset")
 
     def _show_file_menu(self):
         if self.file_menu is None:
@@ -1201,6 +1230,7 @@ class RibbonWidget(QTabWidget):
                 _action("快速更新", "monitor", "large", "快速更新模型"),
             ]),
             ("运行", [
+                _action("生成 Dataset", "database", "large", "校验模块数据并生成 Dataset"),
                 _action("运行模拟", "monitor", "large", "运行当前模拟算例"),
                 _action("扫描结果", "search", "small", "扫描已有模拟结果"),
                 _action("刷新结果", "import", "small", "刷新结果图表和数据"),

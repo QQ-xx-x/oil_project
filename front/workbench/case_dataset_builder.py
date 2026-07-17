@@ -2,6 +2,7 @@
 """从 CaseData 输入文件构建标准 case_dataset 数据包。"""
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -80,7 +81,8 @@ MATRIX_PERMEABILITY_SCALE = 1.0 / 1000.0
 
 
 def build_case_dataset(case_data_path, output_dir, include_raw=True,
-                       null_value=DEFAULT_NULL_VALUE, model_config=None):
+                       null_value=DEFAULT_NULL_VALUE, model_config=None,
+                       business_overrides=None):
     """把 CaseData 和其引用文件保存为标准 case_dataset 目录。
 
     这个函数尽量生成完整诊断信息。除 CaseData 主文件不存在外，其余文件缺失或解析失败
@@ -98,6 +100,7 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
     os.makedirs(output_dir, exist_ok=True)
     validation = _new_validation()
     model_config = normalize_model_config(model_config)
+    business_overrides = copy.deepcopy(dict(business_overrides or {}))
     _record_model_config_validation(validation, model_config)
 
     case_data = parse_case_data(case_data_path)
@@ -106,6 +109,12 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
 
     files = _collect_file_paths(case_data)
     config = _parse_config(case_data_path, validation)
+    hydraulic_override = business_overrides.get("hydraulic_fractures")
+    if isinstance(hydraulic_override, dict):
+        config["hydraulic_fractures"] = copy.deepcopy(hydraulic_override)
+        _set_check(
+            validation, "hydraulic_fracture_business_data", True,
+            f"{int(hydraulic_override.get('count') or 0)} fractures")
     raw_copies = _copy_raw_files(
         case_data_path, files, output_dir, include_raw, validation)
 
@@ -127,8 +136,17 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
     )
 
     dfn_payload, dfn_summary = _parse_dfn_payload(files, validation)
-    wells_payload, wells_summary = _parse_wells_payload(
-        case_data_path, config, files, validation)
+    wells_override = business_overrides.get("wells")
+    if isinstance(wells_override, dict):
+        wells_payload = copy.deepcopy(wells_override)
+        wells_summary = dict(wells_payload.get("summary") or {})
+        wells_summary["available"] = bool(wells_payload.get("wells"))
+        _set_check(
+            validation, "wells_business_data", True,
+            f"{int(wells_summary.get('well_count') or 0)} wells")
+    else:
+        wells_payload, wells_summary = _parse_wells_payload(
+            case_data_path, config, files, validation)
 
     _write_json(os.path.join(output_dir, CONFIG_FILE), {
         "schema_version": SCHEMA_VERSION,

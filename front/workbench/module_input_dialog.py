@@ -1,0 +1,426 @@
+# -*- coding: utf-8 -*-
+"""Unified registry-driven dialog for ordinary business input modules."""
+
+import copy
+
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+    QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+)
+
+from .input_keyword_registry import (
+    MODULE_SPEC_BY_KEY,
+    WIDGET_BOOLEAN,
+    WIDGET_CHOICE,
+    WIDGET_DERIVED,
+    WIDGET_INTEGER,
+    WIDGET_NUMBER,
+    WIDGET_SUMMARY,
+    WIDGET_SUMMARY_TABLE,
+    WIDGET_TABLE,
+    display_fields_for_module,
+)
+from .module_import_service import (
+    ModuleImportService,
+    normalize_module_business_data,
+    validate_module_business_data,
+)
+from .module_input_models import ModuleInputState, ModuleParsedData
+from .module_input_widgets import (
+    BusinessScalarEditor,
+    StatisticsTableWidget,
+    StructuredDataTableWidget,
+    SummaryCardWidget,
+    ValidationPanel,
+)
+
+
+SCALAR_WIDGETS = frozenset((
+    WIDGET_NUMBER,
+    WIDGET_INTEGER,
+    WIDGET_BOOLEAN,
+    WIDGET_CHOICE,
+    WIDGET_DERIVED,
+))
+
+
+class ModuleInputDialog(QDialog):
+    """Common transactional shell shared by every ordinary input module."""
+
+    values_applied = pyqtSignal(str, str, dict)
+
+    def __init__(self, module_key, project_state, initial_group_key=None,
+                 parent=None):
+        super().__init__(parent)
+        self.module_key = str(module_key or "")
+        self.project_state = project_state
+        self.module_spec = MODULE_SPEC_BY_KEY.get(self.module_key)
+        if self.module_spec is None:
+            raise ValueError(f"Unknown module: {self.module_key}")
+        self.values_were_applied = False
+        self._pages = []
+        self._working_state = (
+            project_state.get_module_input_state(self.module_key)
+            or ModuleInputState(
+                module_key=self.module_key,
+                parsed_data=ModuleParsedData(),
+                validation={"ok": True, "errors": [], "warnings": []},
+            )
+        )
+        self._working_values = copy.deepcopy(
+            self._working_state.parsed_data.values)
+
+        self.setObjectName("moduleInputDialog")
+        self.setWindowTitle(f"{self.module_spec.title} - 参数设置")
+        self.resize(980, 680)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+        root.addWidget(self._header())
+
+        splitter = QSplitter(Qt.Horizontal)
+        self.nav = QListWidget()
+        self.nav.setObjectName("moduleInputNav")
+        self.nav.setMinimumWidth(175)
+        self.nav.setMaximumWidth(230)
+        self.nav.currentRowChanged.connect(self._show_page)
+        splitter.addWidget(self.nav)
+
+        self.stack = QStackedWidget()
+        splitter.addWidget(self.stack)
+        splitter.setSizes([190, 760])
+        root.addWidget(splitter, 1)
+
+        self._build_pages(initial_group_key)
+        self.validation_panel = ValidationPanel()
+        root.addWidget(self.validation_panel)
+        self._refresh_from_working_state()
+
+        buttons = QDialogButtonBox()
+        self.apply_button = QPushButton("应用")
+        self.ok_button = QPushButton("确定")
+        self.cancel_button = QPushButton("取消")
+        buttons.addButton(self.apply_button, QDialogButtonBox.ApplyRole)
+        buttons.addButton(self.ok_button, QDialogButtonBox.AcceptRole)
+        buttons.addButton(self.cancel_button, QDialogButtonBox.RejectRole)
+        self.apply_button.clicked.connect(self.apply_values)
+        self.ok_button.clicked.connect(self._accept_with_apply)
+        self.cancel_button.clicked.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _header(self):
+        frame = QFrame()
+        frame.setObjectName("parameterIntro")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 10, 12, 10)
+        title = QLabel(self.module_spec.title)
+        title.setObjectName("parameterTitle")
+        description = QLabel(
+            "导入或编辑当前模块的业务参数。窗口仅展示解析后的参数、统计和结构化数据。")
+        description.setObjectName("parameterDescription")
+        description.setWordWrap(True)
+        toolbar = QHBoxLayout()
+        self.import_button = QPushButton("导入模块数据")
+        self.import_button.setObjectName("importModuleDataButton")
+        self.import_status = QLabel("")
+        self.import_status.setObjectName("parameterDescription")
+        self.import_button.clicked.connect(self._import_module_data)
+        toolbar.addWidget(self.import_button)
+        toolbar.addWidget(self.import_status, 1)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addLayout(toolbar)
+        return frame
+
+    def _build_pages(self, initial_group_key):
+        fields = display_fields_for_module(self.module_key)
+        initial_row = 0
+        for index, group in enumerate(self.module_spec.groups):
+            item = QListWidgetItem(group.title)
+            item.setData(Qt.UserRole, group.key)
+            self.nav.addItem(item)
+            page_fields = tuple(field for field in fields if field.group == group.title)
+            page = ModuleGroupPage(group.title, page_fields, self)
+            page.values_changed.connect(self._mark_draft_changed)
+            self._pages.append(page)
+            self.stack.addWidget(page)
+            if initial_group_key == group.key:
+                initial_row = index
+        if self.nav.count():
+            self.nav.setCurrentRow(initial_row)
+
+    def _show_page(self, index):
+        if 0 <= index < self.stack.count():
+            self.stack.setCurrentIndex(index)
+
+    def _mark_draft_changed(self):
+        self.import_status.setText("存在尚未应用的修改")
+        preview = copy.deepcopy(self._working_values)
+        try:
+            for page in self._pages:
+                page.collect_values(preview)
+        except (TypeError, ValueError):
+            return
+        for page in self._pages:
+            page.refresh_derived(preview, self.module_key)
+
+    def _import_module_data(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择模块数据",
+            "",
+            "输入数据 (*.txt *.data);;所有文件 (*)",
+        )
+        if not path:
+            return
+        result = ModuleImportService(self.project_state).prepare_module(
+            self.module_key, path)
+        if not result.success or result.state is None:
+            message = "\n".join(result.errors or ("模块数据导入失败。",))
+            QMessageBox.warning(self, "导入失败", message)
+            return
+        self._working_state = result.state
+        self._working_values = copy.deepcopy(
+            result.state.parsed_data.values)
+        self._refresh_from_working_state()
+        count = result.state.validation.get("imported_value_count", 0)
+        self.import_status.setText(f"已读取 {count} 项业务输入，等待应用")
+
+    def _refresh_from_working_state(self):
+        for page in self._pages:
+            page.set_values(self._working_values, self.module_key)
+        self.validation_panel.set_validation(self._working_state.validation)
+
+    def apply_values(self):
+        values = copy.deepcopy(self._working_values)
+        try:
+            for page in self._pages:
+                page.collect_values(values)
+        except (TypeError, ValueError):
+            validation = {
+                "ok": False,
+                "errors": ["存在无法保存的参数值，请检查输入。"],
+                "warnings": [],
+            }
+            self.validation_panel.set_validation(validation)
+            QMessageBox.warning(
+                self, "参数无效", "存在无法保存的参数值，请检查输入。")
+            return False
+
+        values = normalize_module_business_data(self.module_key, values)
+        business_validation = validate_module_business_data(
+            self.module_key, values)
+        if not business_validation["ok"]:
+            self.validation_panel.set_validation(business_validation)
+            QMessageBox.warning(
+                self, "参数校验未通过",
+                "\n".join(business_validation["errors"]))
+            return False
+
+        draft = ModuleInputState.from_dict(self._working_state)
+        draft.parsed_data = ModuleParsedData(values=values)
+        draft.validation = dict(draft.validation or {})
+        checks = dict(draft.validation.get("checks") or {})
+        checks.update(business_validation["checks"])
+        warnings = list(dict.fromkeys(
+            list(draft.validation.get("warnings") or [])
+            + list(business_validation["warnings"])
+        ))
+        draft.validation.update({
+            "ok": True,
+            "errors": [],
+            "warnings": warnings,
+            "checks": checks,
+        })
+        draft.dirty = True
+
+        current = self.project_state.get_module_input_state(self.module_key)
+        if current is not None and _state_content(current) == _state_content(draft):
+            self._working_state = current
+            self._working_values = copy.deepcopy(values)
+            self.import_status.setText("当前数据没有变化")
+            return True
+
+        try:
+            committed = self.project_state.replace_module_input_state(
+                self.module_key, draft)
+        except (TypeError, ValueError):
+            QMessageBox.warning(self, "保存失败", "当前模块数据未能保存。")
+            return False
+
+        self._working_state = committed
+        self._working_values = copy.deepcopy(values)
+        self.values_were_applied = True
+        self.import_status.setText(f"已应用，数据修订号 {committed.revision}")
+        self.values_applied.emit(
+            self.module_key, self.module_spec.title,
+            _compact_business_values(values))
+        self.validation_panel.set_validation(committed.validation)
+        return True
+
+    def _accept_with_apply(self):
+        if self.apply_values():
+            self.accept()
+
+
+class ModuleGroupPage(QWidget):
+    """One registry business group inside the common dialog shell."""
+
+    values_changed = pyqtSignal()
+
+    def __init__(self, title, fields, parent=None):
+        super().__init__(parent)
+        self.group_title = title
+        self.fields = tuple(fields or ())
+        self.bindings = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        holder = QWidget()
+        self.content = QVBoxLayout(holder)
+        self.content.setContentsMargins(14, 12, 14, 12)
+        self.content.setSpacing(10)
+        scroll.setWidget(holder)
+        outer.addWidget(scroll)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("parameterTitle")
+        self.content.addWidget(title_label)
+        if not self.fields:
+            note = QLabel("当前分类尚未注册可展示的业务字段。")
+            note.setObjectName("parameterDescription")
+            self.content.addWidget(note)
+        self._build_controls()
+        self.content.addStretch()
+
+    def _build_controls(self):
+        scalar_group = None
+        scalar_form = None
+        for field in self.fields:
+            if field.widget_kind in SCALAR_WIDGETS:
+                if scalar_group is None:
+                    scalar_group = QFrame()
+                    scalar_form = QFormLayout(scalar_group)
+                    self.content.addWidget(scalar_group)
+                control = BusinessScalarEditor(field)
+                control.value_changed.connect(self.values_changed.emit)
+                scalar_form.addRow(field.title, control)
+            elif field.widget_kind == WIDGET_SUMMARY_TABLE:
+                control = StatisticsTableWidget(
+                    field.title, field.columns)
+                self.content.addWidget(control)
+            elif field.widget_kind == WIDGET_TABLE:
+                control = StructuredDataTableWidget(
+                    field.title, field.columns, editable=field.editable)
+                control.value_changed.connect(self.values_changed.emit)
+                self.content.addWidget(control)
+            elif field.widget_kind == WIDGET_SUMMARY:
+                control = SummaryCardWidget(field.title)
+                self.content.addWidget(control)
+            else:
+                control = SummaryCardWidget(field.title)
+                self.content.addWidget(control)
+            self.bindings.append((field, control))
+
+    def set_values(self, values, module_key):
+        for field, control in self.bindings:
+            value = _display_value(values, field.source_path, module_key)
+            control.set_value(value)
+
+    def collect_values(self, values):
+        for field, control in self.bindings:
+            if not field.editable:
+                continue
+            if isinstance(control, BusinessScalarEditor):
+                value = control.value()
+            elif isinstance(control, StructuredDataTableWidget):
+                value = control.value()
+            else:
+                continue
+            if value is None:
+                _remove_value(values, field.source_path)
+            else:
+                _set_value(values, field.source_path, value)
+
+    def refresh_derived(self, values, module_key):
+        for field, control in self.bindings:
+            if field.widget_kind != WIDGET_DERIVED:
+                continue
+            control.set_value(_display_value(
+                values, field.source_path, module_key))
+
+
+def _display_value(values, source_path, module_key):
+    if source_path == "derived.mole_fraction_sum":
+        keys = (
+            "mole_ch4", "mole_c2h6", "mole_c3h8", "mole_n2",
+            "mole_co2", "mole_h2o", "mole_unknown",
+        )
+        available = [values.get(key) for key in keys if values.get(key) is not None]
+        return sum(float(value) for value in available) if available else None
+    if source_path == "derived.so":
+        sw = values.get("sw")
+        sg = values.get("sg")
+        if sw is None or sg is None:
+            return None
+        return 1.0 - float(sw) - float(sg)
+    return _get_value(values, source_path)
+
+
+def _get_value(values, path):
+    current = values
+    for part in str(path or "").split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _set_value(values, path, value):
+    parts = str(path or "").split(".")
+    current = values
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    if parts and parts[-1] != "derived":
+        current[parts[-1]] = copy.deepcopy(value)
+
+
+def _remove_value(values, path):
+    parts = str(path or "").split(".")
+    current = values
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            return
+        current = current[part]
+    if isinstance(current, dict) and parts:
+        current.pop(parts[-1], None)
+
+
+def _state_content(state):
+    return {
+        "raw_values": copy.deepcopy(state.raw_values),
+        "parsed_data": state.parsed_data.to_dict(),
+        "validation": copy.deepcopy(state.validation),
+        "source": copy.deepcopy(state.source),
+    }
+
+
+def _compact_business_values(values):
+    compact = {}
+    for key, value in (values or {}).items():
+        if isinstance(value, dict):
+            compact[key] = f"{len(value)} 项业务属性"
+        elif isinstance(value, (list, tuple)):
+            compact[key] = f"{len(value)} 条业务记录"
+        else:
+            compact[key] = value
+    return compact

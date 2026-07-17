@@ -5,8 +5,8 @@ import os
 
 from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QMenu, QSplitter, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QSplitter, QTabWidget,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..data_models import SimulationData
@@ -41,6 +41,7 @@ from .simulation_run_manager import (
     SimulationRunError,
     SimulationRunManager,
 )
+from .module_dataset_service import ModuleDatasetService
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
 from visual.pyvista_static_property_preview import (
@@ -209,6 +210,7 @@ class DockTabPanel(QFrame):
 
 class ProjectShell(QWidget):
     command_requested = pyqtSignal(str)
+    dataset_state_changed = pyqtSignal()
 
     def __init__(self, project_name, project_state=None, project_root=None, parent=None):
         super().__init__(parent)
@@ -251,9 +253,10 @@ class ProjectShell(QWidget):
         self.input_tree = InputTree(self.project_state)
         self.input_tree.module_selected.connect(self._handle_module_selected)
         self.input_tree.parameters_saved.connect(self._handle_parameters_saved)
-        self.input_tree.case_dataset_built.connect(self._handle_case_dataset_built)
         self.input_tree.result_requested.connect(self._handle_input_related_result_requested)
         self.input_tree.workflow_requested.connect(self._handle_workflow_requested)
+        self.input_tree.model_config_requested.connect(
+            self.show_model_config_dialog)
 
         self.results_tree = ResultsTree()
         self.results_tree.bind_case(self.project_state.active_case())
@@ -334,6 +337,7 @@ class ProjectShell(QWidget):
         self._refresh_case_input_state(stay_on_case_tab=True)
         self.message_log.append_message(f"[算例] 当前算例：{case.case_name}")
         self._show_status(f"当前算例：{case.case_name}")
+        self.dataset_state_changed.emit()
 
     def _handle_case_created(self, case_id):
         case = self.project_state.case_by_id(case_id)
@@ -357,6 +361,7 @@ class ProjectShell(QWidget):
                 self.message_log.append_message(
                     f"[算例] 已创建气水模拟算例：{case.case_name}")
                 self._show_status(f"已创建算例：{case.case_name}")
+        self.dataset_state_changed.emit()
 
     def _handle_history_run_state_changed(self, case_id, run_id):
         case = self.project_state.case_by_id(case_id)
@@ -389,7 +394,6 @@ class ProjectShell(QWidget):
         if input_index >= 0:
             self.upper_tabs.tab_widget.setTabEnabled(input_index, has_case)
         self.input_tree.setEnabled(has_case)
-        self.input_tree.refresh_case_data_sections(preserve_expanded=True)
         self.input_tree.refresh_model_config_visibility()
         self.case_manager.refresh()
         self.workspace.set_project_context(
@@ -400,6 +404,7 @@ class ProjectShell(QWidget):
             self.upper_tabs.tab_widget.setCurrentIndex(case_index)
         elif has_case and not stay_on_case_tab and input_index >= 0:
             self.upper_tabs.tab_widget.setCurrentIndex(input_index)
+        self.dataset_state_changed.emit()
 
     def _sync_result_store_for_active_case(self):
         self.result_store.clear_run()
@@ -944,7 +949,8 @@ class ProjectShell(QWidget):
     def activate_module(self, module_key):
         routes = {
             "reservoir_model": ("input", "rock_properties"),
-            "grid_import": ("input", "input_group:grid_spatial:grid_files"),
+            "grid_import": (
+                "input", "input_group:grid_spatial:grid_properties"),
             "fracture_modeling": ("input", "fracture_system_inputs"),
             "well_engineering": ("input", "well_production"),
             "fluid_pvt": ("input", "fluid_pvt_inputs"),
@@ -952,7 +958,7 @@ class ProjectShell(QWidget):
             "results_visualization": ("result", "pressure_field"),
             "relative_perm": ("result", "relative_permeability_curve"),
             "reservoir_analysis": ("result", "production_curve"),
-            "project_management": ("input", "input_overview"),
+            "project_management": ("input", "model_configuration"),
         }
         route = routes.get(module_key)
         if route is None:
@@ -1005,6 +1011,7 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[参数] 已更新 {title}：{self._compact_values(values)}")
         self._show_status(f"已更新参数：{title}")
+        self.dataset_state_changed.emit()
 
     def _handle_case_dataset_built(self, dataset_path, manifest):
         self._preview_data = None
@@ -1023,6 +1030,7 @@ class ProjectShell(QWidget):
             f"[CaseData] Dataset 校验：数组 {array_count} 个，文件 {source_file_count} 个，"
             f"错误 {error_count} 个，警告 {warning_count} 个")
         self._show_status("CaseData Dataset 已生成")
+        self.dataset_state_changed.emit()
 
     def _ensure_preview_data_loaded(self):
         sim_data = self.result_store.simulation_data
@@ -1079,6 +1087,51 @@ class ProjectShell(QWidget):
         summary = model_config_summary(getattr(self.project_state, "model_config", {}))
         self.message_log.append_message(f"[模型方案] {summary}")
         self._show_status(f"模型方案：{summary}")
+        self.dataset_state_changed.emit()
+        return True
+
+    def generate_case_dataset(self):
+        """Generate the active Dataset exclusively from business modules."""
+
+        if self.simulation_service.is_running():
+            QMessageBox.warning(
+                self, "生成 Dataset", "模拟运行期间不能重新生成 Dataset。")
+            return False
+        if not self.project_state.has_active_case():
+            QMessageBox.warning(
+                self, "生成 Dataset", "请先新建或选择一个算例。")
+            return False
+        if not ensure_model_config_confirmed(self.project_state, self):
+            self.dataset_state_changed.emit()
+            return False
+
+        self.message_log.append_message(
+            "[Dataset] 正在校验各业务模块并合成输入快照")
+        result = ModuleDatasetService(
+            self.project_state,
+            repository=self.artifact_repository,
+            project_root=self.project_root,
+        ).build()
+        if not result.success:
+            for error in result.errors:
+                self.message_log.append_message(f"[Dataset] {error}")
+            QMessageBox.warning(
+                self,
+                "生成 Dataset 失败",
+                "\n".join(result.errors or ("当前模块数据未通过校验。",)),
+            )
+            self._show_status("Dataset 生成失败")
+            self.dataset_state_changed.emit()
+            return False
+
+        self._handle_case_dataset_built(result.output_dir, result.manifest)
+        for warning in result.warnings:
+            self.message_log.append_message(f"[Dataset提示] {warning}")
+        QMessageBox.information(
+            self,
+            "生成 Dataset",
+            "Dataset 已生成并通过校验，现在可以运行模拟。",
+        )
         return True
 
     def _handle_run_selected(self, run_id):
@@ -1249,6 +1302,12 @@ class ProjectShell(QWidget):
         if not self.project_state.has_active_case():
             self.message_log.append_message("[算例] 请先新建或选择一个算例后再运行模拟。")
             self._show_status("请先新建或选择一个算例")
+            return
+        if not self.project_state.is_case_dataset_ready():
+            reason = self.project_state.case_dataset_readiness_reason()
+            self.message_log.append_message(f"[运行] 已取消：{reason}")
+            self._show_status(reason)
+            self.dataset_state_changed.emit()
             return
         if not ensure_model_config_confirmed(self.project_state, self):
             self.message_log.append_message("[运行] 已取消：尚未确认模型方案")

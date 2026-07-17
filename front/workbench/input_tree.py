@@ -1,73 +1,63 @@
 # -*- coding: utf-8 -*-
-"""工程打开后的输入数据树。"""
-
-import copy
+"""工程打开后的业务输入树。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
 
-from .case_data_panel import CaseDataPanel, CaseKeywordPanel
-from .functional_input_dialog import FunctionalInputDialog
 from .icons import painted_icon
-from .input_module_schema import INPUT_MODULES, module_by_key
-from .parameter_panels import (
-    WorkbenchDualPorosityPanel, WorkbenchGasPvtPanel, WorkbenchGridPanel,
-    WorkbenchHydraulicFracturesPanel, WorkbenchInitialStatePanel,
-    WorkbenchMatrixPanel, WorkbenchNaturalFracturesPanel,
-    WorkbenchOilWaterPanel, WorkbenchSimulationPanel, WorkbenchWellPanel,
+from .input_keyword_registry import (
+    MODULE_FRACTURE_SYSTEM,
+    MODULE_FLUID_PVT,
+    MODULE_GRID_SPATIAL,
+    MODULE_HISTORY_MATCHING,
+    MODULE_INITIAL_CONDITIONS,
+    MODULE_MODEL_CONFIGURATION,
+    MODULE_ROCK_PROPERTIES,
+    MODULE_SOLVER_OUTPUT,
+    MODULE_SPECS,
+    MODULE_WELL_PRODUCTION,
 )
+from .module_input_dialog import ModuleInputDialog
 from .project_state import MODEL_TYPE_WR, normalize_model_config
-from .settings_dialog import ObjectSettingsDialog, ParameterSettingsDialog
+from .settings_dialog import ObjectSettingsDialog
 
 
 KEY_ROLE = Qt.UserRole
 TYPE_ROLE = Qt.UserRole + 1
 DATA_ROLE = Qt.UserRole + 2
 
-DEFAULT_CASE_SECTION_NAMES = [
-    "GRID", "ROCK", "FRACTURE", "LGR", "FLUID", "GAS",
-    "INITIAL", "WELL", "SOLVER", "OUTPUT", "WR",
-]
 
-WR_SCHEMA_GROUP_KEYS = {
-    "dual_porosity",
-    "fracture_equivalent_properties",
-}
-WR_CASE_SECTIONS = {"WR"}
-WR_CASE_KEYWORDS = {
-    "fracture_phi_file",
-    "fracture_kx_file",
-    "fracture_ky_file",
-    "fracture_kz_file",
-    "sigma_file",
+MODULE_ICONS = {
+    MODULE_MODEL_CONFIGURATION: "settings",
+    MODULE_GRID_SPATIAL: "grid",
+    MODULE_ROCK_PROPERTIES: "rock",
+    MODULE_FRACTURE_SYSTEM: "fracture",
+    MODULE_FLUID_PVT: "fluid",
+    MODULE_INITIAL_CONDITIONS: "initial",
+    MODULE_WELL_PRODUCTION: "well",
+    MODULE_SOLVER_OUTPUT: "solver",
+    MODULE_HISTORY_MATCHING: "chart",
 }
 
 
 class InputTree(QTreeWidget):
+    """Registry-driven navigation tree for business input modules.
+
+    Source sections, keyword names, file paths, and file-status nodes are
+    intentionally excluded.  They remain back-end import details and will be
+    consumed by the module import service in the next phase.
+    """
+
     module_selected = pyqtSignal(str, str)
     parameters_saved = pyqtSignal(str, str, dict)
-    case_dataset_built = pyqtSignal(str, dict)
     result_requested = pyqtSignal(str)
     workflow_requested = pyqtSignal(str, str, str)
+    model_config_requested = pyqtSignal()
 
     def __init__(self, project_state=None, parent=None):
         super().__init__(parent)
         self.project_state = project_state
         self._building = False
-        self._panel_factories = {
-            "case_data_manifest": lambda: CaseDataPanel(self.project_state),
-            "grid_basic": WorkbenchGridPanel,
-            "initial_state": WorkbenchInitialStatePanel,
-            "matrix_properties": WorkbenchMatrixPanel,
-            "dual_porosity": WorkbenchDualPorosityPanel,
-            "simulation_control": WorkbenchSimulationPanel,
-            "oil_water_properties": WorkbenchOilWaterPanel,
-            "gas_pvt": WorkbenchGasPvtPanel,
-            "well_parameters": WorkbenchWellPanel,
-            "natural_fractures": WorkbenchNaturalFracturesPanel,
-            "hydraulic_fractures": WorkbenchHydraulicFracturesPanel,
-        }
         self.setObjectName("inputTree")
         self.setHeaderHidden(True)
         self.setExpandsOnDoubleClick(False)
@@ -75,212 +65,67 @@ class InputTree(QTreeWidget):
         self.itemDoubleClicked.connect(self._open_settings)
         self._populate()
         self.expandToDepth(0)
-        self.refresh_case_data_sections(preserve_expanded=False)
         self.refresh_model_config_visibility()
 
-    def _item(self, text, key, object_type="参数模块", checked=False,
-              icon_name="generic", icon_status=None, tooltip=None,
-              foreground=None):
+    def _item(self, text, key, object_type="参数模块", icon_name="generic",
+              tooltip=None):
         item = QTreeWidgetItem([text])
         item.setData(0, KEY_ROLE, key)
         item.setData(0, TYPE_ROLE, object_type)
-        item.setIcon(0, painted_icon(icon_name, 16, icon_status))
+        item.setIcon(0, painted_icon(icon_name, 16))
         if tooltip:
             item.setToolTip(0, tooltip)
-        if foreground:
-            item.setForeground(0, QBrush(QColor(foreground)))
         return item
 
     def _populate(self):
+        """Build the complete visible tree from the canonical registry."""
+
         self._building = True
-        for module in INPUT_MODULES:
+        self.clear()
+        for module in MODULE_SPECS:
+            icon_name = MODULE_ICONS.get(module.key, "generic")
             module_item = self._item(
-                module.get("title", module.get("key", "")),
-                module.get("key", ""),
+                module.title,
+                module.key,
                 "功能模块",
-                True,
-                module.get("icon", "generic"),
-                tooltip=self._module_tooltip(module),
+                icon_name,
+                self._module_tooltip(module),
             )
             module_item.setData(0, DATA_ROLE, {
                 "kind": "module",
-                "module_key": module.get("key", ""),
+                "module_key": module.key,
             })
-            if module.get("special") != "case_data":
-                self._add_schema_children(module_item, module)
+            self._add_business_groups(module_item, module, icon_name)
             self.addTopLevelItem(module_item)
         self._building = False
 
-    def _add_schema_children(self, module_item, module):
-        module_key = module.get("key", "")
-        for child in module.get("children", []) or []:
-            child_key = child.get("key", "")
-            tree_key = f"input_group:{module_key}:{child_key}"
-            child_item = self._item(
-                child.get("title", child_key),
+    def _add_business_groups(self, module_item, module, icon_name):
+        for group in module.groups:
+            tree_key = self.group_tree_key(module.key, group.key)
+            group_item = self._item(
+                group.title,
                 tree_key,
-                "参数分组",
-                True,
-                child.get("icon", module.get("icon", "generic")),
-                tooltip=self._child_tooltip(module, child),
+                "业务分组",
+                icon_name,
+                f"{module.title} / {group.title}",
             )
-            child_item.setData(0, DATA_ROLE, {
+            group_item.setData(0, DATA_ROLE, {
                 "kind": "group",
-                "module_key": module_key,
-                "child_key": child_key,
+                "module_key": module.key,
+                "child_key": group.key,
+                "group_title": group.title,
             })
-            for index, field in enumerate(child.get("items", []) or []):
-                field_key = self._field_tree_key(module_key, child_key, field, index)
-                field_item = self._item(
-                    field.get("title", field.get("key", "")),
-                    field_key,
-                    "输入项",
-                    True,
-                    self._field_icon(field, child),
-                    tooltip=self._field_tooltip(field),
-                    foreground=self._field_foreground(field),
-                )
-                field_item.setData(0, DATA_ROLE, {
-                    "kind": "field",
-                    "module_key": module_key,
-                    "child_key": child_key,
-                    "field": field,
-                })
-                child_item.addChild(field_item)
-            module_item.addChild(child_item)
+            module_item.addChild(group_item)
 
-    def refresh_model_config_visibility(self):
-        is_wr = self._is_wr_model()
-        self._building = True
-        for index in range(self.topLevelItemCount()):
-            self._apply_model_visibility(self.topLevelItem(index), is_wr)
-        self._building = False
-        current = self.currentItem()
-        if current is not None and self._item_or_ancestor_hidden(current):
-            self.setCurrentItem(None)
+    @staticmethod
+    def group_tree_key(module_key, group_key):
+        return f"input_group:{module_key}:{group_key}"
 
-    def _is_wr_model(self):
-        if self.project_state is None:
-            return False
-        if hasattr(self.project_state, "is_wr_model"):
-            return bool(self.project_state.is_wr_model())
-        config = normalize_model_config(getattr(self.project_state, "model_config", None))
-        return config.get("model_type") == MODEL_TYPE_WR
-
-    def _apply_model_visibility(self, item, is_wr):
-        hidden = self._is_wr_related_item(item) and not is_wr
-        item.setHidden(hidden)
-        if hidden:
-            item.setExpanded(False)
-        for index in range(item.childCount()):
-            self._apply_model_visibility(item.child(index), is_wr)
-
-    def _is_wr_related_item(self, item):
-        data = item.data(0, DATA_ROLE) or {}
-        child_key = data.get("child_key")
-        if child_key in WR_SCHEMA_GROUP_KEYS:
-            return True
-
-        key = item.data(0, KEY_ROLE)
-        if isinstance(key, str):
-            if key.startswith("case_data_section:"):
-                section = key.split(":", 1)[1].upper()
-                return section in WR_CASE_SECTIONS
-            if key.startswith("case_data_keyword:"):
-                parts = key.split(":", 2)
-                if len(parts) == 3:
-                    section = parts[1].upper()
-                    keyword = parts[2].lower()
-                    if section in WR_CASE_SECTIONS:
-                        return True
-                    return keyword in WR_CASE_KEYWORDS
-
-        field = data.get("field") or {}
-        if isinstance(field, dict):
-            field_key = str(field.get("key", "") or "").lower()
-            return field_key in WR_CASE_KEYWORDS
-        return False
-
-    def _schema_route(self, item):
-        data = item.data(0, DATA_ROLE) or {}
-        kind = data.get("kind")
-        if kind == "module":
-            return data.get("module_key"), None
-        if kind in {"group", "field"}:
-            return data.get("module_key"), data.get("child_key")
-        key = item.data(0, KEY_ROLE)
-        if isinstance(key, str) and module_by_key(key):
-            return key, None
-        return None
-
-    def _field_tree_key(self, module_key, child_key, field, index):
-        source = field.get("source", "field")
-        base = field.get("key") or field.get("title") or str(index)
-        owner = field.get("module") or field.get("section") or field.get("group") or ""
-        return f"input_item:{module_key}:{child_key}:{index}:{source}:{owner}:{base}"
-
-    def _module_tooltip(self, module):
-        count = sum(len(child.get("items", []) or []) for child in module.get("children", []) or [])
-        return f"{module.get('title', '')}\n输入项数量: {count}"
-
-    def _child_tooltip(self, module, child):
-        return (
-            f"{module.get('title', '')} / {child.get('title', '')}\n"
-            f"输入项数量: {len(child.get('items', []) or [])}"
-        )
-
-    def _field_tooltip(self, field):
-        source = field.get("source", "")
-        lines = [
-            f"name: {field.get('title', field.get('key', ''))}",
-            f"source: {source}",
-        ]
-        if source == "ui":
-            lines.append(f"module: {field.get('module', '')}")
-            lines.append(f"key: {field.get('key', '')}")
-        elif source == "case":
-            lines.append(f"section: {field.get('section', '')}")
-            lines.append(f"key: {field.get('key', '')}")
-        elif source == "config":
-            lines.append(f"group: {field.get('group', '')}")
-            lines.append(f"key: {field.get('key', '')}")
-        else:
-            lines.append(f"key: {field.get('key', '')}")
-        if field.get("note"):
-            lines.append(field.get("note"))
-        return "\n".join(lines)
-
-    def _field_icon(self, field, child):
-        source = field.get("source", "")
-        key = str(field.get("key", "") or "").lower()
-        if source == "ui":
-            return child.get("icon", "keyword_param")
-        if source == "case":
-            if key.endswith("_file"):
-                if key == "grid_file":
-                    return "grid_file"
-                if key == "fracture_file":
-                    return "dfn_file"
-                if key == "sigma_file":
-                    return "sigma_file"
-                if key.startswith("matrix_"):
-                    return "matrix_property_file"
-                if key.startswith("fracture_"):
-                    return "fracture_property_file"
-                return "property_file"
-            return "keyword_param"
-        if source == "array":
-            return "property_file"
-        if source == "dfn":
-            return "dfn_file"
-        if source == "validation":
-            return "validate"
-        return child.get("icon", "generic")
-
-    def _field_foreground(self, field):
-        if field.get("source") in {"array", "dfn", "validation"}:
-            return "#475467"
-        return None
+    @staticmethod
+    def _module_tooltip(module):
+        if not module.groups:
+            return module.title
+        return f"{module.title}\n业务分组数量: {len(module.groups)}"
 
     def _emit_selection(self, current, previous):
         if current is None:
@@ -291,202 +136,75 @@ class InputTree(QTreeWidget):
         self.module_selected.emit(key, current.text(0))
 
     def _open_settings(self, item, column):
-        key = item.data(0, KEY_ROLE)
-        item_data = item.data(0, DATA_ROLE) or {}
-        if item_data.get("kind") == "module":
-            module = module_by_key(item_data.get("module_key"))
-            if module and module.get("special") == "workflow":
-                self.workflow_requested.emit(
-                    module.get("workflow_key", key),
-                    module.get("title", item.text(0)),
-                    module.get("workflow_view", "chart"),
-                )
-                return
-        before_signature = self._case_data_signature()
-        before_case_data = self._case_data_snapshot()
-        root = self._find_item("case_data_manifest")
-        expanded_keys_before_dialog = self._expanded_keys(root) if root is not None else set()
-        object_type = item.data(0, TYPE_ROLE) or "工程对象"
-        schema_route = self._schema_route(item)
-        if schema_route and self.project_state is not None:
-            module_key, child_key = schema_route
-            module = module_by_key(module_key)
-            dialog = FunctionalInputDialog(module, self.project_state, child_key, self)
+        if item.isDisabled():
+            return
+        data = item.data(0, DATA_ROLE) or {}
+        module_key = data.get("module_key")
+
+        if module_key == MODULE_MODEL_CONFIGURATION:
+            self.model_config_requested.emit()
+            return
+        if module_key == MODULE_HISTORY_MATCHING:
+            self.workflow_requested.emit(
+                "history_matching", "历史拟合", "chart")
+            return
+
+        if module_key in MODULE_ICONS and self.project_state is not None:
+            dialog = ModuleInputDialog(
+                module_key, self.project_state, data.get("child_key"), self)
             dialog.values_applied.connect(
-                lambda module_key, title, values:
-                    self.parameters_saved.emit(module_key, title, values))
-            dialog.case_data_saved.connect(
-                lambda: self.refresh_case_data_sections(preserve_expanded=True))
-            dialog.case_dataset_built.connect(self.case_dataset_built.emit)
-            dialog.result_requested.connect(self.result_requested.emit)
-            result = dialog.exec_()
-            confirmed = (
-                result == dialog.Accepted
-                or getattr(dialog, "values_were_applied", False)
-            )
-            if confirmed:
-                if self._case_data_signature() != before_signature:
-                    self.refresh_case_data_sections(preserve_expanded=True)
-                    self.refresh_model_config_visibility()
-            else:
-                self._restore_case_data_snapshot(before_case_data)
+                lambda saved_key, title, values:
+                    self.parameters_saved.emit(saved_key, title, values))
+            dialog.exec_()
             self.refresh_model_config_visibility()
             return
-        panel_factory = self._panel_factories.get(key)
-        if isinstance(key, str) and key.startswith("case_data_section:"):
-            section_name = key.split(":", 1)[1]
-            panel_factory = lambda section=section_name: CaseDataPanel(
-                self.project_state, initial_section=section, section_locked=True)
-        elif isinstance(key, str) and key.startswith("case_data_keyword:"):
-            section_name, keyword_key = key.split(":", 2)[1:]
-            panel_factory = lambda section=section_name, keyword=keyword_key: (
-                CaseKeywordPanel(self.project_state, section, keyword))
-        if panel_factory and self.project_state is not None:
-            dialog = ParameterSettingsDialog(
-                key, item.text(0), panel_factory, self.project_state,
-                object_type, self)
-            dialog.values_applied.connect(
-                lambda values, module_key=key, title=item.text(0):
-                    self.parameters_saved.emit(module_key, title, values))
-            if hasattr(dialog.panel, "case_data_saved"):
-                dialog.panel.case_data_saved.connect(
-                    lambda: self.refresh_case_data_sections(preserve_expanded=True))
-            if hasattr(dialog.panel, "case_dataset_built"):
-                dialog.panel.case_dataset_built.connect(self.case_dataset_built.emit)
-        else:
-            dialog = ObjectSettingsDialog(item.text(0), object_type, self)
-        result = dialog.exec_()
-        if key == "case_data_manifest":
-            confirmed = (
-                result == dialog.Accepted
-                or getattr(dialog, "values_were_applied", False)
-                or getattr(getattr(dialog, "panel", None), "values_were_saved", False)
-            )
-            if confirmed:
-                if self._case_data_signature() != before_signature:
-                    self.refresh_case_data_sections(preserve_expanded=True)
-                else:
-                    self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
-            else:
-                self._restore_case_data_snapshot(before_case_data)
-                self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
-            self.refresh_model_config_visibility()
-        elif isinstance(key, str) and key.startswith("case_data_"):
-            confirmed = (
-                result == dialog.Accepted
-                or getattr(dialog, "values_were_applied", False)
-                or getattr(getattr(dialog, "panel", None), "values_were_saved", False)
-            )
-            if confirmed:
-                if self._case_data_signature() != before_signature:
-                    self.refresh_case_data_sections(preserve_expanded=True)
-                else:
-                    self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
-            else:
-                self._restore_case_data_snapshot(before_case_data)
-                self._restore_case_tree_expanded_state(expanded_keys_before_dialog)
-            self.refresh_model_config_visibility()
-        else:
-            self.refresh_model_config_visibility()
 
-    def _case_data_signature(self):
-        summary = getattr(self.project_state, "case_data_summary", {}) or {}
-        sections = self._case_section_names()
-        keyword_values = []
-        for section in getattr(self.project_state, "case_data_sections", []) or []:
-            if not isinstance(section, dict):
-                continue
-            section_name = section.get("name", "")
-            for keyword in section.get("keywords", []) or []:
-                if not isinstance(keyword, dict):
-                    continue
-                keyword_values.append((
-                    section_name,
-                    keyword.get("key", ""),
-                    keyword.get("raw_value", ""),
-                    bool(keyword.get("is_file_ref")),
-                    bool(keyword.get("file_exists")),
-                ))
-        return (
-            getattr(self.project_state, "case_data_path", ""),
-            tuple(sections),
-            tuple(keyword_values),
-            summary.get("keyword_count"),
-            summary.get("file_ref_count"),
-            summary.get("missing_file_ref_count"),
-            summary.get("error_count"),
-        )
-
-    def _case_data_snapshot(self):
-        if self.project_state is None:
-            return None
-        return {
-            "case_data_path": getattr(self.project_state, "case_data_path", ""),
-            "case_data_summary": copy.deepcopy(
-                getattr(self.project_state, "case_data_summary", {}) or {}),
-            "case_data_sections": copy.deepcopy(
-                getattr(self.project_state, "case_data_sections", []) or []),
-            "case_data_schema": copy.deepcopy(
-                getattr(self.project_state, "case_data_schema", {}) or {}),
-        }
-
-    def _restore_case_data_snapshot(self, snapshot):
-        if self.project_state is None or snapshot is None:
-            return
-        self.project_state.case_data_path = snapshot["case_data_path"]
-        self.project_state.case_data_summary = snapshot["case_data_summary"]
-        self.project_state.case_data_sections = snapshot["case_data_sections"]
-        self.project_state.case_data_schema = snapshot["case_data_schema"]
-
-    def _case_section_names(self):
-        sections = getattr(self.project_state, "case_data_sections", []) or []
-        names = [
-            section.get("name")
-            for section in sections
-            if isinstance(section, dict) and section.get("name")
-        ]
-        return names or list(DEFAULT_CASE_SECTION_NAMES)
+        dialog = ObjectSettingsDialog(
+            item.text(0), item.data(0, TYPE_ROLE) or "工程对象", self)
+        dialog.exec_()
 
     def refresh_case_data_sections(self, preserve_expanded=True):
-        root = self._find_item("case_data_manifest")
-        if root is None:
+        """Legacy compatibility hook; raw CaseData nodes are no longer built."""
+
+        return None
+
+    def refresh_model_config_visibility(self):
+        """Keep structure stable while reflecting model-dependent groups."""
+
+        if self.project_state is None:
             return
-        current_key = None
-        if self.currentItem() is not None:
-            current_key = self.currentItem().data(0, KEY_ROLE)
-        expanded_keys = self._expanded_keys(root) if preserve_expanded else set()
-        self._building = True
-        root.takeChildren()
-        for section in self._case_section_names():
-            section_item = self._item(
-                section, f"case_data_section:{section}",
-                "CaseData Section", True, self._case_section_icon(section),
-                tooltip=self._case_section_tooltip(section))
-            for keyword in self._case_section_keywords(section):
-                icon_name, icon_status = self._case_keyword_icon(keyword)
-                section_item.addChild(self._item(
-                    self._keyword_label(keyword),
-                    f"case_data_keyword:{section}:{keyword.get('key', '')}",
-                    "CaseData Keyword",
-                    True,
-                    icon_name,
-                    icon_status=icon_status,
-                    tooltip=self._case_keyword_tooltip(section, keyword),
-                    foreground=self._case_keyword_foreground(keyword),
-                ))
-            root.addChild(section_item)
-        if preserve_expanded:
-            self._restore_expanded_keys(root, expanded_keys)
-            root.setExpanded("case_data_manifest" in expanded_keys)
-        else:
-            root.setExpanded(False)
-        self._building = False
-        self.refresh_model_config_visibility()
-        if current_key:
-            self.select_key(current_key)
+        config = normalize_model_config(
+            getattr(self.project_state, "model_config", None))
+        is_wr = config.get("model_type") == MODEL_TYPE_WR
+        enabled_by_group = {
+            (MODULE_ROCK_PROPERTIES, "shape_factor"): is_wr,
+            (MODULE_FRACTURE_SYSTEM,
+             "equivalent_fracture_properties"): is_wr,
+            (MODULE_FRACTURE_SYSTEM, "natural_fractures"): bool(
+                config.get("enable_natural_fractures")),
+            (MODULE_FRACTURE_SYSTEM, "hydraulic_fractures"): bool(
+                config.get("enable_hydraulic_fractures")),
+            (MODULE_FLUID_PVT, "gas_components"): bool(
+                config.get("enable_real_gas_pvt")),
+            (MODULE_FLUID_PVT, "pvt_table"): bool(
+                config.get("enable_real_gas_pvt")),
+        }
+        for index in range(self.topLevelItemCount()):
+            module_item = self.topLevelItem(index)
+            for child_index in range(module_item.childCount()):
+                child = module_item.child(child_index)
+                data = child.data(0, DATA_ROLE) or {}
+                identity = (
+                    data.get("module_key"), data.get("child_key"))
+                if identity in enabled_by_group:
+                    child.setDisabled(not enabled_by_group[identity])
+                else:
+                    child.setDisabled(False)
+        current = self.currentItem()
+        if current is not None and current.isDisabled():
+            self.setCurrentItem(None)
 
     def export_ui_state(self):
-        """导出输入树当前展开和选中状态。"""
         current_key = None
         if self.currentItem() is not None:
             current_key = self.currentItem().data(0, KEY_ROLE)
@@ -496,16 +214,24 @@ class InputTree(QTreeWidget):
         }
 
     def restore_ui_state(self, state):
-        """恢复输入树展开和选中状态。"""
         state = state or {}
         if "expanded_keys" in state:
             self.collapseAll()
-        self._restore_expanded_keys_for_all(set(state.get("expanded_keys") or []))
+        self._restore_expanded_keys(set(state.get("expanded_keys") or []))
         current_key = state.get("current_key")
         if current_key:
             self.select_key(current_key)
 
-    def _expanded_keys(self, root):
+    def select_key(self, key):
+        item = self._find_item(key)
+        if (item is None or item.isDisabled()
+                or self._item_or_ancestor_hidden(item)):
+            return False
+        self.setCurrentItem(item)
+        self.scrollToItem(item)
+        return True
+
+    def _all_expanded_keys(self):
         keys = set()
 
         def visit(item):
@@ -515,141 +241,22 @@ class InputTree(QTreeWidget):
             for index in range(item.childCount()):
                 visit(item.child(index))
 
-        visit(root)
+        for index in range(self.topLevelItemCount()):
+            visit(self.topLevelItem(index))
         return keys
 
-    def _all_expanded_keys(self):
-        keys = set()
-        for index in range(self.topLevelItemCount()):
-            keys.update(self._expanded_keys(self.topLevelItem(index)))
-        return keys
-
-    def _restore_expanded_keys_for_all(self, keys):
-        for index in range(self.topLevelItemCount()):
-            self._restore_expanded_keys(self.topLevelItem(index), keys)
-
-    def _restore_expanded_keys(self, root, keys):
+    def _restore_expanded_keys(self, keys):
         def visit(item):
-            key = item.data(0, KEY_ROLE)
-            if key in keys:
+            if item.data(0, KEY_ROLE) in keys:
                 item.setExpanded(True)
             for index in range(item.childCount()):
                 visit(item.child(index))
 
-        visit(root)
+        for index in range(self.topLevelItemCount()):
+            visit(self.topLevelItem(index))
 
-    def _restore_case_tree_expanded_state(self, keys):
-        root = self._find_item("case_data_manifest")
-        if root is None:
-            return
-        self._restore_expanded_keys(root, keys)
-        root.setExpanded("case_data_manifest" in keys)
-
-    def _case_section_keywords(self, section_name):
-        sections = getattr(self.project_state, "case_data_sections", []) or []
-        for section in sections:
-            if not isinstance(section, dict):
-                continue
-            if section.get("name") == section_name:
-                return section.get("keywords", []) or []
-        return []
-
-    def _case_section_icon(self, section_name):
-        name = str(section_name or "").upper()
-        return {
-            "GRID": "grid",
-            "ROCK": "rock",
-            "FRACTURE": "fracture",
-            "LGR": "lgr",
-            "FLUID": "fluid",
-            "GAS": "gas",
-            "INITIAL": "initial",
-            "WELL": "well",
-            "SOLVER": "solver",
-            "OUTPUT": "output",
-            "WR": "wr",
-            "RETURN_SCHEMA": "case_section",
-        }.get(name, "case_section")
-
-    def _case_section_tooltip(self, section_name):
-        count = len(self._case_section_keywords(section_name))
-        return f"CaseData section: {section_name}\n关键字数量: {count}"
-
-    def _case_keyword_icon(self, keyword):
-        key = str(keyword.get("key", "") or "").lower()
-        is_file = bool(keyword.get("is_file_ref"))
-        dirty = bool(keyword.get("dirty"))
-        exists = bool(keyword.get("file_exists"))
-        if is_file:
-            if key == "grid_file":
-                icon_name = "grid_file"
-            elif key == "fracture_file":
-                icon_name = "dfn_file"
-            elif key == "actnum_file":
-                icon_name = "actnum_file"
-            elif key == "sigma_file":
-                icon_name = "sigma_file"
-            elif key.startswith("matrix_"):
-                icon_name = "matrix_property_file"
-            elif key.startswith("fracture_"):
-                icon_name = "fracture_property_file"
-            elif key.endswith("_file"):
-                icon_name = "property_file"
-            else:
-                icon_name = "file"
-            if not exists:
-                return icon_name, "missing"
-            if dirty:
-                return icon_name, "dirty"
-            return icon_name, "ok"
-        if dirty:
-            return "keyword_param", "dirty"
-        return "keyword_param", None
-
-    def _case_keyword_foreground(self, keyword):
-        if keyword.get("is_file_ref") and not keyword.get("file_exists"):
-            return "#b42318"
-        if keyword.get("dirty"):
-            return "#9a6700"
-        return None
-
-    def _case_keyword_tooltip(self, section_name, keyword):
-        lines = [
-            f"section: {section_name}",
-            f"key: {keyword.get('key', '')}",
-            f"value: {keyword.get('raw_value', '')}",
-            f"type: {keyword.get('value_type', '')}",
-        ]
-        if keyword.get("is_file_ref"):
-            status = "文件已找到" if keyword.get("file_exists") else "文件缺失"
-            lines.extend([
-                "kind: 文件引用",
-                f"status: {status}",
-                f"path: {keyword.get('file_path', '')}",
-            ])
-        else:
-            lines.append("kind: 普通参数")
-        if keyword.get("dirty"):
-            lines.append("保存状态: 已修改，未保存")
-        return "\n".join(lines)
-
-    def _keyword_label(self, keyword):
-        key = keyword.get("key", "")
-        value = keyword.get("raw_value", "")
-        if value == "":
-            return key
-        text = f"{key} = {value}"
-        return text if len(text) <= 72 else text[:69] + "..."
-
-    def select_key(self, key):
-        item = self._find_item(key)
-        if item is None or self._item_or_ancestor_hidden(item):
-            return False
-        self.setCurrentItem(item)
-        self.scrollToItem(item)
-        return True
-
-    def _item_or_ancestor_hidden(self, item):
+    @staticmethod
+    def _item_or_ancestor_hidden(item):
         current = item
         while current is not None:
             if current.isHidden():

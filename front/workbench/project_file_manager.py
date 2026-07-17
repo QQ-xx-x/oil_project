@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .case_data_parser import parse_case_data
+from .legacy_module_migration import migrate_legacy_module_inputs
 from .project_state import ProjectState
 
 
@@ -109,6 +110,7 @@ def _load_legacy_project_file(project_file_path):
         state.project_name = os.path.splitext(os.path.basename(project_file_path))[0]
 
     validation = validate_project_state(state)
+    validation["module_migration"] = migrate_legacy_module_inputs(state)
     return state, validation
 
 
@@ -202,6 +204,7 @@ def _load_project_package(project_file_path):
     if state.case_data_sections:
         state.ui_state["case_data_source_mode"] = "snapshot"
     validation = validate_project_state(state, refresh_case_data=False)
+    validation["module_migration"] = migrate_legacy_module_inputs(state)
     validation["package_cache_dir"] = cache_dir
     validation["package_manifest"] = manifest
     validation["package_checks"] = package_checks
@@ -353,6 +356,8 @@ def _state_from_payload(payload, base_dir):
                 asset.get("managed_path"), base_dir)
     _restore_case_data_section_paths(
         state_payload.get("case_data_sections"), base_dir)
+    _restore_module_input_paths(
+        state_payload.get("module_inputs"), base_dir)
     path_records = payload.get("path_records") or {}
     for field_name in ("case_data_path", "case_dataset_path"):
         path_record = path_records.get(field_name)
@@ -435,6 +440,8 @@ def _build_package_payload(project_state, project_file_path):
                         continue
                     keyword["file_path"] = target
                     keyword["file_exists"] = True
+
+        _rebind_module_sources_to_assets(input_payload)
 
         for record_payload in case_payload.get("dataset_records", []) or []:
             if not isinstance(record_payload, dict):
@@ -532,6 +539,7 @@ def _build_package_payload(project_state, project_file_path):
             input_payload.get("case_data_schema") or {})
         state["model_config"] = copy.deepcopy(input_payload.get("model_config") or {})
         state["module_values"] = copy.deepcopy(input_payload.get("module_values") or {})
+        state["module_inputs"] = copy.deepcopy(input_payload.get("module_inputs") or {})
         state["checked_items"] = copy.deepcopy(input_payload.get("checked_items") or {})
         state["input_assets"] = copy.deepcopy(input_payload.get("input_assets") or {})
         active_dataset_id = active_case_payload.get("active_dataset_id") or ""
@@ -590,6 +598,8 @@ def _restore_case_paths_in_payload(state_payload, base_dir):
                     asset.get("managed_path"), base_dir)
         _restore_case_data_section_paths(
             input_payload.get("case_data_sections"), base_dir)
+        _restore_module_input_paths(
+            input_payload.get("module_inputs"), base_dir)
         for record in case_payload.get("dataset_records", []) or []:
             if not isinstance(record, dict):
                 continue
@@ -621,6 +631,57 @@ def _restore_case_data_section_paths(sections, base_dir):
                 keyword.get("file_path")
                 and os.path.exists(keyword["file_path"])
             )
+
+
+def _rebind_module_sources_to_assets(input_payload):
+    """Point packaged module locators at their content-addressed assets."""
+
+    assets = input_payload.get("input_assets") or {}
+    lookup = {}
+    for asset_key, asset in assets.items():
+        if not isinstance(asset, dict):
+            continue
+        path = str(asset.get("managed_path") or "")
+        if not path:
+            continue
+        source_key = str(asset.get("source_key") or asset_key)
+        lookup[source_key.lower()] = path
+        lookup[str(asset_key).removeprefix("module:").lower()] = path
+
+    for module_state in (input_payload.get("module_inputs") or {}).values():
+        if not isinstance(module_state, dict):
+            continue
+        source = module_state.get("source") or {}
+        case_data_path = str(input_payload.get("case_data_path") or "")
+        if case_data_path:
+            source["case_data_path"] = case_data_path
+            source["base_dir"] = os.path.dirname(case_data_path)
+        for qualified_name, record in (source.get("keywords") or {}).items():
+            if not isinstance(record, dict):
+                continue
+            keyword = str(qualified_name).split(".", 1)[-1].lower()
+            resolved = lookup.get(str(qualified_name).lower()) or lookup.get(keyword)
+            if resolved:
+                record["resolved_path"] = resolved
+                record["exists"] = True
+        module_state["source"] = source
+
+
+def _restore_module_input_paths(module_inputs, base_dir):
+    for module_state in (module_inputs or {}).values():
+        if not isinstance(module_state, dict):
+            continue
+        source = module_state.get("source") or {}
+        source["case_data_path"] = _restore_packaged_value(
+            source.get("case_data_path"), base_dir)
+        source["base_dir"] = _restore_packaged_value(
+            source.get("base_dir"), base_dir)
+        for record in (source.get("keywords") or {}).values():
+            if not isinstance(record, dict) or not record.get("resolved_path"):
+                continue
+            record["resolved_path"] = _restore_packaged_value(
+                record.get("resolved_path"), base_dir)
+            record["exists"] = bool(os.path.isfile(record["resolved_path"]))
 
 
 def _restore_packaged_value(value, base_dir):

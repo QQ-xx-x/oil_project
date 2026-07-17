@@ -148,6 +148,10 @@ class WorkbenchSimulationService(QObject):
         return True
 
     def _build_run_params(self, project_state):
+        if hasattr(project_state, "is_case_dataset_ready"):
+            if not project_state.is_case_dataset_ready():
+                reason = project_state.case_dataset_readiness_reason()
+                raise CaseDatasetSimulationAdapterError(reason)
         dataset_path = str(
             getattr(project_state, "case_dataset_path", "") or "").strip()
         dataset_summary = getattr(
@@ -158,19 +162,8 @@ class WorkbenchSimulationService(QObject):
                     "CaseData changed; rebuild the Dataset before running")
                 raise CaseDatasetSimulationAdapterError(reason)
             return build_case_dataset_params(dataset_path)
-
-        case_data_path = str(
-            getattr(project_state, "case_data_path", "") or "").strip()
-        if case_data_path:
-            case_input = build_case_data_simulation_input(case_data_path)
-            if not case_input.validation.get("ok", False):
-                errors = case_input.validation.get("errors") or []
-                raise CaseDataSimulationAdapterError(
-                    "CaseData validation failed: " + "; ".join(errors))
-            for warning in case_input.validation.get("warnings") or []:
-                self.log_message.emit(f"[CaseData warning] {warning}")
-            return case_input.params
-        return build_corner_grid_params(project_state)
+        raise CaseDatasetSimulationAdapterError(
+            "当前算例尚未生成 Dataset")
 
     def stop(self):
         if not self.is_running():

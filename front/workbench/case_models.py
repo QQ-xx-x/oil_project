@@ -11,6 +11,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from .module_input_models import ModuleInputState
+
 
 MODEL_TYPE_NORMAL = "normal"
 MODEL_TYPE_WR = "wr"
@@ -61,6 +63,10 @@ def default_model_config():
         "model_type": MODEL_TYPE_NORMAL,
         "grid_type": GRID_TYPE_CORNER_POINT,
         "enable_lgr": True,
+        "lgr_d_threshold": 5.05,
+        "lgr_nrx": 2,
+        "lgr_nry": 2,
+        "lgr_nrz": 2,
         "enable_natural_fractures": True,
         "enable_hydraulic_fractures": False,
         "enable_real_gas_pvt": True,
@@ -102,6 +108,16 @@ def normalize_model_config(config=None, legacy_refinement=None):
         "confirmed",
     ):
         normalized[key] = bool(normalized.get(key))
+    try:
+        normalized["lgr_d_threshold"] = max(
+            0.0, float(normalized.get("lgr_d_threshold", 5.05)))
+    except (TypeError, ValueError):
+        normalized["lgr_d_threshold"] = 5.05
+    for key in ("lgr_nrx", "lgr_nry", "lgr_nrz"):
+        try:
+            normalized[key] = max(1, int(normalized.get(key, 2)))
+        except (TypeError, ValueError):
+            normalized[key] = 2
     normalized["schema_version"] = int(normalized.get("schema_version") or 1)
     return normalized
 
@@ -117,6 +133,7 @@ class InputState:
     case_data_schema: dict = field(default_factory=dict)
     checked_items: dict = field(default_factory=dict)
     module_values: dict = field(default_factory=dict)
+    module_inputs: dict = field(default_factory=dict)
     input_assets: dict = field(default_factory=dict)
     input_revision: int = 0
     input_fingerprint: str = ""
@@ -128,6 +145,10 @@ class InputState:
         self.case_data_schema = dict(self.case_data_schema or {})
         self.checked_items = dict(self.checked_items or {})
         self.module_values = dict(self.module_values or {})
+        self.module_inputs = {
+            str(module_key): ModuleInputState.from_dict(state, module_key)
+            for module_key, state in dict(self.module_inputs or {}).items()
+        }
         self.input_assets = dict(self.input_assets or {})
         self.input_revision = max(0, int(self.input_revision or 0))
 
@@ -145,6 +166,10 @@ class InputState:
             "case_data_schema": copy.deepcopy(self.case_data_schema),
             "checked_items": copy.deepcopy(self.checked_items),
             "module_values": copy.deepcopy(self.module_values),
+            "module_inputs": {
+                module_key: state.to_dict()
+                for module_key, state in self.module_inputs.items()
+            },
             "input_assets": copy.deepcopy(self.input_assets),
             "input_revision": self.input_revision,
             "input_fingerprint": self.input_fingerprint,
@@ -165,6 +190,7 @@ class InputState:
                 payload.get("case_data_schema") or {}),
             checked_items=copy.deepcopy(payload.get("checked_items") or {}),
             module_values=copy.deepcopy(payload.get("module_values") or {}),
+            module_inputs=copy.deepcopy(payload.get("module_inputs") or {}),
             input_assets=copy.deepcopy(payload.get("input_assets") or {}),
             input_revision=payload.get("input_revision", 0),
             input_fingerprint=payload.get("input_fingerprint", "") or "",

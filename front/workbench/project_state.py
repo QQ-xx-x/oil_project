@@ -28,6 +28,11 @@ from .case_models import (
     normalize_model_config,
     utc_now,
 )
+from .module_input_models import (
+    ModuleImportResult,
+    ModuleInputState,
+    ModuleParsedData,
+)
 
 
 # Backward-compatible public names used by older integrations.
@@ -53,6 +58,7 @@ class ProjectState:
         "case_data_schema",
         "checked_items",
         "module_values",
+        "module_inputs",
         "input_assets",
         "input_revision",
         "input_fingerprint",
@@ -74,6 +80,7 @@ class ProjectState:
             case_dataset_summary=None,
             checked_items=None,
             module_values=None,
+            module_inputs=None,
             input_assets=None,
             ui_state=None,
             cases=None,
@@ -94,6 +101,7 @@ class ProjectState:
             case_data_schema=copy.deepcopy(case_data_schema or {}),
             checked_items=copy.deepcopy(checked_items or {}),
             module_values=copy.deepcopy(module_values or {}),
+            module_inputs=copy.deepcopy(module_inputs or {}),
             input_assets=copy.deepcopy(input_assets or {}),
         )
         self._unbound_dataset_path = case_dataset_path or ""
@@ -117,6 +125,7 @@ class ProjectState:
             bool(case_dataset_summary),
             bool(checked_items),
             bool(module_values),
+            bool(module_inputs),
             bool(input_assets),
         ])
         active_case = self.active_case()
@@ -142,7 +151,46 @@ class ProjectState:
 
     def attach_artifact_repository(self, repository):
         self._artifact_repository = repository
+        if repository is not None:
+            for case in self.cases:
+                refreshed = {}
+                for module_key, module_state in case.input_state.module_inputs.items():
+                    state = copy.deepcopy(module_state)
+                    self._capture_module_source_assets(
+                        case.input_state, state, repository)
+                    refreshed[module_key] = state
+                if refreshed:
+                    case.input_state.module_inputs = refreshed
         return repository
+
+    @staticmethod
+    def _capture_module_source_assets(input_state, module_state, repository):
+        """Make path-backed module inputs portable without changing revision."""
+
+        source = dict(module_state.source or {})
+        keyword_records = copy.deepcopy(source.get("keywords") or {})
+        assets = dict(input_state.input_assets or {})
+        for qualified_name, record in keyword_records.items():
+            if not isinstance(record, dict):
+                continue
+            source_path = str(record.get("resolved_path") or "").strip()
+            if not source_path or not os.path.isfile(source_path):
+                continue
+            try:
+                asset = repository.capture_asset(
+                    source_path, source_key=qualified_name)
+            except (OSError, ValueError):
+                continue
+            managed_path = str(asset.get("managed_path") or "")
+            if not managed_path or not os.path.isfile(managed_path):
+                continue
+            assets[f"module:{qualified_name}"] = asset
+            record["resolved_path"] = os.path.abspath(managed_path)
+            record["exists"] = True
+        source["keywords"] = keyword_records
+        module_state.source = source
+        input_state.input_assets = assets
+        return module_state
 
     @property
     def corner_grid_refinement(self):
@@ -211,6 +259,17 @@ class ProjectState:
     @module_values.setter
     def module_values(self, value):
         self._active_input().module_values = dict(value or {})
+
+    @property
+    def module_inputs(self):
+        return self._active_input().module_inputs
+
+    @module_inputs.setter
+    def module_inputs(self, value):
+        self._active_input().module_inputs = {
+            str(module_key): ModuleInputState.from_dict(state, module_key)
+            for module_key, state in dict(value or {}).items()
+        }
 
     @property
     def input_assets(self):
@@ -300,6 +359,39 @@ class ProjectState:
     def active_dataset_record(self):
         case = self.active_case()
         return case.active_dataset() if case is not None else None
+
+    def is_case_dataset_ready(self):
+        """Return whether the active case can safely start a simulation."""
+
+        record = self.active_dataset_record()
+        if record is None or record.status != DATASET_STATUS_READY:
+            return False
+        if record.summary.get("stale"):
+            return False
+        active_input = self._active_input()
+        if int(record.input_revision or 0) != int(active_input.input_revision or 0):
+            return False
+        if not record.path or not os.path.isdir(record.path):
+            return False
+        return os.path.isfile(os.path.join(record.path, "manifest.json"))
+
+    def case_dataset_readiness_reason(self):
+        """Return a source-free business explanation for the run button."""
+
+        record = self.active_dataset_record()
+        if record is None:
+            return "当前算例尚未生成 Dataset"
+        if record.status == DATASET_STATUS_INVALID:
+            return "当前 Dataset 校验未通过"
+        if record.status != DATASET_STATUS_READY or record.summary.get("stale"):
+            return record.summary.get("stale_reason") or "当前 Dataset 已过期"
+        if int(record.input_revision or 0) != int(
+                self._active_input().input_revision or 0):
+            return "模块数据已修改，请重新生成 Dataset"
+        if not record.path or not os.path.isfile(
+                os.path.join(record.path, "manifest.json")):
+            return "当前 Dataset 内容不完整"
+        return "Dataset 已就绪"
 
     def active_run_record(self):
         case = self.active_case()
@@ -429,6 +521,7 @@ class ProjectState:
             self._unbound_dataset_path,
             self._unbound_input.case_data_sections,
             self._unbound_input.module_values,
+            self._unbound_input.module_inputs,
         ])
         if not has_legacy_input:
             return None
@@ -461,6 +554,8 @@ class ProjectState:
         self.model_config = normalized
         if current != normalized:
             self._touch_active_input()
+            self.mark_case_dataset_stale(
+                "模型配置已修改，请重新生成 Dataset")
 
     def update_model_config(self, **updates):
         config = dict(self.model_config or {})
@@ -488,6 +583,41 @@ class ProjectState:
 
     def get_module_values(self, key):
         return dict(self.module_values.get(key, {}))
+
+    def get_module_input_state(self, module_key):
+        """Return an isolated copy of one module's committed state."""
+
+        state = self.module_inputs.get(str(module_key or ""))
+        return copy.deepcopy(state) if state is not None else None
+
+    def replace_module_input_state(self, module_key, candidate):
+        """Atomically commit one validated module revision."""
+
+        module_key = str(module_key or "")
+        if not module_key:
+            raise ValueError("模块标识不能为空")
+        state = ModuleInputState.from_dict(candidate, module_key)
+        if state.module_key != module_key:
+            raise ValueError("模块状态归属不一致")
+        validation = state.validation or {}
+        if not validation.get("ok", False):
+            raise ValueError("不能提交未通过校验的模块状态")
+
+        previous = self.module_inputs.get(module_key)
+        case = self.active_case()
+        repository = self.artifact_repository
+        if repository is not None and case is not None:
+            self._capture_module_source_assets(
+                case.input_state, state, repository)
+        state.revision = (previous.revision if previous is not None else 0) + 1
+        state.dirty = False
+        updated = dict(self.module_inputs)
+        updated[module_key] = state
+        self.module_inputs = updated
+        self._touch_active_input()
+        self.mark_case_dataset_stale(
+            "模块输入已更新，请重新生成 Dataset")
+        return copy.deepcopy(state)
 
     def set_case_data(self, case_data):
         case = self.active_case()
@@ -620,6 +750,10 @@ class ProjectState:
             "case_dataset_summary": copy.deepcopy(self.case_dataset_summary),
             "checked_items": copy.deepcopy(self.checked_items),
             "module_values": copy.deepcopy(self.module_values),
+            "module_inputs": {
+                module_key: state.to_dict()
+                for module_key, state in self.module_inputs.items()
+            },
             "input_assets": copy.deepcopy(self.input_assets),
             "input_revision": self._active_input().input_revision,
             "input_fingerprint": self._active_input().input_fingerprint,
@@ -662,6 +796,7 @@ class ProjectState:
             legacy_input.case_data_path,
             legacy_input.case_data_sections,
             legacy_input.module_values,
+            legacy_input.module_inputs,
             payload.get("case_dataset_path"),
         ])
         cases_have_input_state = any(
@@ -732,6 +867,9 @@ __all__ = [
     "CaseState",
     "DatasetRecord",
     "InputState",
+    "ModuleImportResult",
+    "ModuleInputState",
+    "ModuleParsedData",
     "ProjectState",
     "RunRecord",
     "default_model_config",
