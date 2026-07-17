@@ -418,6 +418,23 @@ class WorkspaceTabs(QTabWidget):
             layer_states = dict(source_layers or self._layer_states)
             for layer_key, enabled in layer_states.items():
                 target.set_layer_state(layer_key, enabled)
+            target_viewport = getattr(target, "viewport", None)
+            export_style = getattr(
+                viewport,
+                "export_geometry_preview_style_state",
+                None,
+            )
+            restore_style = getattr(
+                target_viewport,
+                "restore_geometry_preview_style_state",
+                None,
+            )
+            if export_style is not None and restore_style is not None:
+                style_state = export_style()
+                if style_state is not None:
+                    style_ok, style_message = restore_style(style_state)
+                    if not style_ok and style_message:
+                        self.workspace_message.emit(style_message)
         elif view_type == "chart":
             chart_key = getattr(viewport, "display_key", None)
             if chart_key in self._chart_data_by_key:

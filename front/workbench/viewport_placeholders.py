@@ -10,6 +10,11 @@ from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PyQt5.QtWidgets import QFileDialog, QCheckBox, QFrame, QLabel, QVBoxLayout, QWidget
 
+from .geometry_preview_style_dialog import (
+    COLOR_STYLE_KEYS,
+    GeometryPreviewStyleDialog,
+    normalize_geometry_preview_style,
+)
 from .view_toolbar import ViewToolbar
 
 
@@ -1053,6 +1058,36 @@ class ThreeDViewport(QWidget):
         )
         return ok, message
 
+    def export_geometry_preview_style_state(self):
+        """Return JSON-safe style state without creating a renderer."""
+        style = self._geometry_preview_style
+        if self._real_renderer is not None:
+            ok, _message, current = self.get_geometry_preview_style()
+            if ok:
+                style = current
+        if not isinstance(style, dict):
+            return None
+
+        normalized = normalize_geometry_preview_style(style)
+        payload = dict(normalized)
+        for key in COLOR_STYLE_KEYS:
+            payload[key] = list(normalized[key])
+        return payload
+
+    def restore_geometry_preview_style_state(self, style):
+        """Cache persisted style and apply it only if rendering already exists."""
+        if style is None:
+            self._geometry_preview_style = None
+            return True, ""
+        if not isinstance(style, dict):
+            return False, "[预览样式] 保存的样式状态无效"
+
+        self._geometry_preview_style = normalize_geometry_preview_style(style)
+        if self._real_renderer is not None:
+            return self._apply_cached_geometry_preview_style(
+                render_now=False)
+        return True, ""
+
     def _enter_preview_mode(self):
         self._reset_fence_section_for_context_change(render=False)
         if self.interaction_mode != "normal":
@@ -1796,6 +1831,9 @@ class ThreeDViewport(QWidget):
             "camera_direction_locked": bool(self.camera_direction_locked),
             "fence_section_property": self.fence_section_property,
             "layers": dict(self.layers),
+            "geometry_preview_style": (
+                self.export_geometry_preview_style_state()
+            ),
         }
 
     def restore_ui_state(self, state):
@@ -1822,6 +1860,14 @@ class ThreeDViewport(QWidget):
         self._camera_state = self._normalize_camera_state(state.get("camera_state"))
         self.coordinate_axes_visible = bool(state.get("coordinate_axes_visible", False))
         self.camera_direction_locked = bool(state.get("camera_direction_locked", False))
+        if "geometry_preview_style" in state:
+            style_ok, style_message = (
+                self.restore_geometry_preview_style_state(
+                    state.get("geometry_preview_style")
+                )
+            )
+            if not style_ok:
+                self.interaction_message.emit(style_message)
         layers = state.get("layers")
         if isinstance(layers, dict):
             for layer_key, enabled in layers.items():
@@ -2919,6 +2965,8 @@ class ViewPage(QFrame):
             self.toolbar.threshold_clear_requested.connect(self._handle_threshold_clear_requested)
             self.toolbar.time_playback_requested.connect(self._handle_time_playback_requested)
             self.toolbar.geometry_preview_requested.connect(self._handle_geometry_preview_requested)
+            self.toolbar.geometry_style_requested.connect(
+                self._handle_geometry_style_requested)
             self.toolbar.static_preview_requested.connect(self._handle_static_preview_requested)
             self.toolbar.static_layer_preview_requested.connect(self._handle_static_layer_preview_requested)
             self.toolbar.fence_action_requested.connect(
@@ -3226,6 +3274,66 @@ class ViewPage(QFrame):
     def _handle_geometry_preview_requested(self, preview_kind):
         self._stop_time_playback_timer()
         self.preview_requested.emit(self, "geometry", preview_kind, "", 0)
+
+    def _handle_geometry_style_requested(self):
+        self._stop_time_playback_timer()
+        getter = getattr(
+            self.viewport,
+            "get_geometry_preview_style",
+            None,
+        )
+        if getter is None:
+            self.view_message.emit(
+                "[预览样式] 当前窗口不支持几何预览样式")
+            return
+
+        ok, message, style = getter()
+        if not ok:
+            self.view_message.emit(message)
+            return
+
+        dialog = GeometryPreviewStyleDialog(
+            initial_style=style,
+            apply_callback=self._apply_geometry_preview_style,
+            parent=self,
+        )
+        dialog.apply_failed.connect(self.view_message.emit)
+        dialog.message_emitted.connect(self.view_message.emit)
+        dialog.style_applied.connect(
+            lambda _style: self.view_message.emit(
+                "[预览样式] 已应用当前窗口样式"))
+        dialog.exec_()
+
+    def _apply_geometry_preview_style(self, style):
+        setter = getattr(
+            self.viewport,
+            "set_geometry_preview_style",
+            None,
+        )
+        if setter is None:
+            return (
+                False,
+                "[预览样式] 当前窗口不支持设置几何预览样式",
+                {},
+            )
+
+        try:
+            result = setter(
+                dict(style),
+                render_now=True,
+            )
+        except Exception as exc:
+            return False, f"[预览样式] 更新失败：{exc}", {}
+
+        if not isinstance(result, tuple) or len(result) < 3:
+            return False, "[预览样式] 样式接口返回了无效结果", {}
+
+        ok, message, normalized = result[:3]
+        if not ok:
+            return False, str(message or "[预览样式] 更新失败"), {}
+        if not isinstance(normalized, dict):
+            return False, "[预览样式] 样式接口返回了无效数据", {}
+        return True, "", dict(normalized)
 
     def _handle_static_preview_requested(self, property_key):
         self._stop_time_playback_timer()

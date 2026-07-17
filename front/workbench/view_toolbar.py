@@ -23,6 +23,7 @@ class ViewToolbar(QFrame):
     threshold_clear_requested = pyqtSignal()
     time_playback_requested = pyqtSignal(str, int)
     geometry_preview_requested = pyqtSignal(str)
+    geometry_style_requested = pyqtSignal()
     static_preview_requested = pyqtSignal(str)
     static_layer_preview_requested = pyqtSignal(str, str, int)
     fence_action_requested = pyqtSignal(str)
@@ -363,6 +364,20 @@ class ViewToolbar(QFrame):
                 lambda checked=False, name=preview_kind:
                     self.geometry_preview_requested.emit(name))
             layout.addWidget(button)
+
+        self.geometry_style_button = self._button(
+            "设置井、射孔段和裂缝预览样式",
+            "settings",
+        )
+        self.geometry_style_button.setObjectName(
+            "geometryPreviewStyleButton")
+        self.geometry_style_button.setText("样式")
+        self.geometry_style_button.setToolButtonStyle(
+            Qt.ToolButtonTextBesideIcon)
+        self.geometry_style_button.setFixedSize(58, 23)
+        self.geometry_style_button.clicked.connect(
+            lambda checked=False: self.geometry_style_requested.emit())
+        layout.addWidget(self.geometry_style_button)
 
         layout.addWidget(QLabel("静态属性"))
         self.static_preview_property = QComboBox()
