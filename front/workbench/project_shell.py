@@ -341,8 +341,22 @@ class ProjectShell(QWidget):
         self._bind_active_case_results(restore=True)
         self._refresh_case_input_state(stay_on_case_tab=False)
         if case is not None:
-            self.message_log.append_message(f"[算例] 已创建气水模拟算例：{case.case_name}")
-            self._show_status(f"已创建算例：{case.case_name}")
+            derivation = dict(case.derivation or {})
+            if derivation.get("kind") == "case_copy":
+                source = self.project_state.case_by_id(
+                    derivation.get("source_case_id", ""))
+                source_name = source.case_name if source is not None else "原算例"
+                self.message_log.append_message(
+                    f"[算例] 已从“{source_name}”复制配置为“{case.case_name}”；"
+                    "模拟及历史拟合结果未复制")
+                if source is not None and source.dataset_records:
+                    self.message_log.append_message(
+                        "[算例] 新算例未复制 CaseDataset，如需使用请重新生成")
+                self._show_status(f"已复制算例配置：{case.case_name}")
+            else:
+                self.message_log.append_message(
+                    f"[算例] 已创建气水模拟算例：{case.case_name}")
+                self._show_status(f"已创建算例：{case.case_name}")
 
     def _handle_history_run_state_changed(self, case_id, run_id):
         case = self.project_state.case_by_id(case_id)

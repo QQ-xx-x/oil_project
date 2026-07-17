@@ -4,7 +4,7 @@
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog,
-    QLineEdit, QMenu, QMessageBox, QTreeWidget, QTreeWidgetItem,
+    QLabel, QLineEdit, QMenu, QMessageBox, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout,
 )
 
@@ -48,6 +48,51 @@ class NewCaseDialog(QDialog):
             "case_type": self.case_type.currentData(),
             "case_name": self.case_name.text().strip() or "NewCase",
         }
+
+
+class DuplicateCaseDialog(QDialog):
+    """Collect the new name and make the configuration-only scope explicit."""
+
+    def __init__(self, source_name, suggested_name, parent=None):
+        super().__init__(parent)
+        self.setObjectName("duplicateCaseDialog")
+        self.setWindowTitle("复制算例")
+        self.resize(460, 190)
+
+        layout = QVBoxLayout(self)
+        notice = QLabel(
+            "将复制模型方案、CaseData 和各输入模块参数。"
+            "\n模拟结果、历史拟合结果和运行记录不会被复制。"
+        )
+        notice.setObjectName("duplicateCaseNotice")
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+
+        form = QFormLayout()
+        source_label = QLabel(source_name)
+        source_label.setObjectName("duplicateCaseSource")
+        form.addRow("源算例", source_label)
+        self.case_name = QLineEdit(suggested_name)
+        self.case_name.selectAll()
+        form.addRow("新算例名称", self.case_name)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("复制")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def case_name_value(self):
+        return self.case_name.text().strip()
+
+    def accept(self):
+        if not self.case_name_value():
+            QMessageBox.warning(self, "复制算例", "请输入新算例名称。")
+            self.case_name.setFocus()
+            return
+        super().accept()
 
 
 class CaseManagerPanel(QTreeWidget):
@@ -220,7 +265,18 @@ class CaseManagerPanel(QTreeWidget):
     def _duplicate_case(self, case_id):
         if self.project_state is None:
             return
-        case = self.project_state.duplicate_case(case_id)
+        source = self.project_state.case_by_id(case_id)
+        if source is None:
+            return
+        dialog = DuplicateCaseDialog(
+            source.case_name,
+            self.project_state.suggest_duplicate_case_name(source.case_name),
+            self,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        case = self.project_state.duplicate_case(
+            case_id, case_name=dialog.case_name_value())
         if case is None:
             return
         self.refresh()

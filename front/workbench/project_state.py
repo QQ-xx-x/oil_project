@@ -355,6 +355,17 @@ class ProjectState:
             self.active_case_id = case.case_id
         return case
 
+    def suggest_duplicate_case_name(self, source_name):
+        """Return a readable, unused name for a copied case."""
+        existing_names = {case.case_name for case in self.cases}
+        base = f"{source_name or 'NewCase'}_副本"
+        if base not in existing_names:
+            return base
+        index = 2
+        while f"{base}{index}" in existing_names:
+            index += 1
+        return f"{base}{index}"
+
     def select_case(self, case_id):
         if not self.case_by_id(case_id):
             return False
@@ -385,19 +396,30 @@ class ProjectState:
             self.active_case_id = self.cases[0].case_id if self.cases else ""
         return True
 
-    def duplicate_case(self, case_id):
+    def duplicate_case(self, case_id, case_name=""):
         source = self.case_by_id(case_id)
         if not source:
             return None
-        # A duplicated case starts from the same editable inputs but owns no
-        # Dataset or run history.  Those artifacts belong to the source case.
-        return self.add_case(
-            case_name=f"{source.case_name}_copy",
+
+        # A copy owns an independent editable configuration. Dataset and Run
+        # records (including simulation/history-matching artifacts) remain
+        # owned by the source case and are deliberately not cloned.
+        cloned_input = copy.deepcopy(source.input_state)
+        cloned_input.input_revision = 0
+        cloned_input.input_fingerprint = ""
+        duplicated = self.add_case(
+            case_name=case_name or self.suggest_duplicate_case_name(
+                source.case_name),
             case_type=source.case_type,
             description=source.description,
             activate=True,
-            input_state=source.input_state,
+            input_state=cloned_input,
         )
+        duplicated.derivation = {
+            "kind": "case_copy",
+            "source_case_id": source.case_id,
+        }
+        return duplicated
 
     def ensure_legacy_case(self):
         if self.cases:
