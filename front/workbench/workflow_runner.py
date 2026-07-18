@@ -15,7 +15,7 @@ class WorkbenchWorkflowRunner:
         return dict(getattr(project_state, "module_values", {}) or {})
 
     def run_simulation(self, project_state):
-        """First integration pass: scan existing outputs instead of launching solvers."""
+        """第一阶段集成：扫描现有输出，而不是启动求解器。"""
         parameters = self.collect_parameters(project_state)
         store = self.discover_results()
         messages = [

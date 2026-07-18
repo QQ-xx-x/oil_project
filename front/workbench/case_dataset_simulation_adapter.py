@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Build lightweight runner parameters from a standard case_dataset directory."""
+"""从标准 case_dataset 目录构建轻量运行参数。"""
 
 import argparse
 import json
@@ -19,7 +19,7 @@ from .project_state import (
 
 
 class CaseDatasetSimulationAdapterError(ValueError):
-    """Raised when a case_dataset cannot be converted to runner parameters."""
+    """case_dataset 无法转换为运行参数时抛出。"""
 
 
 @dataclass
@@ -39,12 +39,7 @@ class CaseDatasetSimulationInput:
 
 
 def build_case_dataset_simulation_input(dataset_dir, strict=True):
-    """Load a case_dataset and return JSON-safe runner parameters.
-
-    Large arrays stay in the dataset directory and are read by the runner
-    subprocess. This keeps QProcess arguments small and avoids duplicating
-    arrays.npz in memory.
-    """
+    """加载 case_dataset 并返回可安全序列化为 JSON 的运行参数。大型数组保留在数据集目录中，由运行子进程读取，以缩小 QProcess 参数并避免在内存中重复 arrays.npz。"""
     dataset_dir = os.path.abspath(dataset_dir or "")
     if not dataset_dir:
         raise CaseDatasetSimulationAdapterError("case_dataset path is empty")
@@ -65,13 +60,13 @@ def build_case_dataset_simulation_input(dataset_dir, strict=True):
 
 
 def build_case_dataset_params(dataset_dir, strict=True):
-    """Return only the flat parameter dict used by front.simulation_runner."""
+    """仅返回 front.simulation_runner 使用的扁平参数字典。"""
     return build_case_dataset_simulation_input(
         dataset_dir, strict=strict).params
 
 
 def export_case_dataset_interface_json(dataset_dir, output_path, strict=True):
-    """Export the lightweight case_dataset runner interface for inspection."""
+    """导出轻量 case_dataset 运行接口以供检查。"""
     payload = build_case_dataset_simulation_input(
         dataset_dir, strict=strict).to_dict()
     output_path = os.path.abspath(output_path)
@@ -201,9 +196,9 @@ def _dual_porosity_params(dual):
 
 def _hydraulic_fracture_params(dataset, hydraulic):
     if not hydraulic:
-        # Temporary fallback for older case_dataset inputs: wells are attached
-        # to hydraulic fracture segments, while early case_dataset files had no
-        # hydraulic fracture block.
+        # 针对旧版 case_dataset 输入的临时回退：井连接到
+        # 人工裂缝段，而早期 case_dataset 文件中没有
+        # 人工裂缝数据块。
         return _temporary_hf_defaults(dataset)
 
     hf_count = _int(hydraulic, "count", 0)

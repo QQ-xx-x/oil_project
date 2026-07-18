@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Registry-driven, isolated and atomic business-module imports."""
+"""由注册表驱动、相互隔离且具备原子性的业务模块导入。"""
 
 import math
 import os
@@ -46,13 +46,13 @@ MATRIX_PERMEABILITY_SCALE = 1.0 / 1000.0
 
 
 class ModuleImportService:
-    """Import exactly one registered module from one CaseData source."""
+    """从一个 CaseData 源精确导入一个已注册模块。"""
 
     def __init__(self, project_state=None):
         self.project_state = project_state
 
     def import_module(self, module_key, case_data_path):
-        """Build a candidate, then atomically replace only its owner module."""
+        """先构建候选状态，再原子替换其所属模块。"""
 
         prepared = self.prepare_module(module_key, case_data_path)
         if not prepared.success or prepared.state is None:
@@ -79,7 +79,7 @@ class ModuleImportService:
         )
 
     def prepare_module(self, module_key, case_data_path):
-        """Parse and validate a detached draft without mutating ProjectState."""
+        """解析并校验分离的草稿，不修改 ProjectState。"""
 
         module_key = str(module_key or "")
         previous = (
@@ -312,15 +312,15 @@ class ModuleImportService:
             return
         for warning in ((wells.get("validation") or {}).get("warnings") or []):
             warnings.append(str(warning))
-        # Parser provenance belongs exclusively to ModuleInputState.source;
-        # parsed business data must stay safe for future ordinary dialogs.
+        # 解析器来源信息仅属于 ModuleInputState.source；
+        # 已解析业务数据必须能安全用于未来的普通对话框。
         wells = dict(wells)
         wells.pop("source_files", None)
         parsed_values[track_rule.parsed_key] = _well_business_data(wells)
 
 
 def normalize_module_business_data(module_key, values):
-    """Normalize editable business tables before validation and commit."""
+    """在校验和提交前规范化可编辑业务表格。"""
 
     normalized = dict(values or {})
     if module_key != MODULE_WELL_PRODUCTION:
@@ -393,7 +393,7 @@ def normalize_module_business_data(module_key, values):
 
 
 def validate_module_business_data(module_key, values):
-    """Validate normalized user-facing values without consulting source files."""
+    """校验规范化的用户可见值，不读取源文件。"""
 
     values = values or {}
     errors = []
@@ -649,7 +649,7 @@ def _grid_business_data(grid):
 
 
 def _validate_grid_structure(grid):
-    """Return business-facing grid checks without exposing source details."""
+    """返回面向业务的网格检查结果，不暴露源数据细节。"""
 
     nx = int(grid.get("nx") or 0)
     ny = int(grid.get("ny") or 0)

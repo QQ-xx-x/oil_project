@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Case-bound simulation run lifecycle and artifact registration."""
+"""绑定算例的模拟运行生命周期和资源登记。"""
 
 import copy
 import json
@@ -20,7 +20,7 @@ RUN_SNAPSHOT_SCHEMA_VERSION = "simulation_run_v1"
 
 
 class SimulationRunError(ValueError):
-    """Raised when a simulation run cannot be prepared or resolved."""
+    """无法准备或解析模拟运行时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ class SimulationRunContext:
 
 
 class SimulationRunManager:
-    """Create and update RunRecords without relying on the active case later."""
+    """创建和更新 RunRecord，不依赖之后的当前算例。"""
 
     RESULT_FILES = {
         "output_sim_path": (

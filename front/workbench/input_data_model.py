@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Read-only data access helpers for functional input views."""
+"""功能输入视图使用的只读数据访问辅助工具。"""
 
 import json
 import os
@@ -16,7 +16,7 @@ from .case_dataset_schema import (
 
 
 class InputDataModel:
-    """Expose project, CaseData, dataset and array inputs through one API."""
+    """通过统一 API 提供项目、CaseData、数据集和数组输入。"""
 
     def __init__(self, project_state):
         self.project_state = project_state

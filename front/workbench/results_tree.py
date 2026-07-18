@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Run-aware result tree for the active case."""
+"""当前算例使用的运行感知结果树。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
@@ -24,7 +24,7 @@ AVAILABILITY_ROLE = Qt.UserRole + 5
 
 
 class ResultsTree(QTreeWidget):
-    # Legacy signal retained for integrations that only consume result keys.
+    # 为仅使用结果键的集成保留旧版信号。
     result_selected = pyqtSignal(str, str, str)
     run_selected = pyqtSignal(str)
     run_result_selected = pyqtSignal(str, str, str, str)

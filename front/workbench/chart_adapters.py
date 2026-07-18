@@ -50,7 +50,7 @@ def build_relative_permeability_data(project_state):
 
 
 def build_gas_pvt_curve_data(project_state):
-    """Build a gas PVT Z-factor curve from the current workbench inputs."""
+    """根据当前工作台输入构建气体 PVT 偏差因子曲线。"""
     params = project_state.get_module_values("gas_pvt")
 
     gas_t_c = _float(params.get("gas_t_C", 140.0), "gas_t_C")
@@ -114,7 +114,7 @@ def _float(value, name):
 
 
 def _gas_z_factor(p_bar, gas_t_k, gas_tc_k, gas_pc_bar):
-    """Dranchuk-Abou-Kassem-style Z-factor calculation used for UI plotting."""
+    """用于界面绘图的 Dranchuk-Abou-Kassem 风格偏差因子计算。"""
     a = GAS_DEVIATION_COEFFS
     tr = gas_t_k / gas_tc_k
     pr = max(p_bar, 1e-12) / gas_pc_bar

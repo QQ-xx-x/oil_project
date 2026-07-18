@@ -634,7 +634,7 @@ def _restore_case_data_section_paths(sections, base_dir):
 
 
 def _rebind_module_sources_to_assets(input_payload):
-    """Point packaged module locators at their content-addressed assets."""
+    """将打包后的模块定位信息指向按内容寻址的资源。"""
 
     assets = input_payload.get("input_assets") or {}
     lookup = {}

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Case-owned runtime directories and content-addressed input assets."""
+"""算例所属的运行目录和按内容寻址的输入资源。"""
 
 import copy
 import hashlib
@@ -18,16 +18,11 @@ from .case_models import new_dataset_id, new_run_id
 
 
 class CaseArtifactError(ValueError):
-    """Raised when a managed case artifact cannot be created safely."""
+    """无法安全创建受管算例资源时抛出。"""
 
 
 class CaseArtifactRepository:
-    """Manage project-owned inputs, Datasets and run directories.
-
-    The repository root is transient for an unsaved project and points at the
-    extracted package cache for an opened ``.oilproj``.  Persistent packaging
-    is handled by ``project_file_manager`` using the paths registered here.
-    """
+    """管理项目所属的输入、Dataset 和运行目录。未保存项目使用临时仓库根目录；打开 `.oilproj` 后，仓库根目录指向解包缓存。持久化打包由 `project_file_manager` 根据此处登记的路径完成。"""
 
     def __init__(self, project_state, project_root=None, runtime_root=None):
         if project_state is None:
@@ -129,7 +124,7 @@ class CaseArtifactRepository:
         return self._is_within(os.path.abspath(path), self.datasets_dir(case_id))
 
     def capture_case_data(self, case_state, case_data):
-        """Copy a CaseData source and all available file references once."""
+        """复制一次 CaseData 源文件及其所有可用文件引用。"""
         if case_state is None or case_data is None:
             return {}
         records = {}
@@ -179,7 +174,7 @@ class CaseArtifactRepository:
         return record
 
     def export_managed_case_snapshot(self, case_state, case_data, target_path=None):
-        """Export a build snapshot whose file references use managed assets."""
+        """导出使用受管资源引用的构建快照。"""
         if case_state is None:
             raise CaseArtifactError("active case is required")
         if case_data is None:

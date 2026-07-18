@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Persistent business state and results for isolated module imports."""
+"""隔离模块导入使用的持久化业务状态和结果。"""
 
 import copy
 from dataclasses import dataclass, field
@@ -12,12 +12,7 @@ def _utc_now():
 
 @dataclass
 class ModuleParsedData:
-    """Parsed, UI-safe business content owned by one module.
-
-    Large numerical arrays are intentionally summarized during import.  The
-    internal source record on :class:`ModuleInputState` retains what is needed
-    to reparse them when Dataset composition is implemented.
-    """
+    """单个模块所属、可安全用于界面的已解析业务内容。大型数值数组会在导入时被刻意汇总；`ModuleInputState` 的内部源记录保留 Dataset 组合阶段重新解析所需的信息。"""
 
     values: dict = field(default_factory=dict)
     schema_version: int = 1
@@ -45,7 +40,7 @@ class ModuleParsedData:
 
 @dataclass
 class ModuleInputState:
-    """One atomic revision of a business module's imported input."""
+    """业务模块的一次原子导入修订。"""
 
     module_key: str
     raw_values: dict = field(default_factory=dict)
@@ -100,7 +95,7 @@ class ModuleInputState:
 
 @dataclass
 class ModuleImportResult:
-    """Outcome of one import attempt; failed results never mutate state."""
+    """一次导入尝试的结果；失败结果绝不会修改状态。"""
 
     module_key: str
     success: bool

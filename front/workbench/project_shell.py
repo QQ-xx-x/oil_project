@@ -57,7 +57,7 @@ LAZY_SIMULATION_DATA_KEYS = {
     "permeability_x_field",
     "permeability_y_field",
     "permeability_z_field",
-    "permeability_field",  # legacy alias for Kx
+    "permeability_field",  # Kx 的旧版别名
 }
 
 
@@ -523,7 +523,7 @@ class ProjectShell(QWidget):
         self._handle_result_selected(workflow_key, title, view)
 
     def collect_ui_state(self):
-        """Persist project-level layout and active case result context."""
+        """持久化项目级布局和当前算例结果上下文。"""
         self._save_bound_case_result_state()
         """保存工程前收集当前界面状态。"""
         state = dict(getattr(self.project_state, "ui_state", {}) or {})
@@ -593,8 +593,8 @@ class ProjectShell(QWidget):
         self._migrate_legacy_packaged_result(state)
         active_run = self.project_state.active_run_record()
         if active_run is not None and active_run.run_type != RUN_TYPE_SIMULATION:
-            # History matching has its own payload/view loader. Treating its
-            # run_result.json as SimulationData corrupts the restore chain.
+            # 历史拟合有自己的载荷/视图加载器。若将其
+            # run_result.json 当作 SimulationData，会破坏恢复链。
             self._bind_active_case_results(restore=True)
             return
         run_artifacts = (
@@ -1091,7 +1091,7 @@ class ProjectShell(QWidget):
         return True
 
     def generate_case_dataset(self):
-        """Generate the active Dataset exclusively from business modules."""
+        """仅根据业务模块生成当前 Dataset。"""
 
         if self.simulation_service.is_running():
             QMessageBox.warning(

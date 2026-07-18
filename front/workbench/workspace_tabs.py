@@ -329,9 +329,9 @@ class WorkspaceTabs(QTabWidget):
         if not isinstance(state, dict):
             return False
         if self.has_running_operations():
-            # Rebuilding tabs would destroy the QProcess owner during a
-            # normal case switch. The target case state can be restored after
-            # the operation reaches a terminal state.
+            # 重建选项卡会在正常切换算例时销毁 QProcess 所有者。
+            # 操作进入终止状态后，可以恢复
+            # 目标算例状态。
             return False
         pages = state.get("pages")
         if not isinstance(pages, list) or not pages:

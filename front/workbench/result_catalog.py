@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Run-aware result descriptors for the workbench result tree."""
+"""工作台结果树使用的运行感知结果描述。"""
 
 import os
 from dataclasses import dataclass, field

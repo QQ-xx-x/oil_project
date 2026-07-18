@@ -115,7 +115,7 @@ def _path_picker(line_edit, button_text, caption, file_filter, callback=None):
 
 
 class WorkbenchGridPanel(QWidget):
-    """Grid count and model dimension parameters."""
+    """网格数量和模型尺寸参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -202,7 +202,7 @@ class WorkbenchGridPanel(QWidget):
 
 
 class WorkbenchInitialStatePanel(QWidget):
-    """Initial pressure and saturation parameters."""
+    """初始压力和饱和度参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -236,7 +236,7 @@ class WorkbenchInitialStatePanel(QWidget):
 
 
 class WorkbenchMatrixPanel(QWidget):
-    """Matrix porosity and permeability parameters."""
+    """基质孔隙度和渗透率参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -274,7 +274,7 @@ class WorkbenchMatrixPanel(QWidget):
 
 
 class WorkbenchDualPorosityPanel(QWidget):
-    """Warren-Root dual porosity parameters."""
+    """Warren-Root 双重孔隙度参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -336,7 +336,7 @@ class WorkbenchDualPorosityPanel(QWidget):
 
 
 class WorkbenchOilWaterPanel(QWidget):
-    """Oil-water phase parameters."""
+    """油水相参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -384,7 +384,7 @@ class WorkbenchOilWaterPanel(QWidget):
 
 
 class WorkbenchGasPvtPanel(QWidget):
-    """Real gas PVT table parameters."""
+    """真实气体 PVT 表参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -429,7 +429,7 @@ class WorkbenchGasPvtPanel(QWidget):
 
 
 class WorkbenchWellPanel(QWidget):
-    """Well location and control parameters."""
+    """井位和控制参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -469,7 +469,7 @@ class WorkbenchWellPanel(QWidget):
 
 
 class WorkbenchNaturalFracturesPanel(QWidget):
-    """Natural fracture parameters."""
+    """天然裂缝参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -503,7 +503,7 @@ class WorkbenchNaturalFracturesPanel(QWidget):
 
 
 class WorkbenchHydraulicFracturesPanel(QWidget):
-    """Hydraulic fracture parameters."""
+    """人工裂缝参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -547,7 +547,7 @@ class WorkbenchHydraulicFracturesPanel(QWidget):
 
 
 class WorkbenchSimulationPanel(QWidget):
-    """Simulation time-control parameters."""
+    """模拟时间控制参数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)

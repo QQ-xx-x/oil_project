@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""History matching workspace page."""
+"""历史拟合工作区页面。"""
 
 import copy
 import csv
@@ -72,7 +72,7 @@ from .history_matching_run_manager import (
 
 
 class HistoryMatchingViewport(QWidget):
-    """Workspace viewport for history matching setup and results."""
+    """历史拟合设置和结果的工作区视口。"""
 
     run_state_changed = pyqtSignal(str, str)
     derived_case_created = pyqtSignal(str)
@@ -2514,7 +2514,7 @@ class HistoryMatchingViewport(QWidget):
         return HistoryMatchingRunManager(self.project_state, repository)
 
     def load_run_record(self, run_record):
-        """Load one persisted history-matching Run without using global latest."""
+        """加载一个持久化历史拟合 Run，不使用全局最新记录。"""
         if run_record is None or run_record.run_type != RUN_TYPE_HISTORY_MATCHING:
             return False
         context = context_from_record(
@@ -2632,7 +2632,7 @@ class HistoryMatchingViewport(QWidget):
         return False
 
     def shutdown_operations(self, timeout_ms=5000):
-        """Stop child processes and finalize their persistent Run state."""
+        """停止子进程并完成其持久化 Run 状态。"""
         timeout_ms = max(0, int(timeout_ms or 0))
         context = self._active_run_context
         process = self.process

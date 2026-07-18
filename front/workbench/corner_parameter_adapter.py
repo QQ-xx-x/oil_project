@@ -8,11 +8,11 @@ from ..grdecl_parser import convert_grdecl_to_temp_csv
 
 
 class CornerParameterError(ValueError):
-    """Raised when the workbench state is not runnable by the Corner Grid solver."""
+    """工作台状态无法供角点网格求解器运行时抛出。"""
 
 
 def build_corner_grid_params(project_state):
-    """Build parameters for ``front.simulation_runner`` using imported Corner Grid files."""
+    """使用已导入的角点网格文件为 `front.simulation_runner` 构建参数。"""
     modules = getattr(project_state, "module_values", {}) or {}
 
     grid = _module(modules, "grid_basic")

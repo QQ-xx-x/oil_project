@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Targeted CaseData import used by the model-configuration window."""
+"""模型配置窗口使用的定向 CaseData 导入。"""
 
 import os
 
@@ -11,16 +11,11 @@ from .input_keyword_registry import (
 
 
 class ModelConfigImportError(ValueError):
-    """The selected data cannot provide valid model-configuration values."""
+    """所选数据无法提供有效模型配置值。"""
 
 
 def load_lgr_model_config_values(path):
-    """Read only registered ``LGR.*`` values from one CaseData source.
-
-    Other sections—including WR property locators—are deliberately ignored.
-    The returned mapping uses persistent model-config keys and contains no
-    source filename, path, section name, or raw keyword record.
-    """
+    """仅从一个 CaseData 源读取已注册的 `LGR.*` 值。其他数据段（包括 WR 属性定位信息）会被刻意忽略。返回映射使用持久化模型配置键，不包含源文件名、路径、数据段名称或原始关键字记录。"""
 
     source = os.path.abspath(str(path or "").strip())
     if not source or not os.path.isfile(source):

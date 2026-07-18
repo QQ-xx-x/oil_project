@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Build a runnable Dataset from isolated business-module input states."""
+"""根据相互隔离的业务模块输入状态构建可运行 Dataset。"""
 
 import copy
 import json
@@ -28,7 +28,7 @@ from .project_state import MODEL_TYPE_WR, WR_INPUT_MODE_FILE, normalize_model_co
 
 MODULE_TITLES = {
     MODULE_GRID_SPATIAL: "网格与空间数据",
-    MODULE_ROCK_PROPERTIES: "储层岩石属性",
+    MODULE_ROCK_PROPERTIES: "岩石物理属性",
     MODULE_FRACTURE_SYSTEM: "裂缝系统",
     MODULE_FLUID_PVT: "流体与 PVT",
     MODULE_INITIAL_CONDITIONS: "初始状态",
@@ -70,7 +70,7 @@ class ModuleDatasetBuildResult:
 
 
 class ModuleDatasetService:
-    """Validate, compose, build and register the active case Dataset."""
+    """校验、组合、构建并登记当前算例的 Dataset。"""
 
     def __init__(self, project_state, repository=None, project_root=None):
         if project_state is None:

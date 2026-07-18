@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Asynchronous workbench simulation service with case-bound run context."""
+"""带有算例绑定运行上下文的异步工作台模拟服务。"""
 
 import json
 import os
@@ -27,13 +27,13 @@ from .corner_parameter_adapter import CornerParameterError, build_corner_grid_pa
 
 
 class WorkbenchSimulationService(QObject):
-    # Compatibility signals used by integrations written before run contexts.
+    # 供运行上下文引入前编写的集成使用的兼容信号。
     started = pyqtSignal(dict)
     log_message = pyqtSignal(str)
     finished = pyqtSignal(object, str)
     failed = pyqtSignal(str)
 
-    # Case-safe signals. Every terminal callback carries its originating run.
+    # 算例安全信号。每个终止回调都携带其来源运行。
     run_started = pyqtSignal(dict, dict)
     run_finished = pyqtSignal(object, str, dict)
     run_failed = pyqtSignal(str, dict)

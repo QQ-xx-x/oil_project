@@ -74,7 +74,7 @@ class ObjectSettingsDialog(QDialog):
 
 
 class ParameterSettingsDialog(QDialog):
-    """Wrap a legacy parameter panel in a project-tree style dialog."""
+    """将旧版参数面板封装为项目树样式对话框。"""
 
     values_applied = pyqtSignal(dict)
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Reusable production curve panel backed by the visual widgets."""
+"""由可视化组件支持的可复用生产曲线面板。"""
 
 import os
 
@@ -14,14 +14,14 @@ try:
     from visual.production_curve_plot import ProductionCurvePlotWidget
     from visual.production_curve_table import ProductionCurveTableWidget
     PRODUCTION_CURVE_IMPORT_ERROR = ""
-except Exception as exc:  # pragma: no cover - depends on optional runtime deps.
+except Exception as exc:  # 仅依赖可选运行时组件，故不纳入覆盖率统计。
     ProductionCurvePlotWidget = None
     ProductionCurveTableWidget = None
     PRODUCTION_CURVE_IMPORT_ERROR = str(exc)
 
 
 class ProductionCurvePanel(QWidget):
-    """Plot + table adapter for output_sim production CSV files."""
+    """用于 output_sim 生产 CSV 文件的绘图和表格适配器。"""
 
     DEFAULT_PROPERTIES = ["CumWater", "CumGas"]
     CSV_CANDIDATES = [
@@ -547,7 +547,7 @@ class ProductionCurvePanel(QWidget):
 
 
 class ProductionCurveViewport(ProductionCurvePanel):
-    """Workspace viewport wrapper for the production chart result."""
+    """生产曲线结果的工作区视口封装。"""
 
     def __init__(self, project_state=None, result_store=None, parent=None):
         super().__init__(parent)

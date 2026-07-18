@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Compatibility migration from whole-CaseData projects to module inputs."""
+"""从整份 CaseData 项目迁移到模块输入的兼容逻辑。"""
 
 import copy
 import os
@@ -20,12 +20,7 @@ MODULE_INPUT_SCHEMA_VERSION = 1
 
 
 def migrate_legacy_module_inputs(project_state):
-    """Fill missing module states from each case's historical CaseData.
-
-    Migration is deliberately revision-neutral: it interprets already-saved
-    input and therefore must not make an otherwise-ready Dataset stale.  Any
-    existing module state wins over the legacy snapshot.
-    """
+    """根据每个算例的历史 CaseData 补齐缺失模块状态。迁移不会改变修订号：它只解释已保存输入，因此不能让原本可用的 Dataset 变为过期。已有模块状态始终优先于旧版快照。"""
 
     report = {
         "schema_version": MODULE_INPUT_SCHEMA_VERSION,
@@ -68,8 +63,8 @@ def migrate_legacy_module_inputs(project_state):
                 case_name=case.case_name,
                 input_state=copy.deepcopy(input_state),
             )
-            # Only detached staging state is mutated while parsers establish
-            # cross-module facts such as the expected grid-cell count.
+            # 解析器建立预期网格单元数等跨模块事实时，
+            # 只修改分离的暂存状态。
             service = ModuleImportService(staging)
             migrated = []
             skipped = []

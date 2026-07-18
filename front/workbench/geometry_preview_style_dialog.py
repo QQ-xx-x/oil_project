@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Geometry-preview style controls for the active 3D viewport."""
+"""当前三维视口的几何预览样式控件。"""
 
 import math
 
@@ -19,9 +19,9 @@ from PyQt5.QtWidgets import (
 )
 
 
-# Runtime callers provide the renderer's canonical style. These values are
-# defensive fallbacks so the standalone dialog remains usable with partial
-# input during tests or recovery from older UI state.
+# 运行时调用方提供渲染器的规范样式。这些值是
+# 防御性回退，使独立对话框在测试输入不完整或
+# 恢复旧版界面状态时仍可使用。
 GEOMETRY_PREVIEW_STYLE_FALLBACK = {
     "well_color": (0.08, 0.24, 0.62),
     "well_radius": 2.0,
@@ -71,7 +71,7 @@ def _color_tuple(value, fallback):
 
 
 def normalize_geometry_preview_style(style):
-    """Return a complete, JSON-safe style dictionary for the dialog."""
+    """返回供对话框使用的完整、可安全序列化为 JSON 的样式字典。"""
     source = style if isinstance(style, dict) else {}
     normalized = dict(GEOMETRY_PREVIEW_STYLE_FALLBACK)
 
@@ -156,7 +156,7 @@ class _ColorButton(QPushButton):
 
 
 class GeometryPreviewStyleDialog(QDialog):
-    """Edit renderer-backed geometry style with live preview and rollback."""
+    """编辑渲染器支持的几何样式，并提供实时预览和回滚。"""
 
     style_changed = pyqtSignal(dict)
     style_applied = pyqtSignal(dict)

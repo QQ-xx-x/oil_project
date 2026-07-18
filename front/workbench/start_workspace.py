@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Project startup page with the case tab shown in the left dock."""
+"""项目启动页面，左侧停靠区显示算例选项卡。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Reusable business-only widgets for registry-driven module dialogs."""
+"""注册表驱动模块对话框使用的可复用纯业务组件。"""
 
 import copy
 
@@ -7,8 +7,8 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from PyQt5.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 
@@ -27,7 +27,7 @@ def format_business_value(value):
 
 
 class BusinessScalarEditor(QWidget):
-    """Editable or read-only scalar field without provenance information."""
+    """不含来源信息的可编辑或只读标量字段。"""
 
     value_changed = pyqtSignal()
 
@@ -93,7 +93,7 @@ class BusinessScalarEditor(QWidget):
 
 
 class SummaryCardWidget(QGroupBox):
-    """Compact read-only business summary."""
+    """紧凑的只读业务摘要。"""
 
     def __init__(self, title, parent=None):
         super().__init__(title, parent)
@@ -112,7 +112,7 @@ class SummaryCardWidget(QGroupBox):
 
 
 class StatisticsTableWidget(QGroupBox):
-    """One-row statistics table driven by DisplayFieldRule columns."""
+    """由 DisplayFieldRule 列定义驱动的单行统计表。"""
 
     def __init__(self, title, columns, parent=None):
         super().__init__(title, parent)
@@ -138,7 +138,7 @@ class StatisticsTableWidget(QGroupBox):
 
 
 class StructuredDataTableWidget(QGroupBox):
-    """Bounded structured-data table; never accepts raw numerical arrays."""
+    """有界结构化数据表；绝不接收原始数值数组。"""
 
     MAX_VISIBLE_ROWS = 500
     ORIGINAL_ROW_ROLE = Qt.UserRole + 1
@@ -259,44 +259,86 @@ class StructuredDataTableWidget(QGroupBox):
         return (("value", "值"),)
 
 
-class ValidationPanel(QGroupBox):
-    """Business validation messages with no source record rendering."""
+class ValidationPanel(QFrame):
+    """仅在存在可操作校验问题时展开的紧凑成功状态栏。"""
 
     def __init__(self, parent=None):
-        super().__init__("校验提示", parent)
+        super().__init__(parent)
+        self.setObjectName("validationPanel")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(4)
+        self.status = QLabel("✓ 校验通过")
+        self.status.setObjectName("validationStatus")
+        layout.addWidget(self.status)
         self.messages = QListWidget()
-        self.messages.setMaximumHeight(105)
+        self.messages.setObjectName("validationMessages")
+        self.messages.setMaximumHeight(92)
         layout.addWidget(self.messages)
+        self.messages.hide()
+        self.setMaximumHeight(38)
 
-    def set_validation(self, validation):
+    def set_validation(self, validation, has_data=True):
         validation = validation or {}
         self.messages.clear()
+        if not has_data:
+            self.messages.addItem("尚未导入数据")
+            self.status.setText("○ 尚未导入数据")
+            self.setProperty("state", "empty")
+            self.messages.hide()
+            self.setMaximumHeight(38)
+            self._refresh_style()
+            return
+
         errors = list(validation.get("errors") or [])
         warnings = list(validation.get("warnings") or [])
         checks = dict(validation.get("checks") or {})
+        declared_ok = bool(validation.get("ok", not errors))
         has_failed_check = any(
             not (payload.get("ok") if isinstance(payload, dict) else payload)
             for payload in checks.values()
         )
-        if not errors and not warnings and not has_failed_check:
+        if declared_ok and not errors and not warnings and not has_failed_check:
             self.messages.addItem("校验通过")
-        elif not errors:
-            self.messages.addItem("校验完成，请查看提示")
+            self.status.setText("✓ 校验通过")
+            self.setProperty("state", "success")
+            self.messages.hide()
+            self.setMaximumHeight(38)
+            self._refresh_style()
+            return
+
+        if not declared_ok and not errors and not has_failed_check:
+            errors.append("当前数据未通过校验。")
+
+        issue_count = len(errors) + len(warnings) + sum(
+            1 for payload in checks.values()
+            if not (payload.get("ok") if isinstance(payload, dict) else payload)
+        )
+        self.status.setText(f"校验发现 {issue_count} 项问题")
+        self.setProperty("state", "error" if errors or has_failed_check else "warning")
         for message in errors:
             self.messages.addItem(f"错误：{message}")
         for message in warnings:
             self.messages.addItem(f"提示：{message}")
         for name, payload in checks.items():
             check = payload if isinstance(payload, dict) else {"ok": payload}
-            state = "通过" if check.get("ok") else "未通过"
+            if check.get("ok"):
+                continue
             detail = str(check.get("detail") or "").strip()
             suffix = f"（{detail}）" if detail else ""
-            self.messages.addItem(f"{state}：{name}{suffix}")
+            self.messages.addItem(f"未通过：{name}{suffix}")
+        self.messages.show()
+        self.setMaximumHeight(132)
+        self._refresh_style()
+
+    def _refresh_style(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
 
 def _coerce_edited_value(text, original):
-    """Keep original types and hidden row fields when a table is edited."""
+    """编辑表格时保留原始类型和隐藏行字段。"""
 
     if text == format_business_value(original):
         return copy.deepcopy(original)

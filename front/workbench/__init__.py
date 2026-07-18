@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Workbench package exports."""
+"""工作台包导出项。"""
 
 __all__ = ["WorkbenchWindow"]
 

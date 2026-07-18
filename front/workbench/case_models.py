@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Persistent case-level models used by the reservoir workbench.
-
-The UI historically stored all inputs directly on ``ProjectState``.  These
-models provide the real ownership boundary for multi-case projects while
-``ProjectState`` keeps a compatibility facade for existing panels.
-"""
+"""储层工作台使用的持久化算例级模型。界面过去将全部输入直接存储在 `ProjectState` 上；这些模型为多算例项目提供真实的所有权边界，同时 `ProjectState` 保留兼容外观以支持现有面板。"""
 
 import copy
 import uuid
@@ -124,7 +119,7 @@ def normalize_model_config(config=None, legacy_refinement=None):
 
 @dataclass
 class InputState:
-    """Editable inputs owned by one case."""
+    """单个算例所属的可编辑输入。"""
 
     model_config: dict = field(default_factory=default_model_config)
     case_data_path: str = ""
@@ -199,7 +194,7 @@ class InputState:
 
 @dataclass
 class DatasetRecord:
-    """One built Dataset revision owned by a case."""
+    """算例所属的一次已构建 Dataset 修订。"""
 
     dataset_id: str = ""
     path: str = ""
@@ -261,7 +256,7 @@ class DatasetRecord:
 
 @dataclass
 class RunRecord:
-    """Persistent metadata for a simulation or analysis run."""
+    """一次模拟或分析运行的持久化元数据。"""
 
     run_id: str = ""
     case_id: str = ""
@@ -394,7 +389,7 @@ class RunRecord:
 
 @dataclass
 class CaseState:
-    """Complete persistent state owned by one simulation case."""
+    """单个模拟算例所属的完整持久化状态。"""
 
     case_id: str = ""
     case_name: str = "NewCase"
@@ -444,8 +439,8 @@ class CaseState:
             if record.run_id in seen_run_ids:
                 record.run_id = new_run_id()
             seen_run_ids.add(record.run_id)
-            # The containing Case is the authority. Repair old or malformed
-            # records so later callbacks cannot write across case boundaries.
+            # 以所属 Case 为准。修复旧版或异常
+            # 记录，防止后续回调跨算例写入。
             record.case_id = self.case_id
         if self.active_dataset_id and not self.dataset_by_id(self.active_dataset_id):
             self.active_dataset_id = ""

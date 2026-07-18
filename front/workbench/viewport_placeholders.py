@@ -25,7 +25,7 @@ THREE_D_RESULT_KEYS = {
     "permeability_x_field",
     "permeability_y_field",
     "permeability_z_field",
-    "permeability_field",  # legacy alias for Kx
+    "permeability_field",  # Kx 的旧版别名
 }
 
 DISPLAY_KEY_TO_PROPERTY = {
@@ -475,8 +475,8 @@ class ThreeDViewport(QWidget):
                             try:
                                 callback(interactor, "LeftButtonPressEvent")
                             except Exception as exc:
-                                # Preserve the Qt-side world-pick fallback when
-                                # a renderer callback fails unexpectedly.
+                                # 渲染器回调意外失败时，保留
+                                # Qt 侧的世界坐标拾取回退。
                                 callback_error = exc
                         points_after = len(
                             cache.get("fence_section_points", []) or []
@@ -556,7 +556,7 @@ class ThreeDViewport(QWidget):
         return DISPLAY_KEY_LABELS.get(display_key, display_key)
 
     def set_fence_section_property_preference(self, property_name):
-        """Update the UI-side fence property without invoking the renderer."""
+        """更新界面侧的围栏属性，不调用渲染器。"""
         property_name = str(property_name or "").strip()
         if property_name not in FENCE_SECTION_PROPERTIES:
             return False
@@ -564,7 +564,7 @@ class ThreeDViewport(QWidget):
         return True
 
     def fence_section_ui_state(self):
-        """Return a read-only UI state derived from the current renderer cache."""
+        """返回从当前渲染器缓存派生的只读界面状态。"""
         renderer = self._real_renderer
         cache = getattr(renderer, "cache", {}) or {}
 
@@ -926,9 +926,9 @@ class ThreeDViewport(QWidget):
                 self._pending_post_show_render_revision = (
                     self._simulation_data_revision
                 )
-                # show() and the first VTK rebuild happen in the same call
-                # stack after a case/project switch. Render once more after
-                # Qt has delivered the pending show/OpenGL events.
+                # 切换算例/项目后，show() 和第一次 VTK 重建会在同一调用
+                # 栈中发生。待 Qt 处理完挂起的显示/OpenGL 事件后，
+                # 再渲染一次。
                 self._post_show_render_timer.start(0)
         self.update()
 
@@ -976,7 +976,7 @@ class ThreeDViewport(QWidget):
         return preview, ""
 
     def get_geometry_preview_style(self):
-        """Return ``(ok, message, style)`` for the current 3D viewport."""
+        """为当前三维视口返回 `(ok, message, style)`。"""
         if self._real_renderer is None and self._geometry_preview_style is not None:
             return True, "[预览样式] 已读取缓存样式", dict(
                 self._geometry_preview_style)
@@ -1006,7 +1006,7 @@ class ThreeDViewport(QWidget):
         render_now=True,
         **style_changes,
     ):
-        """Validate and forward geometry-preview style changes to rendering."""
+        """校验几何预览样式更改并转发给渲染层。"""
         if style is None:
             payload = {}
         elif isinstance(style, dict):
@@ -1059,7 +1059,7 @@ class ThreeDViewport(QWidget):
         return ok, message
 
     def export_geometry_preview_style_state(self):
-        """Return JSON-safe style state without creating a renderer."""
+        """返回可安全序列化为 JSON 的样式状态，且不创建渲染器。"""
         style = self._geometry_preview_style
         if self._real_renderer is not None:
             ok, _message, current = self.get_geometry_preview_style()
@@ -1075,7 +1075,7 @@ class ThreeDViewport(QWidget):
         return payload
 
     def restore_geometry_preview_style_state(self, style):
-        """Cache persisted style and apply it only if rendering already exists."""
+        """缓存持久化样式，仅在渲染已存在时应用。"""
         if style is None:
             self._geometry_preview_style = None
             return True, ""

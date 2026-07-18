@@ -41,12 +41,7 @@ MODULE_ICONS = {
 
 
 class InputTree(QTreeWidget):
-    """Registry-driven navigation tree for business input modules.
-
-    Source sections, keyword names, file paths, and file-status nodes are
-    intentionally excluded.  They remain back-end import details and will be
-    consumed by the module import service in the next phase.
-    """
+    """由注册表驱动的业务输入模块导航树。源数据段、关键字名、文件路径和文件状态节点会被刻意排除；它们仍是后端导入细节，由模块导入服务处理。"""
 
     module_selected = pyqtSignal(str, str)
     parameters_saved = pyqtSignal(str, str, dict)
@@ -78,7 +73,7 @@ class InputTree(QTreeWidget):
         return item
 
     def _populate(self):
-        """Build the complete visible tree from the canonical registry."""
+        """根据规范注册表构建完整可见树。"""
 
         self._building = True
         self.clear()
@@ -164,12 +159,12 @@ class InputTree(QTreeWidget):
         dialog.exec_()
 
     def refresh_case_data_sections(self, preserve_expanded=True):
-        """Legacy compatibility hook; raw CaseData nodes are no longer built."""
+        """旧版兼容入口；不再构建原始 CaseData 节点。"""
 
         return None
 
     def refresh_model_config_visibility(self):
-        """Keep structure stable while reflecting model-dependent groups."""
+        """保持树结构稳定，同时反映依赖模型的分组状态。"""
 
         if self.project_state is None:
             return

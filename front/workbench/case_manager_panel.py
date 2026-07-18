@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Case management tree used before editing case inputs."""
+"""编辑算例输入前使用的算例管理树。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
@@ -51,7 +51,7 @@ class NewCaseDialog(QDialog):
 
 
 class DuplicateCaseDialog(QDialog):
-    """Collect the new name and make the configuration-only scope explicit."""
+    """收集新名称，并明确仅复制配置的范围。"""
 
     def __init__(self, source_name, suggested_name, parent=None):
         super().__init__(parent)

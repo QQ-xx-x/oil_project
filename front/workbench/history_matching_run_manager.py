@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Case-bound history-matching lifecycle and derived-case support."""
+"""绑定算例的历史拟合生命周期和派生算例支持。"""
 
 import copy
 import json
@@ -20,7 +20,7 @@ HISTORY_MATCHING_SNAPSHOT_SCHEMA_VERSION = "history_matching_run_v1"
 
 
 class HistoryMatchingRunError(ValueError):
-    """Raised when a history-matching run cannot be prepared or resolved."""
+    """无法准备或解析历史拟合运行时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ class HistoryMatchingRunContext:
 
 
 class HistoryMatchingRunManager:
-    """Own history-matching artifacts and update the exact originating case."""
+    """管理历史拟合资源，并更新准确的来源算例。"""
 
     RESULT_FILES = {
         "result_json": "run_result.json",
@@ -414,7 +414,7 @@ class HistoryMatchingRunManager:
 
 
 def context_from_record(project_id, run_record):
-    """Rebuild an immutable context from a persisted history-matching RunRecord."""
+    """根据持久化的历史拟合 RunRecord 重建不可变上下文。"""
     artifacts = dict(getattr(run_record, "artifacts", {}) or {})
     run_dir = os.path.abspath(str(artifacts.get("run_dir") or ""))
     results_dir = os.path.join(run_dir, "results") if run_dir else ""

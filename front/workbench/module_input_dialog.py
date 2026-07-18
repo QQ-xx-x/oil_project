@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unified registry-driven dialog for ordinary business input modules."""
+"""普通业务输入模块使用的统一注册表驱动对话框。"""
 
 import copy
 
@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
 )
 
 from .input_keyword_registry import (
+    MODULE_GRID_SPATIAL,
+    MODULE_ROCK_PROPERTIES,
     MODULE_SPEC_BY_KEY,
     WIDGET_BOOLEAN,
     WIDGET_CHOICE,
@@ -21,6 +23,10 @@ from .input_keyword_registry import (
     WIDGET_SUMMARY_TABLE,
     WIDGET_TABLE,
     display_fields_for_module,
+)
+from .grid_spatial_widgets import (
+    GridOverviewPage,
+    GridPropertyStatisticsPage,
 )
 from .module_import_service import (
     ModuleImportService,
@@ -35,6 +41,10 @@ from .module_input_widgets import (
     SummaryCardWidget,
     ValidationPanel,
 )
+from .rock_physics_widgets import (
+    RockEmptyStatePage,
+    RockRelativePermeabilityPage,
+)
 
 
 SCALAR_WIDGETS = frozenset((
@@ -47,7 +57,7 @@ SCALAR_WIDGETS = frozenset((
 
 
 class ModuleInputDialog(QDialog):
-    """Common transactional shell shared by every ordinary input module."""
+    """所有普通输入模块共享的事务式外壳。"""
 
     values_applied = pyqtSignal(str, str, dict)
 
@@ -66,7 +76,12 @@ class ModuleInputDialog(QDialog):
             or ModuleInputState(
                 module_key=self.module_key,
                 parsed_data=ModuleParsedData(),
-                validation={"ok": True, "errors": [], "warnings": []},
+                validation={
+                    "ok": None,
+                    "status": "empty",
+                    "errors": [],
+                    "warnings": [],
+                },
             )
         )
         self._working_values = copy.deepcopy(
@@ -84,14 +99,23 @@ class ModuleInputDialog(QDialog):
         splitter = QSplitter(Qt.Horizontal)
         self.nav = QListWidget()
         self.nav.setObjectName("moduleInputNav")
-        self.nav.setMinimumWidth(175)
-        self.nav.setMaximumWidth(230)
+        if self.module_key in {
+                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}:
+            self.nav.setMinimumWidth(112)
+            self.nav.setMaximumWidth(140)
+        else:
+            self.nav.setMinimumWidth(175)
+            self.nav.setMaximumWidth(230)
         self.nav.currentRowChanged.connect(self._show_page)
         splitter.addWidget(self.nav)
 
         self.stack = QStackedWidget()
         splitter.addWidget(self.stack)
-        splitter.setSizes([190, 760])
+        splitter.setSizes(
+            [125, 825]
+            if self.module_key in {
+                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}
+            else [190, 760])
         root.addWidget(splitter, 1)
 
         self._build_pages(initial_group_key)
@@ -115,24 +139,36 @@ class ModuleInputDialog(QDialog):
         frame = QFrame()
         frame.setObjectName("parameterIntro")
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(12, 8, 12, 8)
         title = QLabel(self.module_spec.title)
         title.setObjectName("parameterTitle")
-        description = QLabel(
-            "导入或编辑当前模块的业务参数。窗口仅展示解析后的参数、统计和结构化数据。")
-        description.setObjectName("parameterDescription")
-        description.setWordWrap(True)
         toolbar = QHBoxLayout()
-        self.import_button = QPushButton("导入模块数据")
+        self.import_button = QPushButton(
+            "导入"
+            if self.module_key in {
+                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}
+            else "导入模块数据")
         self.import_button.setObjectName("importModuleDataButton")
         self.import_status = QLabel("")
         self.import_status.setObjectName("parameterDescription")
         self.import_button.clicked.connect(self._import_module_data)
-        toolbar.addWidget(self.import_button)
-        toolbar.addWidget(self.import_status, 1)
-        layout.addWidget(title)
-        layout.addWidget(description)
-        layout.addLayout(toolbar)
+        if self.module_key in {
+                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}:
+            toolbar.addWidget(title)
+            toolbar.addStretch()
+            toolbar.addWidget(self.import_status)
+            toolbar.addWidget(self.import_button)
+            layout.addLayout(toolbar)
+        else:
+            description = QLabel(
+                "导入或编辑当前模块的业务参数。窗口仅展示解析后的参数、统计和结构化数据。")
+            description.setObjectName("parameterDescription")
+            description.setWordWrap(True)
+            toolbar.addWidget(self.import_button)
+            toolbar.addWidget(self.import_status, 1)
+            layout.addWidget(title)
+            layout.addWidget(description)
+            layout.addLayout(toolbar)
         return frame
 
     def _build_pages(self, initial_group_key):
@@ -143,7 +179,23 @@ class ModuleInputDialog(QDialog):
             item.setData(Qt.UserRole, group.key)
             self.nav.addItem(item)
             page_fields = tuple(field for field in fields if field.group == group.title)
-            page = ModuleGroupPage(group.title, page_fields, self)
+            if (self.module_key == MODULE_GRID_SPATIAL
+                    and group.key == "grid_properties"):
+                page = GridOverviewPage(group.title, page_fields, self)
+            elif (self.module_key == MODULE_GRID_SPATIAL
+                    and group.key == "porosity_permeability"):
+                page = GridPropertyStatisticsPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_ROCK_PROPERTIES
+                    and group.key == "relative_permeability"):
+                page = RockRelativePermeabilityPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_ROCK_PROPERTIES
+                    and group.key in {"fine_analysis", "sensitivity"}):
+                page = RockEmptyStatePage(
+                    group.title, page_fields, self)
+            else:
+                page = ModuleGroupPage(group.title, page_fields, self)
             page.values_changed.connect(self._mark_draft_changed)
             self._pages.append(page)
             self.stack.addWidget(page)
@@ -192,7 +244,10 @@ class ModuleInputDialog(QDialog):
     def _refresh_from_working_state(self):
         for page in self._pages:
             page.set_values(self._working_values, self.module_key)
-        self.validation_panel.set_validation(self._working_state.validation)
+        self.validation_panel.set_validation(
+            self._working_state.validation,
+            has_data=bool(self._working_values),
+        )
 
     def apply_values(self):
         values = copy.deepcopy(self._working_values)
@@ -205,7 +260,8 @@ class ModuleInputDialog(QDialog):
                 "errors": ["存在无法保存的参数值，请检查输入。"],
                 "warnings": [],
             }
-            self.validation_panel.set_validation(validation)
+            self.validation_panel.set_validation(
+                validation, has_data=bool(values))
             QMessageBox.warning(
                 self, "参数无效", "存在无法保存的参数值，请检查输入。")
             return False
@@ -214,7 +270,8 @@ class ModuleInputDialog(QDialog):
         business_validation = validate_module_business_data(
             self.module_key, values)
         if not business_validation["ok"]:
-            self.validation_panel.set_validation(business_validation)
+            self.validation_panel.set_validation(
+                business_validation, has_data=bool(values))
             QMessageBox.warning(
                 self, "参数校验未通过",
                 "\n".join(business_validation["errors"]))
@@ -258,7 +315,8 @@ class ModuleInputDialog(QDialog):
         self.values_applied.emit(
             self.module_key, self.module_spec.title,
             _compact_business_values(values))
-        self.validation_panel.set_validation(committed.validation)
+        self.validation_panel.set_validation(
+            committed.validation, has_data=bool(values))
         return True
 
     def _accept_with_apply(self):
@@ -267,7 +325,7 @@ class ModuleInputDialog(QDialog):
 
 
 class ModuleGroupPage(QWidget):
-    """One registry business group inside the common dialog shell."""
+    """通用对话框外壳中的一个注册表业务分组。"""
 
     values_changed = pyqtSignal()
 

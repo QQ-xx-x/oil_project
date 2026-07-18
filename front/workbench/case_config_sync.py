@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Synchronize CaseData/config values with workbench module parameters."""
+"""同步 CaseData/配置值与工作台模块参数。"""
 
 import json
 import os

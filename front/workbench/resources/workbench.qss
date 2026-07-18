@@ -686,6 +686,137 @@ QLabel#parameterDescription {
     color: #667080;
     font-size: 11px;
 }
+QScrollArea#gridOverviewScroll {
+    background: #f7f9fc;
+    border: none;
+}
+QGroupBox#gridOverviewSection {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+    border-radius: 4px;
+    margin-top: 9px;
+    color: #26364a;
+    font-weight: bold;
+}
+QGroupBox#gridOverviewSection::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+    background: #ffffff;
+}
+QFrame#gridMetricCard {
+    background: #f7f9fc;
+    border: 1px solid #e0e5ed;
+    border-radius: 4px;
+}
+QLabel#gridMetricTitle {
+    color: #687587;
+    font-size: 11px;
+    border: none;
+    background: transparent;
+}
+QLabel#gridMetricValue {
+    color: #26364a;
+    font-size: 16px;
+    font-weight: bold;
+    border: none;
+    background: transparent;
+}
+QTableWidget#gridCoordinateTable,
+QTableWidget#gridPropertyTable {
+    background: #ffffff;
+    alternate-background-color: #f7f9fc;
+    border: 1px solid #d7dee9;
+    gridline-color: #e4e8ef;
+}
+QFrame#validationPanel {
+    background: #f5f7fa;
+    border: 1px solid #d7dee9;
+    border-radius: 3px;
+}
+QFrame#validationPanel[state="success"] {
+    background: #f0f8f3;
+    border-color: #b9dcc6;
+}
+QFrame#validationPanel[state="empty"] {
+    background: #f5f7fa;
+    border-color: #d7dee9;
+}
+QFrame#validationPanel[state="warning"] {
+    background: #fff8e7;
+    border-color: #ead49a;
+}
+QFrame#validationPanel[state="error"] {
+    background: #fff1f0;
+    border-color: #e4b7b3;
+}
+QLabel#validationStatus {
+    color: #2f6845;
+    font-weight: bold;
+    border: none;
+    background: transparent;
+}
+QFrame#validationPanel[state="empty"] QLabel#validationStatus {
+    color: #687587;
+}
+QFrame#validationPanel[state="warning"] QLabel#validationStatus {
+    color: #8a6500;
+}
+QFrame#validationPanel[state="error"] QLabel#validationStatus {
+    color: #a13f38;
+}
+QListWidget#validationMessages {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+}
+QGroupBox#rockParameterSection {
+    background: #ffffff;
+    border: 1px solid #d7dee9;
+    border-radius: 4px;
+    margin-top: 9px;
+    color: #26364a;
+    font-weight: bold;
+}
+QGroupBox#rockParameterSection::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 4px;
+    background: #ffffff;
+}
+QFrame#rockParameterCard {
+    background: #f7f9fc;
+    border: 1px solid #e0e5ed;
+    border-radius: 4px;
+}
+QLabel#rockParameterLabel {
+    color: #26364a;
+    font-size: 13px;
+    font-weight: bold;
+    border: none;
+    background: transparent;
+}
+QLineEdit#rockParameterEditor {
+    min-height: 26px;
+    background: #ffffff;
+    border: 1px solid #bfc8d6;
+    border-radius: 3px;
+    padding: 2px 8px;
+}
+QLineEdit#rockParameterEditor:focus {
+    border-color: #5c86bd;
+}
+QFrame#rockEmptyState {
+    background: #f7f9fc;
+    border: 1px dashed #cbd3df;
+    border-radius: 4px;
+}
+QLabel#rockEmptyStateText {
+    color: #7b8796;
+    border: none;
+    background: transparent;
+}
 QFrame#modulePreviewPanel {
     background: #f7f9fc;
     border-left: 1px solid #ccd3df;

@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Canonical business ownership rules for workbench input keywords.
-
-This module deliberately contains no Qt code and performs no file I/O.  It is
-the shared contract that future import, display, validation, synchronization,
-and CaseData composition code should query instead of maintaining separate
-keyword lists.
-
-Keyword identities are matched case-insensitively as ``(section, keyword)``.
-The original spelling stored in :class:`KeywordRule` is retained for display
-and for exporting a composed CaseData snapshot.
-"""
+"""工作台输入关键字的规范业务归属规则。本模块刻意不包含 Qt 代码，也不执行文件 I/O。它是导入、展示、校验、同步和 CaseData 组合代码共享的契约，调用方应查询本模块，而不是维护各自的关键字列表。关键字标识按 `(section, keyword)` 进行不区分大小写的匹配；`KeywordRule` 中保留的原始拼写用于展示和导出组合后的 CaseData 快照。"""
 
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -60,7 +50,7 @@ WIDGET_DERIVED = "derived"
 
 @dataclass(frozen=True)
 class BusinessGroupSpec:
-    """Stable business grouping rendered below an input-tree module."""
+    """显示在输入树模块下的稳定业务分组。"""
 
     key: str
     title: str
@@ -68,7 +58,7 @@ class BusinessGroupSpec:
 
 @dataclass(frozen=True)
 class ModuleSpec:
-    """Stable business definition for one top-level input-tree node."""
+    """一个顶层输入树节点的稳定业务定义。"""
 
     key: str
     title: str
@@ -77,19 +67,14 @@ class ModuleSpec:
 
     @property
     def reserved_groups(self) -> Tuple[str, ...]:
-        """Compatibility view for callers that only need group titles."""
+        """为仅需要分组标题的调用方提供兼容视图。"""
 
         return tuple(group.title for group in self.groups)
 
 
 @dataclass(frozen=True)
 class KeywordRule:
-    """Back-end import policy for one CaseData keyword.
-
-    Keyword rules never directly create widgets.  ``parser_kind`` and
-    ``parsed_key`` describe how the source value becomes normalized module
-    data; :class:`DisplayFieldRule` independently defines what users see.
-    """
+    """单个 CaseData 关键字的后端导入策略。关键字规则不会直接创建控件；`parser_kind` 和 `parsed_key` 描述源值如何转换为规范化模块数据，`DisplayFieldRule` 则独立定义用户看到的内容。"""
 
     section: str
     keyword: str
@@ -117,7 +102,7 @@ class KeywordRule:
 
 @dataclass(frozen=True)
 class ModelConfigFieldRule:
-    """One field owned by the reusable model-configuration dialog."""
+    """可复用模型配置对话框所属的一个字段。"""
 
     key: str
     title: str
@@ -141,7 +126,7 @@ class ModelConfigFieldRule:
 
 @dataclass(frozen=True)
 class DisplayFieldRule:
-    """One user-facing field backed by normalized, parsed business data."""
+    """由规范化、已解析业务数据支持的一个用户可见字段。"""
 
     module_key: str
     key: str
@@ -160,12 +145,8 @@ MODULE_SPECS = (
     ModuleSpec(
         MODULE_MODEL_CONFIGURATION,
         "模型配置",
-        groups=(
-            BusinessGroupSpec("model_type", "模型类型"),
-            BusinessGroupSpec("lgr", "LGR"),
-            BusinessGroupSpec("feature_modules", "功能模块"),
-            BusinessGroupSpec("wr_data_source", "WR数据来源"),
-        ),
+        # 模型配置使用独立对话框，输入树中保持为单一叶子节点。
+        groups=(),
     ),
     ModuleSpec(
         MODULE_GRID_SPATIAL,
@@ -177,11 +158,11 @@ MODULE_SPECS = (
     ),
     ModuleSpec(
         MODULE_ROCK_PROPERTIES,
-        "储层岩石属性",
+        "岩石物理属性",
         groups=(
             BusinessGroupSpec("relative_permeability", "相渗指数"),
-            BusinessGroupSpec("fine_analysis", "细部解析"),
-            BusinessGroupSpec("sensitivity", "敏感性参数"),
+            BusinessGroupSpec("fine_analysis", "吸附解析"),
+            BusinessGroupSpec("sensitivity", "应力敏感"),
             BusinessGroupSpec("shape_factor", "形状因子"),
         ),
     ),
@@ -262,7 +243,7 @@ def _rule(section: str, keyword: str, module_key: str, title: str,
 
 
 KEYWORD_RULES = (
-    # Model configuration: importable from CaseData and manually editable.
+    # 模型配置：可从 CaseData 导入，也可手动编辑。
     _rule(
         "LGR", "enable_lgr", MODULE_MODEL_CONFIGURATION, "启用 LGR", "bool",
         state_scope=STATE_SCOPE_MODEL_CONFIG, state_key="enable_lgr",
@@ -294,8 +275,8 @@ KEYWORD_RULES = (
         state_scope=STATE_SCOPE_MODEL_CONFIG, state_key="lgr_nrz",
     ),
 
-    # Grid and matrix property arrays are one business input module even
-    # though the property references physically live in [ROCK].
+    # 网格和基质属性数组归属同一个业务输入模块，尽管
+    # 属性引用实际位于 [ROCK] 数据段中。
     _rule(
         "GRID", "grid_file", MODULE_GRID_SPATIAL, "网格文件", "path",
         parser_kind=PARSER_CORNER_GRID, parsed_key="grid",
@@ -322,8 +303,8 @@ KEYWORD_RULES = (
         requirement=REQUIREMENT_REQUIRED,
     ),
 
-    # Rock-mechanics/business properties.  Future detailed-analysis and
-    # sensitivity keywords must be added only when their real names exist.
+    # 岩石力学/业务属性。只有在真实关键字确定后，才能添加未来的
+    # 细部分析和敏感性关键字。
     _rule("FLUID", "n", MODULE_ROCK_PROPERTIES, "相渗指数 n", "float"),
     _rule(
         "WR", "sigma_file", MODULE_ROCK_PROPERTIES, "形状因子 sigma", "path",
@@ -332,8 +313,8 @@ KEYWORD_RULES = (
         required_when=("model_type=wr", "wr_input_mode=file"),
     ),
 
-    # All fracture information belongs to the fracture module regardless of
-    # whether its source keyword is under [ROCK] or [FRACTURE].
+    # 全部裂缝信息都归属裂缝模块，无论其
+    # 源关键字位于 [ROCK] 还是 [FRACTURE]。
     _rule(
         "FRACTURE", "fracture_file", MODULE_FRACTURE_SYSTEM,
         "天然裂缝 DFN", "path",
@@ -370,7 +351,7 @@ KEYWORD_RULES = (
         required_when=("model_type=wr", "wr_input_mode=file"),
     ),
 
-    # Fluid and PVT.  FLUID.n is intentionally owned by rock_properties.
+    # 流体和 PVT。FLUID.n 刻意归属 rock_properties。
     _rule("FLUID", "mu_w", MODULE_FLUID_PVT, "水相黏度 mu_w", "float"),
     _rule("FLUID", "mu_o", MODULE_FLUID_PVT, "油相黏度 mu_o", "float"),
     _rule("FLUID", "cw", MODULE_FLUID_PVT, "水相压缩系数 cw", "float"),
@@ -421,7 +402,7 @@ KEYWORD_RULES = (
         "PVT 采样点数", "int", validation_group="gas_pvt_range",
     ),
 
-    # Initial state.  So is derived and therefore is not a registered input.
+    # 初始状态。So 为派生值，因此不注册为输入。
     _rule(
         "INITIAL", "pressure", MODULE_INITIAL_CONDITIONS, "初始压力", "float"
     ),
@@ -434,7 +415,7 @@ KEYWORD_RULES = (
         validation_group="initial_saturation",
     ),
 
-    # Well input follows the files actually supplied by uniform_data111.txt.
+    # 井输入遵循 uniform_data111.txt 实际提供的文件。
     _rule(
         "WELL", "well_track_file", MODULE_WELL_PRODUCTION, "井轨迹数据", "path",
         parser_kind=PARSER_WELLS, parsed_key="wells",
@@ -447,9 +428,9 @@ KEYWORD_RULES = (
         validation_group="well_files",
     ),
 
-    # Only four time-control fields are visible.  The remaining solver and
-    # output values are imported and retained without appearing in the normal
-    # parameter dialog.
+    # 仅显示四个时间控制字段。其余求解器和
+    # 输出值会被导入并保留，但不会出现在普通
+    # 参数对话框中。
     _rule("SOLVER", "total_time", MODULE_SOLVER_OUTPUT, "总模拟时间", "float"),
     _rule("SOLVER", "dt_init", MODULE_SOLVER_OUTPUT, "初始时间步", "float"),
     _rule("SOLVER", "dt_min", MODULE_SOLVER_OUTPUT, "最小时间步", "float"),
@@ -492,7 +473,7 @@ KEYWORD_RULES = (
 
 MODEL_CONFIG_FIELD_RULES = (
     ModelConfigFieldRule(
-        "model_type", "模型类型", "choice", "normal",
+        "model_type", "WR 双重介质", "choice", "normal",
         choices=("normal", "wr"),
     ),
     ModelConfigFieldRule(
@@ -500,7 +481,7 @@ MODEL_CONFIG_FIELD_RULES = (
         visible=False, editable=False, choices=("corner_point",),
     ),
     ModelConfigFieldRule(
-        "enable_lgr", "启用 LGR", "bool", True,
+        "enable_lgr", "LGR 加密模型", "bool", True,
         source_section="LGR", source_keyword="enable_lgr",
     ),
     ModelConfigFieldRule(
@@ -522,15 +503,19 @@ MODEL_CONFIG_FIELD_RULES = (
     ),
     ModelConfigFieldRule(
         "enable_natural_fractures", "天然裂缝 DFN", "bool", True,
+        visible=False, editable=False,
     ),
     ModelConfigFieldRule(
         "enable_hydraulic_fractures", "人工裂缝", "bool", False,
+        visible=False, editable=False,
     ),
     ModelConfigFieldRule(
         "enable_real_gas_pvt", "真实气体 PVT", "bool", True,
+        visible=False, editable=False,
     ),
     ModelConfigFieldRule(
         "wr_input_mode", "WR 数据来源", "choice", "file",
+        visible=False, editable=False,
         choices=("file", "constant", "mixed"), enabled_when="model_type=wr",
     ),
     ModelConfigFieldRule(
@@ -577,9 +562,9 @@ FRACTURE_STAT_COLUMNS = (
 )
 
 DISPLAY_FIELD_RULES = (
-    # Grid and matrix-property content.  These are parsed values and
-    # summaries; source filenames and keyword raw values are intentionally
-    # absent from this registry.
+    # 网格和基质属性内容。这些是已解析值和
+    # 摘要；源文件名和关键字原始值会被刻意
+    # 排除在本注册表之外。
     _display(MODULE_GRID_SPATIAL, "grid_nx", "Nx", "grid.nx",
              "网格属性", WIDGET_INTEGER),
     _display(MODULE_GRID_SPATIAL, "grid_ny", "Ny", "grid.ny",
@@ -615,14 +600,14 @@ DISPLAY_FIELD_RULES = (
              "matrix_kz.summary", "孔隙度与渗透率", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS, unit="mD"),
 
-    # Rock properties.
+    # 岩石属性。
     _display(MODULE_ROCK_PROPERTIES, "relperm_exponent_n", "相渗指数 n", "n",
              "相渗指数", WIDGET_NUMBER, editable=True),
     _display(MODULE_ROCK_PROPERTIES, "shape_factor_summary", "形状因子",
              "shape_factor.summary", "形状因子", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS),
 
-    # Natural, equivalent and future hydraulic-fracture business content.
+    # 天然裂缝、等效裂缝以及未来人工裂缝的业务内容。
     _display(MODULE_FRACTURE_SYSTEM, "natural_fracture_summary", "天然裂缝概况",
              "natural_fractures.summary", "天然裂缝", WIDGET_SUMMARY),
     _display(MODULE_FRACTURE_SYSTEM, "natural_fracture_bbox_min", "包围盒最小点",
@@ -670,7 +655,7 @@ DISPLAY_FIELD_RULES = (
                       ("aperture", "开度"), ("perm", "渗透率"),
                       ("conductivity", "导流能力"))),
 
-    # Fluid and PVT scalar content.
+    # 流体和 PVT 标量内容。
     _display(MODULE_FLUID_PVT, "mu_w", "水相黏度", "mu_w",
              "基础流体参数", WIDGET_NUMBER, editable=True, unit="cP"),
     _display(MODULE_FLUID_PVT, "mu_o", "油相黏度", "mu_o",
@@ -714,7 +699,7 @@ DISPLAY_FIELD_RULES = (
     _display(MODULE_FLUID_PVT, "gas_table_n", "PVT 采样点数", "gas_table_n",
              "PVT表", WIDGET_INTEGER, editable=True),
 
-    # Initial state.
+    # 初始状态。
     _display(MODULE_INITIAL_CONDITIONS, "initial_pressure", "初始压力",
              "pressure", "初始压力", WIDGET_NUMBER, editable=True),
     _display(MODULE_INITIAL_CONDITIONS, "initial_sw", "初始含水饱和度",
@@ -724,7 +709,7 @@ DISPLAY_FIELD_RULES = (
     _display(MODULE_INITIAL_CONDITIONS, "initial_so", "初始含油饱和度",
              "derived.so", "初始饱和度", WIDGET_DERIVED),
 
-    # Parsed well content rather than the two source locators.
+    # 使用已解析的井数据，而不是两个源定位字段。
     _display(MODULE_WELL_PRODUCTION, "well_summary", "井概况", "wells.summary",
              "井轨迹", WIDGET_SUMMARY),
     _display(MODULE_WELL_PRODUCTION, "well_list", "井列表", "wells.well_list",
@@ -745,8 +730,8 @@ DISPLAY_FIELD_RULES = (
                       ("bhp_bar", "BHP"),
                       ("connection_target", "连接对象"))),
 
-    # The solver owns more imported values, but the normal dialog exposes only
-    # the four confirmed time-control parameters.
+    # 求解器拥有更多已导入值，但普通对话框仅公开
+    # 四个已确认的时间控制参数。
     _display(MODULE_SOLVER_OUTPUT, "total_time", "总模拟时间", "total_time",
              "时间控制", WIDGET_NUMBER, editable=True),
     _display(MODULE_SOLVER_OUTPUT, "dt_init", "初始时间步", "dt_init",
@@ -762,7 +747,7 @@ IGNORED_CASE_SECTIONS = frozenset(("RETURN_SCHEMA",))
 
 
 def normalize_keyword_identity(section: str, keyword: str) -> Tuple[str, str]:
-    """Return the case-insensitive identity used by all registry lookups."""
+    """返回全部注册表查询使用的不区分大小写标识。"""
 
     return (
         str(section or "").strip().upper(),
@@ -801,7 +786,7 @@ def get_display_field(module_key: str, key: str) -> Optional[DisplayFieldRule]:
 
 def keyword_rules_for_module(module_key: str, *,
                              importable_only: bool = False) -> Tuple[KeywordRule, ...]:
-    """Return rules owned by a module while preserving registry order."""
+    """按注册顺序返回指定模块所属的规则。"""
 
     rules = []
     for rule in KEYWORD_RULES:
@@ -814,7 +799,7 @@ def keyword_rules_for_module(module_key: str, *,
 
 
 def display_fields_for_module(module_key: str) -> Tuple[DisplayFieldRule, ...]:
-    """Return user-facing business fields while preserving display order."""
+    """按展示顺序返回用户可见的业务字段。"""
 
     return tuple(
         field for field in DISPLAY_FIELD_RULES
@@ -827,7 +812,7 @@ def is_ignored_case_section(section: str) -> bool:
 
 
 def registry_issues() -> Tuple[str, ...]:
-    """Return structural problems without performing business validation."""
+    """返回结构问题，不执行业务校验。"""
 
     issues = []
     module_keys = [spec.key for spec in MODULE_SPECS]
@@ -917,8 +902,8 @@ def registry_issues() -> Tuple[str, ...]:
         parsed_roots_by_module.setdefault(rule.module_key, set()).add(root)
     virtual_display_roots = {
         "derived",
-        # Artificial-fracture display is reserved for future real keywords or
-        # manually entered structured parameters.
+        # 人工裂缝展示为未来真实关键字或
+        # 手动录入的结构化参数预留。
         "hydraulic_fractures",
     }
     seen_display_identities = set()

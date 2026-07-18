@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Workbench project state with an active-case compatibility facade."""
+"""带有当前算例兼容外观的工作台项目状态。"""
 
 import copy
 import os
@@ -35,20 +35,14 @@ from .module_input_models import (
 )
 
 
-# Backward-compatible public names used by older integrations.
+# 旧版集成使用的向后兼容公开名称。
 CaseInfo = CaseState
 _utc_now = utc_now
 _new_case_id = new_case_id
 
 
 class ProjectState:
-    """Persistent project state.
-
-    Case-owned values are exposed through the historical project-level
-    attributes so existing panels do not need a flag-day migration.  Reading
-    ``project_state.module_values`` therefore means "the active case's module
-    values".
-    """
+    """持久化项目状态。算例所属值通过历史项目级属性公开，使现有面板无需一次性迁移。因此，读取 `project_state.module_values` 表示读取“当前算例的模块值”。"""
 
     LEGACY_INPUT_FIELDS = (
         "model_config",
@@ -139,7 +133,7 @@ class ProjectState:
                 ))
 
     # ------------------------------------------------------------------
-    # Active-case compatibility properties
+    # 当前算例兼容属性
     # ------------------------------------------------------------------
     def _active_input(self):
         case = self.active_case()
@@ -165,7 +159,7 @@ class ProjectState:
 
     @staticmethod
     def _capture_module_source_assets(input_state, module_state, repository):
-        """Make path-backed module inputs portable without changing revision."""
+        """使基于路径的模块输入可移植，同时不改变修订号。"""
 
         source = dict(module_state.source or {})
         keyword_records = copy.deepcopy(source.get("keywords") or {})
@@ -329,7 +323,7 @@ class ProjectState:
             record.summary = summary
 
     # ------------------------------------------------------------------
-    # Case lifecycle
+    # 算例生命周期
     # ------------------------------------------------------------------
     def _normalize_cases(self, cases):
         normalized = []
@@ -361,7 +355,7 @@ class ProjectState:
         return case.active_dataset() if case is not None else None
 
     def is_case_dataset_ready(self):
-        """Return whether the active case can safely start a simulation."""
+        """返回当前算例能否安全启动模拟。"""
 
         record = self.active_dataset_record()
         if record is None or record.status != DATASET_STATUS_READY:
@@ -376,7 +370,7 @@ class ProjectState:
         return os.path.isfile(os.path.join(record.path, "manifest.json"))
 
     def case_dataset_readiness_reason(self):
-        """Return a source-free business explanation for the run button."""
+        """返回不包含源数据细节的运行按钮业务说明。"""
 
         record = self.active_dataset_record()
         if record is None:
@@ -448,7 +442,7 @@ class ProjectState:
         return case
 
     def suggest_duplicate_case_name(self, source_name):
-        """Return a readable, unused name for a copied case."""
+        """为复制的算例返回易读且未占用的名称。"""
         existing_names = {case.case_name for case in self.cases}
         base = f"{source_name or 'NewCase'}_副本"
         if base not in existing_names:
@@ -493,9 +487,9 @@ class ProjectState:
         if not source:
             return None
 
-        # A copy owns an independent editable configuration. Dataset and Run
-        # records (including simulation/history-matching artifacts) remain
-        # owned by the source case and are deliberately not cloned.
+        # 副本拥有独立的可编辑配置。Dataset 和 Run
+        # 记录（包括模拟/历史拟合资源）仍由
+        # 源算例所有，并且刻意不进行克隆。
         cloned_input = copy.deepcopy(source.input_state)
         cloned_input.input_revision = 0
         cloned_input.input_fingerprint = ""
@@ -539,7 +533,7 @@ class ProjectState:
         return case
 
     # ------------------------------------------------------------------
-    # Existing input APIs, now scoped to the active case
+    # 现有输入 API，现限定在当前算例范围内
     # ------------------------------------------------------------------
     def _touch_active_input(self):
         state = self._active_input()
@@ -585,13 +579,13 @@ class ProjectState:
         return dict(self.module_values.get(key, {}))
 
     def get_module_input_state(self, module_key):
-        """Return an isolated copy of one module's committed state."""
+        """返回指定模块已提交状态的隔离副本。"""
 
         state = self.module_inputs.get(str(module_key or ""))
         return copy.deepcopy(state) if state is not None else None
 
     def replace_module_input_state(self, module_key, candidate):
-        """Atomically commit one validated module revision."""
+        """原子提交一个已校验的模块修订。"""
 
         module_key = str(module_key or "")
         if not module_key:
@@ -679,7 +673,7 @@ class ProjectState:
 
     def set_case_dataset(self, dataset_path, manifest=None, validation=None,
                          dataset_id=""):
-        """Register a newly built Dataset on the active case."""
+        """在当前算例上登记新构建的 Dataset。"""
         dataset_path = os.path.abspath(dataset_path or "") if dataset_path else ""
         manifest = manifest or {}
         validation = validation or manifest.get("validation", {}) or {}
@@ -714,15 +708,15 @@ class ProjectState:
             case.add_dataset(record, activate=True)
 
         sync_project_modules_from_dataset(self, dataset_path)
-        # Dataset-derived module synchronization is part of this build, so the
-        # record must point at the resulting active input revision.
+        # 本次构建包含从 Dataset 派生的模块同步，因此
+        # 记录必须指向最终的当前输入修订。
         record.input_revision = self._active_input().input_revision
         record.input_fingerprint = self._active_input().input_fingerprint
         return record
 
     def mark_case_dataset_stale(
             self, reason="CaseData 已修改，请重新生成 Dataset"):
-        """Mark only the active case's Dataset as stale."""
+        """仅将当前算例的 Dataset 标记为过期。"""
         case = self.active_case()
         if case is None:
             if self._unbound_dataset_path:
@@ -736,7 +730,7 @@ class ProjectState:
         case.touch()
 
     # ------------------------------------------------------------------
-    # Serialization and legacy migration
+    # 序列化和旧版迁移
     # ------------------------------------------------------------------
     def _active_legacy_payload(self):
         return {
@@ -760,7 +754,7 @@ class ProjectState:
         }
 
     def to_dict(self):
-        """Export state while retaining active-case legacy aliases."""
+        """导出状态，同时保留当前算例的旧版别名。"""
         payload = {
             "project_id": self.project_id,
             "project_name": self.project_name,
@@ -775,7 +769,7 @@ class ProjectState:
 
     @classmethod
     def from_dict(cls, payload):
-        """Load rich case state or migrate the historical global state."""
+        """加载完整算例状态，或迁移历史全局状态。"""
         payload = payload or {}
         cases_payload = copy.deepcopy(payload.get("cases") or [])
         state = cls(
@@ -814,9 +808,9 @@ class ProjectState:
             if case is None:
                 state.active_case_id = state.cases[0].case_id
                 case = state.active_case()
-            # Old files stored metadata-only cases.  New files still carry the
-            # top-level aliases so package path relocation can override the
-            # active case's embedded absolute paths.
+            # 旧文件仅存储元数据算例。新文件仍携带
+            # 顶层别名，使包路径迁移能够覆盖
+            # 当前算例中嵌入的绝对路径。
             if not cases_have_input_state or any(
                     field_name in payload for field_name in cls.LEGACY_INPUT_FIELDS):
                 case.input_state = legacy_input
