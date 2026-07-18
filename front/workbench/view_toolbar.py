@@ -9,6 +9,16 @@ from PyQt5.QtWidgets import (
 
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
+from .view_property_registry import (
+    CAP_FENCE,
+    CAP_SLICE,
+    CAP_STATIC,
+    CAP_THRESHOLD,
+    CAP_TIME,
+    VIEW_PROPERTY_SPECS,
+    normalize_view_property_key,
+    view_property_spec,
+)
 
 
 class ViewToolbar(QFrame):
@@ -27,19 +37,6 @@ class ViewToolbar(QFrame):
     static_preview_requested = pyqtSignal(str)
     static_layer_preview_requested = pyqtSignal(str, str, int)
     fence_action_requested = pyqtSignal(str)
-    fence_property_selected = pyqtSignal(str)
-
-    STATIC_PREVIEW_PROPERTIES = [
-        ("MATRIX_PORO", "MATRIX_PORO"),
-        ("MATRIX_PERMX", "MATRIX_PERMX"),
-        ("MATRIX_PERMY", "MATRIX_PERMY"),
-        ("MATRIX_PERMZ", "MATRIX_PERMZ"),
-        ("DFN_PORO", "DFN_PORO"),
-        ("DFN_PERMX", "DFN_PERMX"),
-        ("DFN_PERMY", "DFN_PERMY"),
-        ("DFN_PERMZ", "DFN_PERMZ"),
-        ("SIGMA", "SIGMA"),
-    ]
 
     TOOLSETS = {
         "3d": [
@@ -133,15 +130,10 @@ class ViewToolbar(QFrame):
         elif view_type == "2d":
             selector.addItems(["图层", "井位", "网格", "裂缝"])
         else:
-            for text, key in [
-                ("Pressure", "pressure_field"),
-                ("Sw", "water_saturation_field"),
-                ("Phi", "porosity_field"),
-                ("Kx", "permeability_x_field"),
-                ("Ky", "permeability_y_field"),
-                ("Kz", "permeability_z_field"),
-            ]:
-                selector.addItem(text, key)
+            layout.addWidget(QLabel("属性"))
+            for spec in VIEW_PROPERTY_SPECS:
+                selector.addItem(spec.label, spec.key)
+            selector.setFixedWidth(132)
             selector.currentIndexChanged.connect(self._emit_property_selected)
         selector.setObjectName("viewSelector")
         self.view_selector = selector
@@ -164,6 +156,7 @@ class ViewToolbar(QFrame):
             preview_layout.addStretch()
             self._add_fence_controls(fence_layout)
             fence_layout.addStretch()
+            self._update_property_capabilities()
         layout.addStretch()
 
     def _add_fence_controls(self, layout):
@@ -178,15 +171,6 @@ class ViewToolbar(QFrame):
         self.fence_draw_button.clicked.connect(
             lambda checked=False: self.fence_action_requested.emit("start"))
         layout.addWidget(self.fence_draw_button)
-
-        layout.addWidget(QLabel("属性"))
-        self.fence_property = QComboBox()
-        self.fence_property.setObjectName("fenceSectionPropertySelector")
-        self.fence_property.addItems(["Pressure", "Kx", "Ky", "Kz", "Phi", "Sw"])
-        self.fence_property.setFixedWidth(92)
-        self.fence_property.currentTextChanged.connect(
-            self.fence_property_selected.emit)
-        layout.addWidget(self.fence_property)
 
         for text, tooltip, kind, action, object_name, width in [
             ("完成", "完成折线剖面绘制", "refresh", "complete", "fenceSectionCompleteButton", 64),
@@ -229,39 +213,26 @@ class ViewToolbar(QFrame):
         finally:
             self.fence_draw_button.blockSignals(previous)
 
-        self.fence_draw_button.setEnabled(bool(state.get("can_start", False)))
+        self._fence_controls_state = dict(state)
+        can_use_fence = self.current_property_spec().supports(CAP_FENCE)
+        self.fence_draw_button.setEnabled(
+            bool(state.get("can_start", False)) and can_use_fence)
         self.fence_complete_button.setEnabled(bool(state.get("can_complete", False)))
         self.fence_cancel_button.setEnabled(bool(state.get("can_cancel", False)))
         self.fence_clear_button.setEnabled(bool(state.get("can_clear", False)))
         self.fence_exit_button.setEnabled(bool(state.get("can_exit", False)))
-        self.fence_property.setEnabled(bool(state.get("can_change_property", True)))
-
-        property_name = str(state.get("property_name") or "Pressure")
-        property_index = self.fence_property.findText(property_name)
-        if property_index >= 0:
-            previous = self.fence_property.blockSignals(True)
-            try:
-                self.fence_property.setCurrentIndex(property_index)
-            finally:
-                self.fence_property.blockSignals(previous)
+        self.view_selector.setEnabled(
+            bool(state.get("can_change_property", True)))
+        if not can_use_fence:
+            self.fence_draw_button.setToolTip(
+                f"当前属性 {self.current_property_spec().label} 不支持折线剖面")
+        else:
+            self.fence_draw_button.setToolTip("绘制折线垂向剖面")
 
         return True
 
     def _add_slice_controls(self, layout):
         layout.addWidget(QLabel("切片"))
-        self.slice_property = QComboBox()
-        self.slice_property.setObjectName("slicePropertySelector")
-        for text, key in [
-            ("Pressure", "pressure_field"),
-            ("Sw", "water_saturation_field"),
-            ("Phi", "porosity_field"),
-            ("Kx", "permeability_x_field"),
-            ("Ky", "permeability_y_field"),
-            ("Kz", "permeability_z_field"),
-        ]:
-            self.slice_property.addItem(text, key)
-        layout.addWidget(self.slice_property)
-
         self.slice_axis = QComboBox()
         self.slice_axis.setObjectName("sliceAxisSelector")
         self.slice_axis.addItems(["I", "J", "K"])
@@ -281,6 +252,7 @@ class ViewToolbar(QFrame):
         apply_button.setFixedSize(64, 23)
         apply_button.clicked.connect(self._emit_slice_request)
         layout.addWidget(apply_button)
+        self.slice_apply_button = apply_button
 
         reset_button = self._button("恢复整体场", "refresh")
         reset_button.setText("恢复")
@@ -288,6 +260,7 @@ class ViewToolbar(QFrame):
         reset_button.setFixedSize(64, 23)
         reset_button.clicked.connect(self.slice_reset_requested.emit)
         layout.addWidget(reset_button)
+        self.slice_reset_button = reset_button
 
     def _add_threshold_controls(self, layout):
         layout.addWidget(QLabel("阈值"))
@@ -312,6 +285,7 @@ class ViewToolbar(QFrame):
         apply_button.setFixedSize(64, 23)
         apply_button.clicked.connect(self._emit_threshold_request)
         layout.addWidget(apply_button)
+        self.threshold_apply_button = apply_button
 
         clear_button = self._button("清除阈值过滤", "clear")
         clear_button.setText("清除")
@@ -319,9 +293,11 @@ class ViewToolbar(QFrame):
         clear_button.setFixedSize(64, 23)
         clear_button.clicked.connect(self.threshold_clear_requested.emit)
         layout.addWidget(clear_button)
+        self.threshold_clear_button = clear_button
 
     def _add_time_controls(self, layout):
         layout.addWidget(QLabel("时间步"))
+        self.time_control_buttons = []
 
         self.time_step_index = QSpinBox()
         self.time_step_index.setObjectName("timeStepIndexSpinBox")
@@ -345,6 +321,7 @@ class ViewToolbar(QFrame):
             button.clicked.connect(
                 lambda checked=False, name=action: self._emit_time_playback_request(name))
             layout.addWidget(button)
+            self.time_control_buttons.append(button)
 
     def _add_preview_controls(self, layout):
         layout.addWidget(QLabel("预览"))
@@ -380,12 +357,6 @@ class ViewToolbar(QFrame):
         layout.addWidget(self.geometry_style_button)
 
         layout.addWidget(QLabel("静态属性"))
-        self.static_preview_property = QComboBox()
-        self.static_preview_property.setObjectName("staticPreviewPropertySelector")
-        for text, key in self.STATIC_PREVIEW_PROPERTIES:
-            self.static_preview_property.addItem(text, key)
-        self.static_preview_property.setFixedWidth(118)
-        layout.addWidget(self.static_preview_property)
 
         static_button = self._button("预览整体静态属性场", "pressure")
         static_button.setText("整体")
@@ -393,15 +364,9 @@ class ViewToolbar(QFrame):
         static_button.setFixedSize(62, 23)
         static_button.clicked.connect(self._emit_static_preview_request)
         layout.addWidget(static_button)
+        self.static_preview_button = static_button
 
         layout.addWidget(QLabel("分层"))
-        self.static_layer_property = QComboBox()
-        self.static_layer_property.setObjectName("staticLayerPreviewPropertySelector")
-        for text, key in self.STATIC_PREVIEW_PROPERTIES:
-            self.static_layer_property.addItem(text, key)
-        self.static_layer_property.setFixedWidth(118)
-        layout.addWidget(self.static_layer_property)
-
         self.static_layer_axis = QComboBox()
         self.static_layer_axis.setObjectName("staticLayerPreviewAxisSelector")
         self.static_layer_axis.addItems(["I", "J", "K"])
@@ -422,9 +387,12 @@ class ViewToolbar(QFrame):
         layer_button.setFixedSize(62, 23)
         layer_button.clicked.connect(self._emit_static_layer_preview_request)
         layout.addWidget(layer_button)
+        self.static_layer_preview_button = layer_button
 
     def _emit_slice_request(self):
-        property_key = self.slice_property.currentData() or "pressure_field"
+        property_key = self.current_property_spec().result_key
+        if not property_key:
+            return
         axis = self.slice_axis.currentText().lower()
         layer = int(self.slice_layer.value())
         self.slice_requested.emit(property_key, axis, layer)
@@ -432,11 +400,20 @@ class ViewToolbar(QFrame):
     def _emit_property_selected(self, *args):
         property_key = self.view_selector.currentData()
         if property_key:
+            self._update_property_capabilities()
             self.property_selected.emit(property_key)
+
+    def current_property_key(self):
+        return normalize_view_property_key(
+            self.view_selector.currentData() if hasattr(self, "view_selector") else None)
+
+    def current_property_spec(self):
+        return view_property_spec(self.current_property_key())
 
     def set_property_key(self, property_key, emit=False):
         if not hasattr(self, "view_selector"):
             return False
+        property_key = normalize_view_property_key(property_key)
         found = self.view_selector.findData(property_key)
         if found < 0:
             return False
@@ -445,6 +422,7 @@ class ViewToolbar(QFrame):
             self.view_selector.setCurrentIndex(found)
         finally:
             self.view_selector.blockSignals(previous)
+        self._update_property_capabilities()
         if emit:
             self.property_selected.emit(property_key)
         return True
@@ -459,14 +437,55 @@ class ViewToolbar(QFrame):
         self.time_playback_requested.emit(action, int(self.time_step_index.value()))
 
     def _emit_static_preview_request(self):
-        property_key = self.static_preview_property.currentData() or "MATRIX_PORO"
+        property_key = self.current_property_spec().static_key
+        if not property_key:
+            return
         self.static_preview_requested.emit(property_key)
 
     def _emit_static_layer_preview_request(self):
-        property_key = self.static_layer_property.currentData() or "MATRIX_PORO"
+        property_key = self.current_property_spec().static_key
+        if not property_key:
+            return
         axis = self.static_layer_axis.currentText().lower()
         layer = int(self.static_layer_index.value())
         self.static_layer_preview_requested.emit(property_key, axis, layer)
+
+    def _update_property_capabilities(self):
+        if not hasattr(self, "view_selector"):
+            return
+        spec = self.current_property_spec()
+        self._set_feature_enabled(
+            getattr(self, "slice_apply_button", None),
+            spec.supports(CAP_SLICE), spec, "切片")
+        self._set_feature_enabled(
+            getattr(self, "threshold_apply_button", None),
+            spec.supports(CAP_THRESHOLD), spec, "阈值过滤")
+        for button in getattr(self, "time_control_buttons", []):
+            self._set_feature_enabled(
+                button, spec.supports(CAP_TIME), spec, "时间步播放")
+        self._set_feature_enabled(
+            getattr(self, "static_preview_button", None),
+            spec.supports(CAP_STATIC), spec, "静态整体预览")
+        self._set_feature_enabled(
+            getattr(self, "static_layer_preview_button", None),
+            spec.supports(CAP_STATIC), spec, "静态分层预览")
+        if hasattr(self, "_fence_controls_state"):
+            self.set_fence_controls_state(self._fence_controls_state)
+
+    @staticmethod
+    def _set_feature_enabled(widget, enabled, spec, feature):
+        if widget is None:
+            return
+        widget.setEnabled(bool(enabled))
+        if enabled:
+            base_tooltip = widget.property("baseToolTip")
+            if base_tooltip:
+                widget.setToolTip(str(base_tooltip))
+        else:
+            if not widget.property("baseToolTip"):
+                widget.setProperty("baseToolTip", widget.toolTip())
+            widget.setToolTip(
+                f"当前属性 {spec.label} 不支持{feature}")
 
     def set_time_step_index(self, index, step_count=None):
         try:
@@ -481,11 +500,11 @@ class ViewToolbar(QFrame):
             "view_selector_index": self.view_selector.currentIndex(),
             "view_selector_data": self.view_selector.currentData(),
             "view_selector_text": self.view_selector.currentText(),
+            "property_key": self.current_property_key(),
         }
         if hasattr(self, "scale_selector"):
             state["scale"] = self.scale_selector.currentText()
-        if hasattr(self, "slice_property"):
-            state["slice_property"] = self.slice_property.currentData()
+        if hasattr(self, "slice_axis"):
             state["slice_axis"] = self.slice_axis.currentText()
             state["slice_layer"] = int(self.slice_layer.value())
         if hasattr(self, "threshold_min"):
@@ -493,9 +512,7 @@ class ViewToolbar(QFrame):
             state["threshold_max"] = self.threshold_max.text()
         if hasattr(self, "time_step_index"):
             state["time_step_index"] = int(self.time_step_index.value())
-        if hasattr(self, "static_preview_property"):
-            state["static_preview_property"] = self.static_preview_property.currentData()
-            state["static_layer_property"] = self.static_layer_property.currentData()
+        if hasattr(self, "static_layer_axis"):
             state["static_layer_axis"] = self.static_layer_axis.currentText()
             state["static_layer_index"] = int(self.static_layer_index.value())
         return state
@@ -503,16 +520,23 @@ class ViewToolbar(QFrame):
     def restore_ui_state(self, state):
         if not isinstance(state, dict):
             return
-        self._set_combo_from_state(
-            self.view_selector,
+        property_candidates = (
+            state.get("property_key"),
             state.get("view_selector_data"),
-            state.get("view_selector_text"),
-            state.get("view_selector_index"),
+            state.get("slice_property"),
+            state.get("static_preview_property"),
+            state.get("static_layer_property"),
         )
+        selected_property = next(
+            (normalize_view_property_key(value, default="")
+             for value in property_candidates
+             if normalize_view_property_key(value, default="")),
+            "pressure_field",
+        )
+        self.set_property_key(selected_property, emit=False)
         if hasattr(self, "scale_selector") and state.get("scale") is not None:
             self._set_combo_text(self.scale_selector, state.get("scale"))
-        if hasattr(self, "slice_property"):
-            self._set_combo_from_state(self.slice_property, state.get("slice_property"), None, None)
+        if hasattr(self, "slice_axis"):
             self._set_combo_text(self.slice_axis, state.get("slice_axis"))
             try:
                 self.slice_layer.setValue(max(0, int(state.get("slice_layer", 0))))
@@ -528,24 +552,13 @@ class ViewToolbar(QFrame):
                 self.time_step_index.setValue(max(0, int(state.get("time_step_index", 0))))
             except (TypeError, ValueError):
                 pass
-        if hasattr(self, "static_preview_property"):
-            self._set_combo_from_state(
-                self.static_preview_property,
-                state.get("static_preview_property"),
-                None,
-                None,
-            )
-            self._set_combo_from_state(
-                self.static_layer_property,
-                state.get("static_layer_property"),
-                None,
-                None,
-            )
+        if hasattr(self, "static_layer_axis"):
             self._set_combo_text(self.static_layer_axis, state.get("static_layer_axis"))
             try:
                 self.static_layer_index.setValue(max(1, int(state.get("static_layer_index", 1))))
             except (TypeError, ValueError):
                 pass
+        self._update_property_capabilities()
 
     def _set_combo_from_state(self, combo, data, text, index):
         previous = combo.blockSignals(True)

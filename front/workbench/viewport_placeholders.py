@@ -16,6 +16,7 @@ from .geometry_preview_style_dialog import (
     normalize_geometry_preview_style,
 )
 from .view_toolbar import ViewToolbar
+from .view_property_registry import view_property_spec
 
 
 THREE_D_RESULT_KEYS = {
@@ -945,6 +946,27 @@ class ThreeDViewport(QWidget):
             return
         self._restore_saved_visual_state()
         self.update()
+
+    def refresh_after_show(self):
+        """3D 标签页重新可见后刷新其 OpenGL 画面。"""
+
+        if self.simulation_data is None or not self._ensure_real_view():
+            self.update()
+            return False
+        if self._rendered_display_key is None:
+            self._restore_saved_visual_state()
+        else:
+            try:
+                if hasattr(self._real_view, "render_now"):
+                    self._real_view.render_now()
+                else:
+                    plotter = getattr(self._real_renderer, "plotter", None)
+                    if plotter is not None and hasattr(plotter, "render"):
+                        plotter.render()
+            except Exception:
+                self._restore_saved_visual_state()
+        self.update()
+        return True
 
     def set_preview_data(self, sim_data):
         if sim_data is self.preview_data:
@@ -2421,7 +2443,6 @@ class ThreeDViewport(QWidget):
             ("井", "well"),
             ("天然裂缝", "natural_fractures"),
             ("人工裂缝", "hydraulic_fractures"),
-            ("双重介质", "dual_porosity"),
         ]
         x = self.width() - 190
         y = 42
@@ -2884,7 +2905,6 @@ class LayerControlPanel(QFrame):
         ("井轨迹", "well"),
         ("天然裂缝", "natural_fractures"),
         ("人工裂缝", "hydraulic_fractures"),
-        ("双重介质", "dual_porosity"),
     ]
 
     def __init__(self, layers=None, parent=None):
@@ -2971,8 +2991,6 @@ class ViewPage(QFrame):
             self.toolbar.static_layer_preview_requested.connect(self._handle_static_layer_preview_requested)
             self.toolbar.fence_action_requested.connect(
                 self._handle_fence_action_requested)
-            self.toolbar.fence_property_selected.connect(
-                self._handle_fence_property_selected)
             if hasattr(self.viewport, "interaction_message"):
                 self.viewport.interaction_message.connect(self.view_message.emit)
             if hasattr(self.viewport, "fence_state_changed"):
@@ -3075,7 +3093,13 @@ class ViewPage(QFrame):
         self._stop_time_playback_timer()
         try:
             if action == "start":
-                property_name = self.toolbar.fence_property.currentText()
+                property_name = (
+                    self.toolbar.current_property_spec().fence_name)
+                if not property_name:
+                    message = (
+                        "[折线剖面] 当前属性不支持折线剖面")
+                    self.view_message.emit(message)
+                    return False, message
                 result = method(property_name)
             else:
                 result = method()
@@ -3090,39 +3114,6 @@ class ViewPage(QFrame):
                 message = (
                     f"[折线剖面] {action} 操作完成"
                     if ok else f"[折线剖面] {action} 操作失败"
-                )
-
-        self.view_message.emit(message)
-        self._sync_fence_controls()
-        return ok, message
-
-    def _handle_fence_property_selected(self, property_name):
-        property_name = str(property_name or "").strip()
-        method = getattr(self.viewport, "set_fence_property", None)
-        if method is None:
-            method = getattr(
-                self.viewport,
-                "set_fence_section_property_preference",
-                None,
-            )
-        if method is None:
-            message = "[折线剖面] 当前窗口不支持剖面属性设置"
-            self.view_message.emit(message)
-            return False, message
-
-        try:
-            result = method(property_name)
-        except Exception as exc:
-            ok = False
-            message = f"[折线剖面] 属性切换失败：{exc}"
-        else:
-            if isinstance(result, tuple) and len(result) >= 2:
-                ok, message = bool(result[0]), str(result[1])
-            else:
-                ok = bool(result)
-                message = (
-                    f"[折线剖面] 当前属性：{property_name}"
-                    if ok else f"[折线剖面] 不支持的属性：{property_name}"
                 )
 
         self.view_message.emit(message)
@@ -3200,10 +3191,33 @@ class ViewPage(QFrame):
 
     def _handle_property_selected(self, property_key):
         self._stop_time_playback_timer()
-        if hasattr(self.viewport, "render_property_field"):
-            ok, message = self.viewport.render_property_field(property_key)
-            self.view_message.emit(message)
-        self.result_property_selected.emit(property_key)
+        spec = view_property_spec(property_key)
+        self._sync_current_property_to_fence(spec)
+        if spec.result_key:
+            if hasattr(self.viewport, "render_property_field"):
+                ok, message = self.viewport.render_property_field(
+                    spec.result_key)
+                self.view_message.emit(message)
+            self.result_property_selected.emit(spec.result_key)
+        elif spec.static_key:
+            self.preview_requested.emit(
+                self, "static", spec.static_key, "", 0)
+
+    def _sync_current_property_to_fence(self, spec=None):
+        spec = spec or self.toolbar.current_property_spec()
+        if not spec.fence_name:
+            self._sync_fence_controls()
+            return False
+        setter = getattr(
+            self.viewport, "set_fence_section_property_preference", None)
+        if setter is None:
+            return False
+        try:
+            setter(spec.fence_name)
+        except Exception:
+            return False
+        self._sync_fence_controls()
+        return True
 
     def _handle_slice_requested(self, property_key, axis, layer):
         self._stop_time_playback_timer()
@@ -3460,6 +3474,8 @@ class ViewPage(QFrame):
             self.toolbar.restore_ui_state(state.get("toolbar") or {})
         if hasattr(self.viewport, "restore_ui_state"):
             self.viewport.restore_ui_state(state.get("viewport") or {})
+        if self.view_type == "3d":
+            self._sync_current_property_to_fence()
         self._sync_fence_controls()
         if self.layer_control is not None:
             self.layer_control.set_layer_states(getattr(self.viewport, "layers", {}))

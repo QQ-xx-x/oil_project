@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """工程打开后使用的中央多窗口工作区。"""
 
-from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtCore import QSignalBlocker, QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import QAction, QMenu, QTabWidget, QToolButton
 
 from .icon_registry import semantic_icon_kind
@@ -13,6 +13,7 @@ from .viewport_placeholders import ChartViewport, ThreeDViewport, TwoDViewport, 
 
 class WorkspaceTabs(QTabWidget):
     workspace_message = pyqtSignal(str)
+    view_activated = pyqtSignal(object, str)
     result_property_selected = pyqtSignal(str)
     preview_requested = pyqtSignal(object, str, str, str, int)
     history_run_state_changed = pyqtSignal(str, str)
@@ -49,8 +50,16 @@ class WorkspaceTabs(QTabWidget):
         self.two_d_secondary = None
 
         self.tabCloseRequested.connect(self.close_window)
+        self.currentChanged.connect(self._handle_current_changed)
         self.customContextMenuRequested.connect(self._show_tab_menu)
         self.setCornerWidget(self._create_add_button(), Qt.TopRightCorner)
+
+    def _handle_current_changed(self, index):
+        page = self.widget(index) if 0 <= index < self.count() else None
+        if page is None:
+            return
+        view_type = str(self._page_view_type(page) or "")
+        self.view_activated.emit(page, view_type)
 
     def _create_add_button(self):
         button = QToolButton()
@@ -356,6 +365,7 @@ class WorkspaceTabs(QTabWidget):
         if isinstance(last_context, (list, tuple)) and len(last_context) >= 3:
             self._last_context = (last_context[0], last_context[1], last_context[2])
 
+        signal_blocker = QSignalBlocker(self)
         while self.count():
             page = self.widget(0)
             self.removeTab(0)
@@ -383,6 +393,8 @@ class WorkspaceTabs(QTabWidget):
         if 0 <= current_index < self.count():
             self.setCurrentIndex(current_index)
         self._refresh_primary_references()
+        del signal_blocker
+        self._handle_current_changed(self.currentIndex())
         return True
 
     def _apply_last_context(self, page):

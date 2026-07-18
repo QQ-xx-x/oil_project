@@ -304,6 +304,8 @@ class ProjectShell(QWidget):
             result_store=self.result_store,
         )
         self.workspace.workspace_message.connect(self._handle_workspace_message)
+        self.workspace.view_activated.connect(
+            self._handle_workspace_view_activated)
         self.workspace.result_property_selected.connect(self._handle_workspace_result_property_selected)
         self.workspace.preview_requested.connect(self._handle_workspace_preview_requested)
         self.workspace.history_run_state_changed.connect(
@@ -476,6 +478,53 @@ class ProjectShell(QWidget):
     def _handle_workspace_message(self, message):
         self.message_log.append_message(message)
         self._show_status(message.replace("[窗口] ", ""))
+
+    def _handle_workspace_view_activated(self, page, view_type):
+        """在恢复或关闭图表页后，为重新显示的 3D 页补齐数据与渲染。"""
+
+        if view_type != "3d" or page is None:
+            return
+        sim_data = self.result_store.simulation_data
+        if sim_data is None:
+            record = self.project_state.active_run_record()
+            if (
+                    record is None
+                    or record.run_type != RUN_TYPE_SIMULATION
+                    or record.status != RUN_STATUS_COMPLETED):
+                return
+            result_path = (
+                self.result_store.result_json_path
+                or (record.artifacts or {}).get("result_json")
+                or ""
+            )
+            if not result_path or not os.path.isfile(result_path):
+                return
+            if not self.result_store.result_json_path:
+                self.result_store.result_json_path = result_path
+            self._ensure_simulation_data_loaded()
+            return
+
+        viewport = getattr(page, "viewport", None)
+        if viewport is None:
+            return
+        if getattr(viewport, "simulation_data", None) is not sim_data:
+            page.set_simulation_data(sim_data)
+        QTimer.singleShot(
+            0,
+            lambda current_page=page:
+            self._refresh_activated_3d_page(current_page),
+        )
+
+    def _refresh_activated_3d_page(self, page):
+        if (
+                page is None
+                or self.workspace.currentWidget() is not page
+                or self.workspace.indexOf(page) < 0):
+            return
+        viewport = getattr(page, "viewport", None)
+        refresh = getattr(viewport, "refresh_after_show", None)
+        if refresh is not None:
+            refresh()
 
     def _handle_workspace_result_property_selected(self, property_key):
         if property_key not in LAZY_SIMULATION_DATA_KEYS:
