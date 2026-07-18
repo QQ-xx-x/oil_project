@@ -175,10 +175,6 @@ class InputTree(QTreeWidget):
             (MODULE_ROCK_PROPERTIES, "shape_factor"): is_wr,
             (MODULE_FRACTURE_SYSTEM,
              "equivalent_fracture_properties"): is_wr,
-            (MODULE_FRACTURE_SYSTEM, "natural_fractures"): bool(
-                config.get("enable_natural_fractures")),
-            (MODULE_FRACTURE_SYSTEM, "hydraulic_fractures"): bool(
-                config.get("enable_hydraulic_fractures")),
             (MODULE_FLUID_PVT, "gas_components"): bool(
                 config.get("enable_real_gas_pvt")),
             (MODULE_FLUID_PVT, "pvt_table"): bool(

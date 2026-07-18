@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from .case_artifact_repository import CaseArtifactRepository
 from .case_dataset_builder import build_case_dataset
 from .case_models import new_dataset_id
+from .fracture_data_adapter import derive_hydraulic_fractures
 from .input_keyword_registry import (
     KEYWORD_RULES,
     MODULE_FLUID_PVT,
@@ -33,7 +34,7 @@ MODULE_TITLES = {
     MODULE_FLUID_PVT: "流体与 PVT",
     MODULE_INITIAL_CONDITIONS: "初始状态",
     MODULE_WELL_PRODUCTION: "井与生产控制",
-    MODULE_SOLVER_OUTPUT: "求解与输出控制",
+    MODULE_SOLVER_OUTPUT: "模拟时间控制",
 }
 
 BASE_REQUIRED_FIELDS = {
@@ -133,8 +134,16 @@ class ModuleDatasetService:
                     fracture_values, "natural_fractures")):
             errors.append("裂缝系统缺少天然裂缝数据。")
         if (config.get("enable_hydraulic_fractures")
-                and not (fracture_values.get("hydraulic_fractures") or [])):
+                and not self._hydraulic_rows()):
             errors.append("裂缝系统缺少人工裂缝参数。")
+        explicit_hydraulic = self._explicit_hydraulic_rows()
+        linked_hydraulic = self._well_hydraulic_rows()
+        if (explicit_hydraulic and linked_hydraulic
+                and _hydraulic_signature(explicit_hydraulic)
+                != _hydraulic_signature(linked_hydraulic)):
+            warnings.append(
+                "裂缝模块导入的人工裂缝与井数据不一致，"
+                "Dataset 将优先使用裂缝模块数据。")
 
         for module_key, state in states.items():
             if state is None:
@@ -166,10 +175,15 @@ class ModuleDatasetService:
             sections = self._compose_sections()
             _write_case_snapshot(snapshot_path, sections)
             overrides = self._business_overrides()
+            model_config = dict(self.project_state.model_config or {})
+            hydraulic = overrides.get("hydraulic_fractures") or {}
+            if int(hydraulic.get("count") or 0) > 0:
+                # 人工裂缝现在由井完井数据决定，不再依赖已从界面移除的旧开关。
+                model_config["enable_hydraulic_fractures"] = True
             result = build_case_dataset(
                 snapshot_path,
                 output_dir,
-                model_config=self.project_state.model_config,
+                model_config=model_config,
                 business_overrides=overrides,
             )
         except (OSError, TypeError, ValueError) as exc:
@@ -299,11 +313,7 @@ class ModuleDatasetService:
         return overrides
 
     def _hydraulic_override(self):
-        state = self.project_state.get_module_input_state(
-            MODULE_FRACTURE_SYSTEM)
-        rows = (
-            state.parsed_data.values.get("hydraulic_fractures") or []
-            if state is not None else [])
+        rows = self._hydraulic_rows()
         if not rows:
             return {}
         numeric = {
@@ -333,6 +343,44 @@ class ModuleDatasetService:
             "center_z": _mean(numeric["center_z"], -1.0),
             "records": copy.deepcopy(rows),
         }
+
+    def _hydraulic_rows(self):
+        rows = self._explicit_hydraulic_rows()
+        if rows:
+            return rows
+        return self._well_hydraulic_rows()
+
+    def _explicit_hydraulic_rows(self):
+        state = self.project_state.get_module_input_state(
+            MODULE_FRACTURE_SYSTEM)
+        return (
+            state.parsed_data.values.get("hydraulic_fractures") or []
+            if state is not None else [])
+
+    def _well_hydraulic_rows(self):
+        well_state = self.project_state.get_module_input_state(
+            MODULE_WELL_PRODUCTION)
+        if well_state is not None:
+            return derive_hydraulic_fractures(
+                well_state.parsed_data.values)
+        return []
+
+
+def _hydraulic_signature(rows):
+    signature = [
+        (
+            str(row.get("well_name") or "").strip(),
+            str(row.get("fracture_id") or row.get("comp_id") or "").strip(),
+            *(
+                _finite_float(row.get(key))
+                for key in (
+                    "center_x", "center_y", "center_z", "length", "height",
+                    "aperture", "perm", "conductivity")
+            ),
+        )
+        for row in rows if isinstance(row, dict)
+    ]
+    return tuple(sorted(signature, key=lambda item: (item[0], item[1])))
 
 
 def _has_business_value(values, key):

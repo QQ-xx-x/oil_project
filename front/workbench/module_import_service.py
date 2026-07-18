@@ -205,7 +205,7 @@ class ModuleImportService:
                 continue
             try:
                 dfn = parse_dfn(resolved_paths[rule])
-                parsed_values[rule.parsed_key] = _dfn_business_data(dfn)
+                parsed_values[rule.parsed_key] = natural_fracture_business_data(dfn)
             except Exception:
                 errors.append(f"{rule.title}解析失败。")
 
@@ -722,7 +722,9 @@ def _grid_bbox(coord, zcorn):
     return [x_min, y_min, z_min], [x_max, y_max, z_max]
 
 
-def _dfn_business_data(dfn):
+def natural_fracture_business_data(dfn):
+    """把 DFN 解析结果转换为裂缝界面使用的业务结构。"""
+
     data = dict(dfn or {})
     fractures = list(data.get("fractures") or [])
     data["summary"] = {

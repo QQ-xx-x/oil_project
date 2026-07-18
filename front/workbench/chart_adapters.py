@@ -52,13 +52,25 @@ def build_relative_permeability_data(project_state):
 def build_gas_pvt_curve_data(project_state):
     """根据当前工作台输入构建气体 PVT 偏差因子曲线。"""
     params = project_state.get_module_values("gas_pvt")
+    return build_gas_pvt_curve_from_values(params)
 
-    gas_t_c = _float(params.get("gas_t_C", 140.0), "gas_t_C")
+
+def build_gas_pvt_curve_from_values(params):
+    """根据流体模块业务值构建气体 PVT 偏差因子曲线。"""
+
+    params = params or {}
+    gas_t_c = _float(
+        params.get("temperature_c", params.get("gas_t_C", 140.0)),
+        "temperature_c")
     gas_mg = _float(params.get("gas_Mg", 16.04), "gas_Mg")
     gas_tc = _float(params.get("gas_Tc", 190.58), "gas_Tc")
     gas_pc_bar = _float(params.get("gas_Pc_bar", 45.44), "gas_Pc_bar")
-    p_min = _float(params.get("gas_table_Pmin_bar", 1.0), "gas_table_Pmin_bar")
-    p_max = _float(params.get("gas_table_Pmax_bar", 1000.0), "gas_table_Pmax_bar")
+    p_min = _float(
+        params.get("gas_table_pmin_bar", params.get("gas_table_Pmin_bar", 1.0)),
+        "gas_table_pmin_bar")
+    p_max = _float(
+        params.get("gas_table_pmax_bar", params.get("gas_table_Pmax_bar", 1000.0)),
+        "gas_table_pmax_bar")
     requested_n = int(params.get("gas_table_n", 2000))
 
     gas_t_k = gas_t_c + 273.15

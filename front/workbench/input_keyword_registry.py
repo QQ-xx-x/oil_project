@@ -202,7 +202,7 @@ MODULE_SPECS = (
     ),
     ModuleSpec(
         MODULE_SOLVER_OUTPUT,
-        "求解与输出控制",
+        "模拟时间控制",
         groups=(BusinessGroupSpec("time_control", "时间控制"),),
     ),
     ModuleSpec(
@@ -645,9 +645,8 @@ DISPLAY_FIELD_RULES = (
     _display(MODULE_FRACTURE_SYSTEM, "fracture_kz_summary", "等效裂缝 Kz",
              "fracture_kz.summary", "等效裂缝属性", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS, unit="mD"),
-    _display(MODULE_FRACTURE_SYSTEM, "hydraulic_fractures", "人工裂缝参数",
-             "hydraulic_fractures", "人工裂缝", WIDGET_TABLE, editable=True,
-             visible_when="enable_hydraulic_fractures",
+    _display(MODULE_FRACTURE_SYSTEM, "hydraulic_fractures", "人工裂缝",
+             "hydraulic_fractures", "人工裂缝", WIDGET_TABLE, editable=False,
              columns=(("fracture_id", "裂缝ID"), ("well_name", "井名"),
                       ("stage", "压裂段"), ("center_x", "中心X"),
                       ("center_y", "中心Y"), ("center_z", "中心Z"),
@@ -701,7 +700,8 @@ DISPLAY_FIELD_RULES = (
 
     # 初始状态。
     _display(MODULE_INITIAL_CONDITIONS, "initial_pressure", "初始压力",
-             "pressure", "初始压力", WIDGET_NUMBER, editable=True),
+             "pressure", "初始压力", WIDGET_NUMBER, editable=True,
+             unit="bar"),
     _display(MODULE_INITIAL_CONDITIONS, "initial_sw", "初始含水饱和度",
              "sw", "初始饱和度", WIDGET_NUMBER, editable=True),
     _display(MODULE_INITIAL_CONDITIONS, "initial_sg", "初始含气饱和度",
@@ -733,13 +733,13 @@ DISPLAY_FIELD_RULES = (
     # 求解器拥有更多已导入值，但普通对话框仅公开
     # 四个已确认的时间控制参数。
     _display(MODULE_SOLVER_OUTPUT, "total_time", "总模拟时间", "total_time",
-             "时间控制", WIDGET_NUMBER, editable=True),
+             "时间控制", WIDGET_NUMBER, editable=True, unit="day"),
     _display(MODULE_SOLVER_OUTPUT, "dt_init", "初始时间步", "dt_init",
-             "时间控制", WIDGET_NUMBER, editable=True),
+             "时间控制", WIDGET_NUMBER, editable=True, unit="day"),
     _display(MODULE_SOLVER_OUTPUT, "dt_min", "最小时间步", "dt_min",
-             "时间控制", WIDGET_NUMBER, editable=True),
+             "时间控制", WIDGET_NUMBER, editable=True, unit="day"),
     _display(MODULE_SOLVER_OUTPUT, "dt_max", "最大时间步", "dt_max",
-             "时间控制", WIDGET_NUMBER, editable=True),
+             "时间控制", WIDGET_NUMBER, editable=True, unit="day"),
 )
 
 

@@ -2,17 +2,23 @@
 """普通业务输入模块使用的统一注册表驱动对话框。"""
 
 import copy
+import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
-    QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .input_keyword_registry import (
+    MODULE_FRACTURE_SYSTEM,
+    MODULE_FLUID_PVT,
     MODULE_GRID_SPATIAL,
+    MODULE_INITIAL_CONDITIONS,
     MODULE_ROCK_PROPERTIES,
+    MODULE_SOLVER_OUTPUT,
+    MODULE_WELL_PRODUCTION,
     MODULE_SPEC_BY_KEY,
     WIDGET_BOOLEAN,
     WIDGET_CHOICE,
@@ -24,15 +30,34 @@ from .input_keyword_registry import (
     WIDGET_TABLE,
     display_fields_for_module,
 )
+from .fluid_pvt_widgets import (
+    BasicFluidParametersPage,
+    GasCompositionPage,
+    PVTTablePage,
+)
+from .fracture_system_widgets import (
+    HydraulicFracturePage,
+    NaturalFracturePage,
+)
 from .grid_spatial_widgets import (
     GridOverviewPage,
     GridPropertyStatisticsPage,
 )
 from .module_import_service import (
     ModuleImportService,
+    natural_fracture_business_data,
     normalize_module_business_data,
     validate_module_business_data,
 )
+from .initial_state_widgets import (
+    InitialPressurePage,
+    InitialSaturationPage,
+)
+from .well_production_widgets import (
+    CompletionControlPage,
+    WellTrajectoryPage,
+)
+from .solver_time_widgets import SimulationTimeControlPage
 from .module_input_models import ModuleInputState, ModuleParsedData
 from .module_input_widgets import (
     BusinessScalarEditor,
@@ -45,6 +70,8 @@ from .rock_physics_widgets import (
     RockEmptyStatePage,
     RockRelativePermeabilityPage,
 )
+from .fracture_data_adapter import derive_hydraulic_fractures
+from ..uniform_parser import parse_dfn, parse_wells
 
 
 SCALAR_WIDGETS = frozenset((
@@ -54,6 +81,18 @@ SCALAR_WIDGETS = frozenset((
     WIDGET_CHOICE,
     WIDGET_DERIVED,
 ))
+
+COMPACT_MODULES = frozenset((
+    MODULE_GRID_SPATIAL,
+    MODULE_ROCK_PROPERTIES,
+    MODULE_FRACTURE_SYSTEM,
+    MODULE_FLUID_PVT,
+    MODULE_INITIAL_CONDITIONS,
+    MODULE_SOLVER_OUTPUT,
+    MODULE_WELL_PRODUCTION,
+))
+
+SINGLE_PAGE_MODULES = frozenset((MODULE_SOLVER_OUTPUT,))
 
 
 class ModuleInputDialog(QDialog):
@@ -89,7 +128,30 @@ class ModuleInputDialog(QDialog):
 
         self.setObjectName("moduleInputDialog")
         self.setWindowTitle(f"{self.module_spec.title} - 参数设置")
-        self.resize(980, 680)
+        if self.module_key == MODULE_SOLVER_OUTPUT:
+            screen = QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen is not None else None
+            preferred_width, preferred_height = 900, 600
+            width = min(preferred_width, available.width() - 50) if available else preferred_width
+            height = min(preferred_height, available.height() - 60) if available else preferred_height
+            self.resize(max(760, width), max(520, height))
+        elif self.module_key in {
+                MODULE_FRACTURE_SYSTEM,
+                MODULE_FLUID_PVT,
+                MODULE_WELL_PRODUCTION}:
+            screen = QApplication.primaryScreen()
+            available = screen.availableGeometry() if screen is not None else None
+            preferred_sizes = {
+                MODULE_FRACTURE_SYSTEM: (1180, 980),
+                MODULE_FLUID_PVT: (1080, 820),
+                MODULE_WELL_PRODUCTION: (1120, 800),
+            }
+            preferred_width, preferred_height = preferred_sizes[self.module_key]
+            width = min(preferred_width, available.width() - 50) if available else preferred_width
+            height = min(preferred_height, available.height() - 60) if available else preferred_height
+            self.resize(max(760, width), max(720, height))
+        else:
+            self.resize(980, 680)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -99,8 +161,7 @@ class ModuleInputDialog(QDialog):
         splitter = QSplitter(Qt.Horizontal)
         self.nav = QListWidget()
         self.nav.setObjectName("moduleInputNav")
-        if self.module_key in {
-                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}:
+        if self.module_key in COMPACT_MODULES:
             self.nav.setMinimumWidth(112)
             self.nav.setMaximumWidth(140)
         else:
@@ -108,13 +169,16 @@ class ModuleInputDialog(QDialog):
             self.nav.setMaximumWidth(230)
         self.nav.currentRowChanged.connect(self._show_page)
         splitter.addWidget(self.nav)
+        if self.module_key in SINGLE_PAGE_MODULES:
+            self.nav.hide()
 
         self.stack = QStackedWidget()
         splitter.addWidget(self.stack)
         splitter.setSizes(
-            [125, 825]
-            if self.module_key in {
-                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}
+            [0, 950]
+            if self.module_key in SINGLE_PAGE_MODULES
+            else [125, 825]
+            if self.module_key in COMPACT_MODULES
             else [190, 760])
         root.addWidget(splitter, 1)
 
@@ -145,15 +209,13 @@ class ModuleInputDialog(QDialog):
         toolbar = QHBoxLayout()
         self.import_button = QPushButton(
             "导入"
-            if self.module_key in {
-                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}
+            if self.module_key in COMPACT_MODULES
             else "导入模块数据")
         self.import_button.setObjectName("importModuleDataButton")
         self.import_status = QLabel("")
         self.import_status.setObjectName("parameterDescription")
         self.import_button.clicked.connect(self._import_module_data)
-        if self.module_key in {
-                MODULE_GRID_SPATIAL, MODULE_ROCK_PROPERTIES}:
+        if self.module_key in COMPACT_MODULES:
             toolbar.addWidget(title)
             toolbar.addStretch()
             toolbar.addWidget(self.import_status)
@@ -194,6 +256,47 @@ class ModuleInputDialog(QDialog):
                     and group.key in {"fine_analysis", "sensitivity"}):
                 page = RockEmptyStatePage(
                     group.title, page_fields, self)
+            elif (self.module_key == MODULE_FRACTURE_SYSTEM
+                    and group.key == "natural_fractures"):
+                page = NaturalFracturePage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_FRACTURE_SYSTEM
+                    and group.key == "hydraulic_fractures"):
+                page = HydraulicFracturePage(
+                    group.title, page_fields,
+                    project_state=self.project_state, parent=self)
+            elif (self.module_key == MODULE_FLUID_PVT
+                    and group.key == "base_fluid_parameters"):
+                page = BasicFluidParametersPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_FLUID_PVT
+                    and group.key == "gas_components"):
+                page = GasCompositionPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_FLUID_PVT
+                    and group.key == "pvt_table"):
+                page = PVTTablePage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_INITIAL_CONDITIONS
+                    and group.key == "initial_pressure"):
+                page = InitialPressurePage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_INITIAL_CONDITIONS
+                    and group.key == "initial_saturation"):
+                page = InitialSaturationPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_WELL_PRODUCTION
+                    and group.key == "well_trajectory"):
+                page = WellTrajectoryPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_WELL_PRODUCTION
+                    and group.key == "completion_control"):
+                page = CompletionControlPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_SOLVER_OUTPUT
+                    and group.key == "time_control"):
+                page = SimulationTimeControlPage(
+                    group.title, page_fields, self)
             else:
                 page = ModuleGroupPage(group.title, page_fields, self)
             page.values_changed.connect(self._mark_draft_changed)
@@ -207,6 +310,9 @@ class ModuleInputDialog(QDialog):
     def _show_page(self, index):
         if 0 <= index < self.stack.count():
             self.stack.setCurrentIndex(index)
+            page = self.stack.widget(index)
+            if isinstance(page, HydraulicFracturePage):
+                page.refresh_from_project_state()
 
     def _mark_draft_changed(self):
         self.import_status.setText("存在尚未应用的修改")
@@ -220,6 +326,16 @@ class ModuleInputDialog(QDialog):
             page.refresh_derived(preview, self.module_key)
 
     def _import_module_data(self):
+        current_group = self._current_group_key()
+        if (self.module_key == MODULE_FRACTURE_SYSTEM
+                and current_group == "natural_fractures"):
+            self._import_natural_fractures()
+            return
+        if (self.module_key == MODULE_FRACTURE_SYSTEM
+                and current_group == "hydraulic_fractures"):
+            self._import_hydraulic_fractures()
+            return
+
         path, _ = QFileDialog.getOpenFileName(
             self,
             "选择模块数据",
@@ -240,6 +356,98 @@ class ModuleInputDialog(QDialog):
         self._refresh_from_working_state()
         count = result.state.validation.get("imported_value_count", 0)
         self.import_status.setText(f"已读取 {count} 项业务输入，等待应用")
+
+    def _current_group_key(self):
+        item = self.nav.currentItem()
+        return str(item.data(Qt.UserRole) or "") if item is not None else ""
+
+    def _import_natural_fractures(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择天然裂缝 DFN 数据",
+            "",
+            "DFN 数据 (*.txt *.dfn);;所有文件 (*)",
+        )
+        if not path:
+            return
+        try:
+            natural = natural_fracture_business_data(parse_dfn(path))
+        except (OSError, TypeError, ValueError):
+            QMessageBox.warning(
+                self, "导入失败", "天然裂缝数据解析失败，请检查 DFN 文件内容。")
+            return
+        if not (natural.get("fractures") or []):
+            QMessageBox.warning(
+                self, "导入失败", "所选文件中没有解析到天然裂缝数据。")
+            return
+        self._set_direct_import_value(
+            "natural_fractures", natural,
+            {"dfn_file": os.path.abspath(path)},
+        )
+        self.import_status.setText(
+            f"已读取 {len(natural.get('fractures') or [])} 条天然裂缝，等待应用")
+
+    def _import_hydraulic_fractures(self):
+        completion_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择人工裂缝完井数据",
+            "",
+            "完井数据 (*.csv);;所有文件 (*)",
+        )
+        if not completion_path:
+            return
+
+        track_path = os.path.join(
+            os.path.dirname(os.path.abspath(completion_path)),
+            "well_tracks.csv",
+        )
+        if not os.path.isfile(track_path):
+            track_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择配套井轨迹数据",
+                os.path.dirname(os.path.abspath(completion_path)),
+                "井轨迹数据 (*.csv);;所有文件 (*)",
+            )
+        if not track_path:
+            return
+
+        try:
+            parsed_wells = parse_wells(track_path, completion_path)
+            records = derive_hydraulic_fractures(parsed_wells)
+        except (OSError, TypeError, ValueError):
+            QMessageBox.warning(
+                self, "导入失败",
+                "人工裂缝数据解析失败，请检查完井文件及配套井轨迹文件。")
+            return
+        if not records:
+            QMessageBox.warning(
+                self, "导入失败",
+                "完井数据中没有带完整几何信息的人工裂缝 PERF 记录。")
+            return
+
+        self._set_direct_import_value(
+            "hydraulic_fractures", records,
+            {
+                "well_completions": os.path.abspath(completion_path),
+                "well_tracks": os.path.abspath(track_path),
+            },
+        )
+        self.import_status.setText(
+            f"已读取 {len(records)} 条人工裂缝，等待应用")
+
+    def _set_direct_import_value(self, key, value, source):
+        self._working_values[key] = copy.deepcopy(value)
+        validation = validate_module_business_data(
+            self.module_key, self._working_values)
+        current_validation = dict(self._working_state.validation or {})
+        current_validation.update(validation)
+        self._working_state.validation = current_validation
+        current_source = dict(self._working_state.source or {})
+        direct_imports = dict(current_source.get("direct_imports") or {})
+        direct_imports[key] = copy.deepcopy(source)
+        current_source["direct_imports"] = direct_imports
+        self._working_state.source = current_source
+        self._refresh_from_working_state()
 
     def _refresh_from_working_state(self):
         for page in self._pages:
