@@ -132,6 +132,16 @@ class GridOverviewPage(QWidget):
                 self._controls[key] = self.coordinate_range
 
         content.addWidget(self._card_section("数据规模", self.DATA_FIELDS))
+        self.property_statistics = None
+        property_fields = tuple(
+            field for field in self.fields
+            if field.key.startswith("matrix_") and field.key.endswith("_summary")
+        )
+        if property_fields:
+            self.property_statistics = GridPropertyStatisticsTable()
+            content.addWidget(self.property_statistics)
+            for field in property_fields:
+                self._controls[field.key] = self.property_statistics
         content.addStretch()
         scroll.setWidget(holder)
         outer.addWidget(scroll)
@@ -155,14 +165,19 @@ class GridOverviewPage(QWidget):
         return group
 
     def set_values(self, values, module_key):
+        property_rows = []
         for field, control in self.bindings:
             value = _value_at(values, field.source_path)
             if field.key == "grid_bbox_min":
                 control.set_boundary(0, value)
             elif field.key == "grid_bbox_max":
                 control.set_boundary(1, value)
+            elif control is self.property_statistics:
+                property_rows.append((field.title, field.unit, value))
             else:
                 control.set_value(value)
+        if self.property_statistics is not None:
+            self.property_statistics.set_rows(property_rows)
 
     def collect_values(self, values):
         return None

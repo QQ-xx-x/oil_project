@@ -11,6 +11,7 @@ from .module_input_models import ModuleInputState
 
 MODEL_TYPE_NORMAL = "normal"
 MODEL_TYPE_WR = "wr"
+GRID_TYPE_CARTESIAN = "cartesian"
 GRID_TYPE_CORNER_POINT = "corner_point"
 WR_INPUT_MODE_FILE = "file"
 WR_INPUT_MODE_CONSTANT = "constant"
@@ -57,6 +58,9 @@ def default_model_config():
         "schema_version": 1,
         "model_type": MODEL_TYPE_NORMAL,
         "grid_type": GRID_TYPE_CORNER_POINT,
+        "grid_nx": 50,
+        "grid_ny": 25,
+        "grid_nz": 3,
         "enable_lgr": True,
         "lgr_d_threshold": 5.05,
         "lgr_nrx": 2,
@@ -86,7 +90,10 @@ def normalize_model_config(config=None, legacy_refinement=None):
 
     if normalized["model_type"] not in {MODEL_TYPE_NORMAL, MODEL_TYPE_WR}:
         normalized["model_type"] = MODEL_TYPE_NORMAL
-    if normalized["grid_type"] != GRID_TYPE_CORNER_POINT:
+    if normalized["grid_type"] not in {
+        GRID_TYPE_CARTESIAN,
+        GRID_TYPE_CORNER_POINT,
+    }:
         normalized["grid_type"] = GRID_TYPE_CORNER_POINT
     if normalized["wr_input_mode"] not in {
         WR_INPUT_MODE_FILE,
@@ -113,6 +120,14 @@ def normalize_model_config(config=None, legacy_refinement=None):
             normalized[key] = max(1, int(normalized.get(key, 2)))
         except (TypeError, ValueError):
             normalized[key] = 2
+    for key, default in (
+            ("grid_nx", 50),
+            ("grid_ny", 25),
+            ("grid_nz", 3)):
+        try:
+            normalized[key] = max(1, int(normalized.get(key, default)))
+        except (TypeError, ValueError):
+            normalized[key] = default
     normalized["schema_version"] = int(normalized.get("schema_version") or 1)
     return normalized
 

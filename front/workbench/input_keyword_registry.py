@@ -152,8 +152,8 @@ MODULE_SPECS = (
         MODULE_GRID_SPATIAL,
         "网格与空间数据",
         groups=(
+            BusinessGroupSpec("geometry", "几何信息"),
             BusinessGroupSpec("grid_properties", "网格属性"),
-            BusinessGroupSpec("porosity_permeability", "孔隙度与渗透率"),
         ),
     ),
     ModuleSpec(
@@ -202,7 +202,7 @@ MODULE_SPECS = (
     ),
     ModuleSpec(
         MODULE_SOLVER_OUTPUT,
-        "模拟时间控制",
+        "模拟控制",
         groups=(BusinessGroupSpec("time_control", "时间控制"),),
     ),
     ModuleSpec(
@@ -307,6 +307,15 @@ KEYWORD_RULES = (
     # 细部分析和敏感性关键字。
     _rule("FLUID", "n", MODULE_ROCK_PROPERTIES, "相渗指数 n", "float"),
     _rule(
+        "FLUID", "Swi", MODULE_ROCK_PROPERTIES,
+        "束缚水饱和度 Swi", "float",
+    ),
+    # 内部历史关键字仍为 Sgc，但气水模型中的物理含义及 UI 名称为 Sgr。
+    _rule(
+        "FLUID", "Sgc", MODULE_ROCK_PROPERTIES,
+        "残余气饱和度 Sgr", "float", parsed_key="sgc",
+    ),
+    _rule(
         "WR", "sigma_file", MODULE_ROCK_PROPERTIES, "形状因子 sigma", "path",
         parser_kind=PARSER_PROPERTY_ARRAY, parsed_key="shape_factor",
         requirement=REQUIREMENT_CONDITIONAL,
@@ -351,15 +360,13 @@ KEYWORD_RULES = (
         required_when=("model_type=wr", "wr_input_mode=file"),
     ),
 
-    # 流体和 PVT。FLUID.n 刻意归属 rock_properties。
+    # 流体和 PVT。油相字段仅为旧输入兼容保留，不再显示为业务参数。
     _rule("FLUID", "mu_w", MODULE_FLUID_PVT, "水相黏度 mu_w", "float"),
     _rule("FLUID", "mu_o", MODULE_FLUID_PVT, "油相黏度 mu_o", "float"),
     _rule("FLUID", "cw", MODULE_FLUID_PVT, "水相压缩系数 cw", "float"),
     _rule("FLUID", "co", MODULE_FLUID_PVT, "油相压缩系数 co", "float"),
     _rule("FLUID", "p_ref", MODULE_FLUID_PVT, "参考压力 p_ref", "float"),
-    _rule("FLUID", "Swi", MODULE_FLUID_PVT, "束缚水饱和度 Swi", "float"),
     _rule("FLUID", "Sor", MODULE_FLUID_PVT, "残余油饱和度 Sor", "float"),
-    _rule("FLUID", "Sgc", MODULE_FLUID_PVT, "临界气饱和度 Sgc", "float"),
     _rule("GAS", "temperature_C", MODULE_FLUID_PVT, "气藏温度", "float"),
     _rule(
         "GAS", "mole_CH4", MODULE_FLUID_PVT, "CH4 摩尔分数", "float",
@@ -478,7 +485,16 @@ MODEL_CONFIG_FIELD_RULES = (
     ),
     ModelConfigFieldRule(
         "grid_type", "网格类型", "choice", "corner_point",
-        visible=False, editable=False, choices=("corner_point",),
+        choices=("cartesian", "corner_point"),
+    ),
+    ModelConfigFieldRule(
+        "grid_nx", "X 方向网格数 Nx", "int", 50,
+    ),
+    ModelConfigFieldRule(
+        "grid_ny", "Y 方向网格数 Ny", "int", 25,
+    ),
+    ModelConfigFieldRule(
+        "grid_nz", "Z 方向网格数 Nz", "int", 3,
     ),
     ModelConfigFieldRule(
         "enable_lgr", "LGR 加密模型", "bool", True,
@@ -588,20 +604,25 @@ DISPLAY_FIELD_RULES = (
     _display(MODULE_GRID_SPATIAL, "actnum_value_count", "ACTNUM 数值数量",
              "grid.actnum_value_count", "网格属性", WIDGET_INTEGER),
     _display(MODULE_GRID_SPATIAL, "matrix_phi_summary", "基质孔隙度",
-             "matrix_phi.summary", "孔隙度与渗透率", WIDGET_SUMMARY_TABLE,
+             "matrix_phi.summary", "网格属性", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS),
     _display(MODULE_GRID_SPATIAL, "matrix_kx_summary", "基质 Kx",
-             "matrix_kx.summary", "孔隙度与渗透率", WIDGET_SUMMARY_TABLE,
+             "matrix_kx.summary", "网格属性", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS, unit="mD"),
     _display(MODULE_GRID_SPATIAL, "matrix_ky_summary", "基质 Ky",
-             "matrix_ky.summary", "孔隙度与渗透率", WIDGET_SUMMARY_TABLE,
+             "matrix_ky.summary", "网格属性", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS, unit="mD"),
     _display(MODULE_GRID_SPATIAL, "matrix_kz_summary", "基质 Kz",
-             "matrix_kz.summary", "孔隙度与渗透率", WIDGET_SUMMARY_TABLE,
+             "matrix_kz.summary", "网格属性", WIDGET_SUMMARY_TABLE,
              columns=PROPERTY_SUMMARY_COLUMNS, unit="mD"),
 
     # 岩石属性。
     _display(MODULE_ROCK_PROPERTIES, "relperm_exponent_n", "相渗指数 n", "n",
+             "相渗指数", WIDGET_NUMBER, editable=True),
+    _display(MODULE_ROCK_PROPERTIES, "swi", "束缚水饱和度 Swi", "swi",
+             "相渗指数", WIDGET_NUMBER, editable=True),
+    # source_path 保留为 sgc，仅修正界面对该端点的物理命名。
+    _display(MODULE_ROCK_PROPERTIES, "sgc", "残余气饱和度 Sgr", "sgc",
              "相渗指数", WIDGET_NUMBER, editable=True),
     _display(MODULE_ROCK_PROPERTIES, "shape_factor_summary", "形状因子",
              "shape_factor.summary", "形状因子", WIDGET_SUMMARY_TABLE,
@@ -657,19 +678,9 @@ DISPLAY_FIELD_RULES = (
     # 流体和 PVT 标量内容。
     _display(MODULE_FLUID_PVT, "mu_w", "水相黏度", "mu_w",
              "基础流体参数", WIDGET_NUMBER, editable=True, unit="cP"),
-    _display(MODULE_FLUID_PVT, "mu_o", "油相黏度", "mu_o",
-             "基础流体参数", WIDGET_NUMBER, editable=True, unit="cP"),
     _display(MODULE_FLUID_PVT, "cw", "水相压缩系数", "cw",
              "基础流体参数", WIDGET_NUMBER, editable=True),
-    _display(MODULE_FLUID_PVT, "co", "油相压缩系数", "co",
-             "基础流体参数", WIDGET_NUMBER, editable=True),
     _display(MODULE_FLUID_PVT, "p_ref", "参考压力", "p_ref",
-             "基础流体参数", WIDGET_NUMBER, editable=True),
-    _display(MODULE_FLUID_PVT, "swi", "束缚水饱和度", "swi",
-             "基础流体参数", WIDGET_NUMBER, editable=True),
-    _display(MODULE_FLUID_PVT, "sor", "残余油饱和度", "sor",
-             "基础流体参数", WIDGET_NUMBER, editable=True),
-    _display(MODULE_FLUID_PVT, "sgc", "临界气饱和度", "sgc",
              "基础流体参数", WIDGET_NUMBER, editable=True),
     _display(MODULE_FLUID_PVT, "temperature_c", "气藏温度", "temperature_c",
              "气体组分", WIDGET_NUMBER, editable=True, unit="°C"),
@@ -706,8 +717,6 @@ DISPLAY_FIELD_RULES = (
              "sw", "初始饱和度", WIDGET_NUMBER, editable=True),
     _display(MODULE_INITIAL_CONDITIONS, "initial_sg", "初始含气饱和度",
              "sg", "初始饱和度", WIDGET_NUMBER, editable=True),
-    _display(MODULE_INITIAL_CONDITIONS, "initial_so", "初始含油饱和度",
-             "derived.so", "初始饱和度", WIDGET_DERIVED),
 
     # 使用已解析的井数据，而不是两个源定位字段。
     _display(MODULE_WELL_PRODUCTION, "well_summary", "井概况", "wells.summary",

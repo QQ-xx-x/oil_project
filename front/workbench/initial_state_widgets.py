@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""初始状态模块的专用压力与三相饱和度页面。"""
+"""初始状态模块的专用压力与气水两相饱和度页面。"""
 
 import copy
 import math
@@ -62,12 +62,11 @@ class InitialParameterCard(QFrame):
 
 
 class SaturationBar(QWidget):
-    """按水、气、油三相比例绘制的紧凑水平条。"""
+    """按水、气两相比例绘制的紧凑水平条。"""
 
     COLORS = (
         QColor("#4f8fcf"),
         QColor("#d5a63b"),
-        QColor("#55a472"),
     )
 
     def __init__(self, parent=None):
@@ -76,8 +75,8 @@ class SaturationBar(QWidget):
         self.setMinimumHeight(38)
         self.setMaximumHeight(46)
 
-    def set_values(self, sw, sg, so):
-        values = (sw, sg, so)
+    def set_values(self, sw, sg):
+        values = (sw, sg)
         valid = all(
             isinstance(value, (int, float)) and math.isfinite(value)
             and value >= 0.0 for value in values)
@@ -175,7 +174,7 @@ class InitialPressurePage(_InitialEditablePage):
 
 
 class InitialSaturationPage(_InitialEditablePage):
-    """带派生油相、比例条和实时状态的初始饱和度页面。"""
+    """带气水比例条和实时状态的初始饱和度页面。"""
 
     def __init__(self, title, fields=(), parent=None):
         super().__init__(title, fields, parent)
@@ -189,7 +188,7 @@ class InitialSaturationPage(_InitialEditablePage):
         title_label.setObjectName("parameterTitle")
         outer.addWidget(title_label)
 
-        section = QGroupBox("三相饱和度")
+        section = QGroupBox("气水两相饱和度")
         section.setObjectName("initialSection")
         section_layout = QHBoxLayout(section)
         section_layout.setContentsMargins(14, 18, 14, 14)
@@ -197,7 +196,6 @@ class InitialSaturationPage(_InitialEditablePage):
         definitions = (
             ("initial_sw", "初始含水饱和度 Sw"),
             ("initial_sg", "初始含气饱和度 Sg"),
-            ("initial_so", "初始含油饱和度 So"),
         )
         for key, label in definitions:
             field = self._field_by_key[key]
@@ -225,8 +223,7 @@ class InitialSaturationPage(_InitialEditablePage):
         self.legend_labels = {}
         for key, title, color in (
                 ("sw", "水相", "#4f8fcf"),
-                ("sg", "气相", "#d5a63b"),
-                ("so", "油相", "#55a472")):
+                ("sg", "气相", "#d5a63b")):
             label = QLabel(f"● {title} —")
             label.setObjectName("saturationLegend")
             label.setStyleSheet(f"color: {color};")
@@ -268,29 +265,31 @@ class InitialSaturationPage(_InitialEditablePage):
         sw = _number_or_none(values.get("sw") if isinstance(values, dict) else None)
         sg = _number_or_none(values.get("sg") if isinstance(values, dict) else None)
         if sw is None or sg is None:
-            self._show_saturation(None, None, None, "empty")
+            self._show_saturation(None, None, "empty")
             return
-        so = 1.0 - sw - sg
-        valid = 0.0 <= sw <= 1.0 and 0.0 <= sg <= 1.0 and so >= -1e-9
+        valid = (
+            0.0 <= sw <= 1.0
+            and 0.0 <= sg <= 1.0
+            and math.isclose(sw + sg, 1.0, rel_tol=0.0, abs_tol=1e-9)
+        )
         if not valid:
-            self._show_saturation(sw, sg, None, "error")
+            self._show_saturation(sw, sg, "error")
             return
-        so = max(0.0, so)
-        self._show_saturation(sw, sg, so, "success")
+        self._show_saturation(sw, sg, "success")
 
-    def _show_saturation(self, sw, sg, so, state):
-        self._controls["initial_so"].set_value(so)
-        self.saturation_bar.set_values(sw, sg, so)
-        values = {"sw": sw, "sg": sg, "so": so}
-        titles = {"sw": "水相", "sg": "气相", "so": "油相"}
+    def _show_saturation(self, sw, sg, state):
+        self.saturation_bar.set_values(sw, sg)
+        values = {"sw": sw, "sg": sg}
+        titles = {"sw": "水相", "sg": "气相"}
         for key, label in self.legend_labels.items():
             value = values[key]
             text = "—" if value is None else f"{value * 100:.1f}%"
             label.setText(f"● {titles[key]} {text}")
         if state == "success":
-            self.status.setText("✓ 饱和度总和 1.0000")
+            self.status.setText("✓ 气水饱和度总和 1.0000")
         elif state == "error":
-            self.status.setText("初始饱和度无效：Sw、Sg 应在 0 到 1 之间且 Sw + Sg ≤ 1")
+            self.status.setText(
+                "初始饱和度无效：Sw、Sg 应在 0 到 1 之间且 Sw + Sg = 1")
         else:
             self.status.setText("○ 尚未导入饱和度数据")
         self.status.setProperty("state", state)

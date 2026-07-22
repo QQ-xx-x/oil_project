@@ -120,8 +120,14 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
 
     arrays = {}
     array_summary = {}
+    property_edits = business_overrides.get("property_edits") or {}
     grid_summary = _parse_grid_arrays(
-        files.get(GRID_FILE_KEY), arrays, validation)
+        files.get(GRID_FILE_KEY),
+        arrays,
+        validation,
+        actnum_file=files.get("actnum_file"),
+        actnum_edits=property_edits.get("actnum"),
+    )
     active_mask = arrays.get(MASK_ACTIVE_KEY)
 
     _parse_property_arrays(
@@ -133,6 +139,12 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         null_value,
         validation,
         model_config,
+        grid_shape=(
+            grid_summary.get("nx"),
+            grid_summary.get("ny"),
+            grid_summary.get("nz"),
+        ),
+        property_edits=property_edits,
     )
 
     dfn_payload, dfn_summary = _parse_dfn_payload(files, validation)
@@ -263,7 +275,118 @@ def _collect_file_paths(case_data):
     return files
 
 
-def _parse_grid_arrays(grid_file, arrays, validation):
+def _replay_property_edits(values, records, grid_shape, property_key,
+                           null_value, validation):
+    """Replay persisted UI edits on one I-fast property array."""
+    records = list(records or [])
+    if not records:
+        return values
+    try:
+        nx, ny, nz = (int(value or 0) for value in (grid_shape or (0, 0, 0)))
+    except (TypeError, ValueError):
+        nx = ny = nz = 0
+    expected = nx * ny * nz
+    if not expected or len(values) != expected:
+        _add_error(
+            validation,
+            f"{property_key} 编辑无法应用：属性数量 {len(values)} 与网格维度不一致",
+        )
+        return values
+
+    result = values.copy()
+    allowed = {"set", "add", "subtract", "multiply", "divide"}
+    for index, record in enumerate(records, 1):
+        try:
+            if not isinstance(record, dict):
+                raise ValueError("编辑记录格式无效")
+            operation = str(record.get("operation") or "set")
+            if operation not in allowed:
+                raise ValueError(f"不支持的操作 {operation}")
+            if property_key == "actnum" and operation != "set":
+                raise ValueError("ACTNUM 只支持赋值")
+            value = float(record.get("value", 0.0))
+            if not np.isfinite(value):
+                raise ValueError("操作数不是有效数字")
+            if operation == "divide" and value == 0.0:
+                raise ValueError("除数不能为 0")
+
+            scope = str(record.get("scope") or "all")
+            if scope == "all":
+                bounds = (1, nx, 1, ny, 1, nz)
+            elif scope in {"layer", "box"}:
+                bounds = (
+                    int(record.get("x1", 1)), int(record.get("x2", nx)),
+                    int(record.get("y1", 1)), int(record.get("y2", ny)),
+                    int(record.get("z1", 1)), int(record.get("z2", nz)),
+                )
+            else:
+                raise ValueError(f"不支持的作用范围 {scope}")
+            x1, x2, y1, y2, z1, z2 = bounds
+            if not (1 <= x1 <= x2 <= nx and 1 <= y1 <= y2 <= ny
+                    and 1 <= z1 <= z2 <= nz):
+                raise ValueError("BOX 范围超出网格维度")
+
+            candidate = result.copy()
+            view = candidate.reshape((nz, ny, nx))[
+                z1 - 1:z2, y1 - 1:y2, x1 - 1:x2]
+            source = view.astype(np.float64, copy=True)
+            editable = ~np.isclose(source, float(null_value))
+            if operation == "set":
+                source[editable] = value
+            elif operation == "add":
+                source[editable] += value
+            elif operation == "subtract":
+                source[editable] -= value
+            elif operation == "multiply":
+                source[editable] *= value
+            elif operation == "divide":
+                source[editable] /= value
+
+            changed = source[editable]
+            if not np.all(np.isfinite(changed)):
+                raise ValueError("运算结果包含无效数字")
+            if property_key == "actnum" and not np.all(
+                    np.isin(changed, (0.0, 1.0))):
+                raise ValueError("ACTNUM 只能设置为 0 或 1")
+            if property_key in {"matrix_kx", "matrix_ky", "matrix_kz"} \
+                    and np.any(changed < 0.0):
+                raise ValueError("渗透率不能小于 0")
+            if property_key == "matrix_phi" and (
+                    np.any(changed < 0.0) or np.any(changed > 1.0)):
+                raise ValueError("孔隙度必须位于 0 到 1 之间")
+            view[...] = source.astype(view.dtype, copy=False)
+            result = candidate
+        except (TypeError, ValueError, OverflowError) as exc:
+            _add_error(
+                validation,
+                f"{property_key} 第 {index} 条编辑无法应用: {exc}",
+            )
+            return result
+
+    _set_check(
+        validation,
+        f"{property_key}_property_edits_replayed",
+        True,
+        f"{len(records)} edits",
+    )
+    return result
+
+
+def _normalize_actnum_values(values):
+    """Normalize ACTNUM to int8, treating the project null sentinel as inactive."""
+    numbers = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(numbers)):
+        raise ValueError("ACTNUM 数据中存在无效数值")
+    numbers = numbers.copy()
+    null_mask = np.isclose(numbers, 99999.0)
+    numbers[null_mask] = 0.0
+    if not np.all(np.isin(numbers, (0.0, 1.0))):
+        raise ValueError("ACTNUM 只能包含 0、1 或空值 99999")
+    return numbers.astype(np.int8), int(np.sum(null_mask))
+
+
+def _parse_grid_arrays(grid_file, arrays, validation, actnum_file=None,
+                       actnum_edits=None):
     if not grid_file:
         _add_error(validation, "缺少 grid_file")
         _set_check(validation, "grid_file_exists", False, "缺少 grid_file")
@@ -284,7 +407,46 @@ def _parse_grid_arrays(grid_file, arrays, validation):
 
     coord = np.asarray(grid.get("coord") or [], dtype=np.float64)
     zcorn = np.asarray(grid.get("zcorn") or [], dtype=np.float64)
-    actnum = np.asarray(grid.get("actnum") or [], dtype=np.int8)
+    try:
+        actnum, grid_null_count = _normalize_actnum_values(
+            grid.get("actnum") or [])
+        if grid_null_count:
+            _add_warning(
+                validation,
+                f"grid_file 的 ACTNUM 中 {grid_null_count} 个 99999 已按非活跃网格处理",
+            )
+    except (TypeError, ValueError, OverflowError) as exc:
+        _add_error(validation, f"grid_file 的 ACTNUM 无效: {exc}")
+        actnum = np.asarray([], dtype=np.int8)
+    if actnum_file:
+        if not os.path.exists(actnum_file):
+            _add_error(validation, f"actnum_file 文件不存在: {actnum_file}")
+        else:
+            try:
+                override, null_count = _normalize_actnum_values(
+                    parse_property(actnum_file))
+                actnum = override
+                _set_check(validation, "actnum_override_parse_ok", True, actnum_file)
+                if null_count:
+                    _add_warning(
+                        validation,
+                        f"actnum_file 中 {null_count} 个 99999 已按非活跃网格处理",
+                    )
+            except Exception as exc:
+                _add_error(validation, f"actnum_file 解析失败: {exc}")
+                _set_check(validation, "actnum_override_parse_ok", False, str(exc))
+
+    nx = int(grid.get("nx") or 0)
+    ny = int(grid.get("ny") or 0)
+    nz = int(grid.get("nz") or 0)
+    actnum = _replay_property_edits(
+        actnum,
+        actnum_edits,
+        (nx, ny, nz),
+        "actnum",
+        99999.0,
+        validation,
+    )
     arrays[GRID_ARRAYS["coord"]] = coord
     arrays[GRID_ARRAYS["zcorn"]] = zcorn
     arrays[GRID_ARRAYS["actnum"]] = actnum
@@ -303,9 +465,9 @@ def _parse_grid_arrays(grid_file, arrays, validation):
         f"{len(actnum)} / {total}",
     )
     return {
-        "nx": int(grid.get("nx") or 0),
-        "ny": int(grid.get("ny") or 0),
-        "nz": int(grid.get("nz") or 0),
+        "nx": nx,
+        "ny": ny,
+        "nz": nz,
         "total_cell_count": total,
         "coord_value_count": int(len(coord)),
         "zcorn_value_count": int(len(zcorn)),
@@ -317,7 +479,8 @@ def _parse_grid_arrays(grid_file, arrays, validation):
 
 def _parse_property_arrays(files, arrays, array_summary, active_mask,
                            expected_count, null_value, validation,
-                           model_config=None):
+                           model_config=None, grid_shape=None,
+                           property_edits=None):
     required_file_keys = _required_file_keys(model_config)
     for file_key in required_file_keys:
         if file_key not in files:
@@ -325,6 +488,10 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
 
     all_lengths_match = True
     for file_key, array_key in PROPERTY_ARRAYS.items():
+        # ACTNUM is resolved together with the grid so the active mask always
+        # reflects imported and BOX-edited values.
+        if file_key == "actnum_file":
+            continue
         if not _should_parse_property_file(file_key, model_config):
             continue
         path = files.get(file_key)
@@ -348,6 +515,14 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
         if dtype == np.float64:
             values_array, transform = _apply_property_transform(
                 file_key, values_array, null_value)
+        values_array = _replay_property_edits(
+            values_array,
+            (property_edits or {}).get(array_key),
+            grid_shape,
+            array_key,
+            null_value,
+            validation,
+        )
         arrays[array_key] = values_array
         mask_key = f"{MASK_PREFIX}{array_key}_valid"
         valid_mask = _build_valid_mask(values_array, active_mask, null_value)

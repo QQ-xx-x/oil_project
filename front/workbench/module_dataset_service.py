@@ -34,17 +34,15 @@ MODULE_TITLES = {
     MODULE_FLUID_PVT: "流体与 PVT",
     MODULE_INITIAL_CONDITIONS: "初始状态",
     MODULE_WELL_PRODUCTION: "井与生产控制",
-    MODULE_SOLVER_OUTPUT: "模拟时间控制",
+    MODULE_SOLVER_OUTPUT: "模拟控制",
 }
 
 BASE_REQUIRED_FIELDS = {
     MODULE_GRID_SPATIAL: (
         "grid", "matrix_phi", "matrix_kx", "matrix_ky", "matrix_kz",
     ),
-    MODULE_ROCK_PROPERTIES: ("n",),
-    MODULE_FLUID_PVT: (
-        "mu_w", "mu_o", "cw", "co", "p_ref", "swi", "sor", "sgc",
-    ),
+    MODULE_ROCK_PROPERTIES: ("n", "swi", "sgc"),
+    MODULE_FLUID_PVT: ("mu_w", "cw", "p_ref"),
     MODULE_INITIAL_CONDITIONS: ("pressure", "sw", "sg"),
     MODULE_WELL_PRODUCTION: ("wells",),
     MODULE_SOLVER_OUTPUT: ("total_time", "dt_init", "dt_min", "dt_max"),
@@ -284,6 +282,18 @@ class ModuleDatasetService:
                 continue
             sections.setdefault(rule.section, {})[rule.keyword] = value
 
+        # ACTNUM can be imported independently from the combined grid file.
+        # It is a geometry/property override rather than a required keyword,
+        # so keep it out of the general registry and add it only when present.
+        grid_state = self.project_state.get_module_input_state(
+            MODULE_GRID_SPATIAL)
+        if grid_state is not None:
+            record = ((grid_state.source or {}).get("keywords") or {}).get(
+                "GRID.actnum_file") or {}
+            actnum_path = str(record.get("resolved_path") or "").strip()
+            if actnum_path:
+                sections.setdefault("GRID", {})["actnum_file"] = actnum_path
+
         hydraulic = self._hydraulic_override()
         if hydraulic:
             fracture = sections.setdefault("FRACTURE", {})
@@ -302,6 +312,13 @@ class ModuleDatasetService:
 
     def _business_overrides(self):
         overrides = {}
+        grid_state = self.project_state.get_module_input_state(
+            MODULE_GRID_SPATIAL)
+        if grid_state is not None:
+            property_edits = (
+                grid_state.parsed_data.values.get("property_edits") or {})
+            if property_edits:
+                overrides["property_edits"] = copy.deepcopy(property_edits)
         hydraulic = self._hydraulic_override()
         if hydraulic:
             overrides["hydraulic_fractures"] = hydraulic

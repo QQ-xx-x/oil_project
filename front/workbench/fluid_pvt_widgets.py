@@ -132,7 +132,7 @@ class _EditableFluidPage(QWidget):
 
 
 class BasicFluidParametersPage(_EditableFluidPage):
-    """按水相/油相对比和饱和度端点组织基础流体参数。"""
+    """组织气水模型中的水相基础参数和压力基准。"""
 
     def __init__(self, title, fields=(), parent=None):
         super().__init__(title, fields, parent)
@@ -151,21 +151,19 @@ class BasicFluidParametersPage(_EditableFluidPage):
         grid.setContentsMargins(14, 18, 14, 14)
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(9)
-        for column, text in enumerate(("参数", "水相", "油相")):
+        for column, text in enumerate(("参数", "水相")):
             label = QLabel(text)
             label.setObjectName("fluidTableHeader")
             label.setAlignment(Qt.AlignCenter)
             grid.addWidget(label, 0, column)
-        for row, (label_text, water_key, oil_key) in enumerate((
-                ("黏度", "mu_w", "mu_o"),
-                ("压缩系数", "cw", "co")), start=1):
+        for row, (label_text, water_key) in enumerate((
+                ("黏度", "mu_w"),
+                ("压缩系数", "cw")), start=1):
             label = QLabel(label_text)
             label.setObjectName("fluidRowLabel")
             grid.addWidget(label, row, 0)
             grid.addWidget(self._control(by_key[water_key]), row, 1)
-            grid.addWidget(self._control(by_key[oil_key]), row, 2)
         grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 1)
         outer.addWidget(properties)
 
         reference = QGroupBox("压力基准")
@@ -179,18 +177,6 @@ class BasicFluidParametersPage(_EditableFluidPage):
         reference_layout.addStretch()
         outer.addWidget(reference)
 
-        endpoints = QGroupBox("饱和度端点")
-        endpoints.setObjectName("fluidSection")
-        endpoint_layout = QHBoxLayout(endpoints)
-        endpoint_layout.setContentsMargins(14, 18, 14, 12)
-        endpoint_layout.setSpacing(10)
-        for key, label in (
-                ("swi", "束缚水饱和度 Swi"),
-                ("sor", "残余油饱和度 Sor"),
-                ("sgc", "临界气饱和度 Sgc")):
-            endpoint_layout.addWidget(
-                FluidParameterCard(label, self._control(by_key[key])), 1)
-        outer.addWidget(endpoints)
         outer.addStretch()
 
 

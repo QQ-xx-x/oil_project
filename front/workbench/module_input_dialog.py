@@ -39,10 +39,7 @@ from .fracture_system_widgets import (
     HydraulicFracturePage,
     NaturalFracturePage,
 )
-from .grid_spatial_widgets import (
-    GridOverviewPage,
-    GridPropertyStatisticsPage,
-)
+from .grid_spatial_widgets import GridOverviewPage
 from .module_import_service import (
     ModuleImportService,
     natural_fracture_business_data,
@@ -244,10 +241,6 @@ class ModuleInputDialog(QDialog):
             if (self.module_key == MODULE_GRID_SPATIAL
                     and group.key == "grid_properties"):
                 page = GridOverviewPage(group.title, page_fields, self)
-            elif (self.module_key == MODULE_GRID_SPATIAL
-                    and group.key == "porosity_permeability"):
-                page = GridPropertyStatisticsPage(
-                    group.title, page_fields, self)
             elif (self.module_key == MODULE_ROCK_PROPERTIES
                     and group.key == "relative_permeability"):
                 page = RockRelativePermeabilityPage(

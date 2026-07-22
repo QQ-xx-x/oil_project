@@ -45,7 +45,7 @@ def _remove_value(values, path):
 
 
 class RockRelativePermeabilityPage(QWidget):
-    """紧凑的相对渗透率指数编辑器。"""
+    """气水相渗指数和饱和度端点编辑器。"""
 
     values_changed = pyqtSignal()
 
@@ -68,17 +68,23 @@ class RockRelativePermeabilityPage(QWidget):
         section_layout = QVBoxLayout(section)
         section_layout.setContentsMargins(14, 18, 14, 14)
 
-        card = QFrame()
-        card.setObjectName("rockParameterCard")
-        row = QHBoxLayout(card)
-        row.setContentsMargins(14, 12, 14, 12)
-        row.setSpacing(12)
-        label = QLabel("相渗指数 n")
-        label.setObjectName("rockParameterLabel")
-        row.addWidget(label)
-        row.addStretch()
-
+        labels = {
+            "relperm_exponent_n": "相渗指数 n",
+            "swi": "束缚水饱和度 Swi",
+            # 内部字段名保留 sgc，界面按其实际物理含义显示为 Sgr。
+            "sgc": "残余气饱和度 Sgr",
+        }
         for field in self.fields:
+            card = QFrame()
+            card.setObjectName("rockParameterCard")
+            row = QHBoxLayout(card)
+            row.setContentsMargins(14, 12, 14, 12)
+            row.setSpacing(12)
+            label = QLabel(labels.get(field.key, field.title))
+            label.setObjectName("rockParameterLabel")
+            row.addWidget(label)
+            row.addStretch()
+
             control = BusinessScalarEditor(field)
             control.setObjectName("rockParameterControl")
             control.setFixedWidth(270)
@@ -88,8 +94,7 @@ class RockRelativePermeabilityPage(QWidget):
             control.value_changed.connect(self.values_changed.emit)
             row.addWidget(control)
             self.bindings.append((field, control))
-
-        section_layout.addWidget(card)
+            section_layout.addWidget(card)
         outer.addWidget(section, 0, Qt.AlignLeft)
         outer.addStretch()
 

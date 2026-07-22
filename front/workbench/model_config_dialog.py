@@ -3,8 +3,8 @@
 
 from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QRadioButton, QSpinBox, QVBoxLayout,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QRadioButton, QSpinBox, QVBoxLayout,
 )
 
 from .model_config_import import (
@@ -12,6 +12,8 @@ from .model_config_import import (
     load_lgr_model_config_values,
 )
 from .project_state import (
+    GRID_TYPE_CARTESIAN,
+    GRID_TYPE_CORNER_POINT,
     MODEL_TYPE_NORMAL,
     MODEL_TYPE_WR,
     WR_INPUT_MODE_FILE,
@@ -27,7 +29,7 @@ class ModelConfigDialog(QDialog):
         self.project_state = project_state
         self.setObjectName("modelConfigDialog")
         self.setWindowTitle("模型配置")
-        self.resize(540, 470)
+        self.resize(720, 620)
 
         current = normalize_model_config(
             getattr(project_state, "model_config", None),
@@ -52,6 +54,8 @@ class ModelConfigDialog(QDialog):
         import_row.addWidget(self.import_status, 1)
         root.addLayout(import_row)
 
+        root.addWidget(self._grid_type_group(current))
+        root.addWidget(self._grid_basic_group(current))
         root.addWidget(self._model_group(current))
         root.addWidget(self._feature_group(current))
         root.addWidget(self._lgr_group(current))
@@ -66,10 +70,67 @@ class ModelConfigDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         root.addWidget(buttons)
 
+        self._sync_grid_total()
         self._sync_lgr_enabled()
+        for editor in (self.grid_nx, self.grid_ny, self.grid_nz):
+            editor.valueChanged.connect(self._sync_grid_total)
         self.unrefined_radio.toggled.connect(self._sync_lgr_enabled)
         self.lgr_radio.toggled.connect(self._sync_lgr_enabled)
         self.import_button.clicked.connect(self._import_lgr_values)
+
+    def _grid_type_group(self, config):
+        group = QGroupBox("网格类型")
+        layout = QHBoxLayout(group)
+        self.cartesian_radio = QRadioButton("笛卡尔网格 (CARTESIAN)")
+        self.cartesian_radio.setObjectName("cartesianGridRadio")
+        self.corner_point_radio = QRadioButton("角点网格 (CPG)")
+        self.corner_point_radio.setObjectName("cornerPointGridRadio")
+        is_cartesian = config.get("grid_type") == GRID_TYPE_CARTESIAN
+        self.cartesian_radio.setChecked(is_cartesian)
+        self.corner_point_radio.setChecked(not is_cartesian)
+        layout.addWidget(self.cartesian_radio)
+        layout.addWidget(self.corner_point_radio)
+        layout.addStretch()
+        return group
+
+    def _grid_basic_group(self, config):
+        group = QGroupBox("网格基础配置")
+        layout = QGridLayout(group)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(8)
+
+        self.grid_nx = self._grid_count_spin_box(config.get("grid_nx", 50))
+        self.grid_nx.setObjectName("gridNxSpinBox")
+        self.grid_ny = self._grid_count_spin_box(config.get("grid_ny", 25))
+        self.grid_ny.setObjectName("gridNySpinBox")
+        self.grid_nz = self._grid_count_spin_box(config.get("grid_nz", 3))
+        self.grid_nz.setObjectName("gridNzSpinBox")
+        self.grid_total = QLineEdit()
+        self.grid_total.setObjectName("gridTotalLineEdit")
+        self.grid_total.setReadOnly(True)
+        self.grid_total.setToolTip("总网格数由 Nx × Ny × Nz 自动计算")
+
+        for column, (title, editor) in enumerate((
+                ("NX", self.grid_nx),
+                ("NY", self.grid_ny),
+                ("NZ", self.grid_nz),
+                ("总网格数", self.grid_total))):
+            layout.addWidget(QLabel(title), 0, column)
+            layout.addWidget(editor, 1, column)
+            layout.setColumnStretch(column, 1)
+
+        return group
+
+    @staticmethod
+    def _grid_count_spin_box(value):
+        editor = QSpinBox()
+        editor.setRange(1, 1000000)
+        editor.setValue(int(value or 1))
+        return editor
+
+    def _sync_grid_total(self, *_args):
+        total = self.grid_nx.value() * self.grid_ny.value() * self.grid_nz.value()
+        self.grid_total.setText(str(total))
 
     def _model_group(self, config):
         group = QGroupBox("模型类型")
@@ -166,7 +227,14 @@ class ModelConfigDialog(QDialog):
                 if self.wr_check.isChecked()
                 else MODEL_TYPE_NORMAL
             ),
-            "grid_type": "corner_point",
+            "grid_type": (
+                GRID_TYPE_CARTESIAN
+                if self.cartesian_radio.isChecked()
+                else GRID_TYPE_CORNER_POINT
+            ),
+            "grid_nx": self.grid_nx.value(),
+            "grid_ny": self.grid_ny.value(),
+            "grid_nz": self.grid_nz.value(),
             "enable_lgr": self.lgr_radio.isChecked(),
             "lgr_d_threshold": self.lgr_d_threshold.value(),
             "lgr_nrx": self.lgr_nrx.value(),
@@ -201,6 +269,15 @@ def ensure_model_config_confirmed(project_state, parent=None, force=False):
 
 def model_config_summary(config):
     config = normalize_model_config(config)
+    grid_name = (
+        "笛卡尔网格"
+        if config.get("grid_type") == GRID_TYPE_CARTESIAN
+        else "角点网格"
+    )
+    grid_summary = (
+        f"{grid_name} "
+        f"{config.get('grid_nx')}×{config.get('grid_ny')}×{config.get('grid_nz')}"
+    )
     if config.get("enable_lgr"):
         model_name = (
             f"LGR 加密模型：距离阈值 {config.get('lgr_d_threshold')}，"
@@ -214,4 +291,4 @@ def model_config_summary(config):
         if config.get("model_type") == MODEL_TYPE_WR
         else "未启用 WR"
     )
-    return f"{model_name}，{wr}"
+    return f"{grid_summary}；{model_name}，{wr}"

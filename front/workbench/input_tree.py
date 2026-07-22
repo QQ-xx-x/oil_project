@@ -2,8 +2,16 @@
 """工程打开后的业务输入树。"""
 
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import QTreeWidget, QTreeWidgetItem
 
+from .configuration_status import (
+    STATUS_CONFIGURED_COLOR,
+    STATUS_MISSING_COLOR,
+    geometry_is_configured,
+    grid_properties_are_configured,
+    model_configuration_is_configured,
+)
 from .icons import painted_icon
 from .input_keyword_registry import (
     MODULE_FRACTURE_SYSTEM,
@@ -18,6 +26,8 @@ from .input_keyword_registry import (
     MODULE_WELL_PRODUCTION,
 )
 from .module_input_dialog import ModuleInputDialog
+from .grid_geometry_dialog import GridGeometryDialog
+from .grid_property_dialog import GridPropertyDialog
 from .project_state import MODEL_TYPE_WR, normalize_model_config
 from .settings_dialog import ObjectSettingsDialog
 
@@ -144,12 +154,31 @@ class InputTree(QTreeWidget):
                 "history_matching", "历史拟合", "chart")
             return
 
+        # “网格与空间数据”仅作为导航容器；具体配置统一从其小节点进入。
+        if (module_key == MODULE_GRID_SPATIAL
+                and not data.get("child_key")):
+            return
+
+        if (module_key == MODULE_GRID_SPATIAL
+                and data.get("child_key") == "geometry"
+                and self.project_state is not None):
+            dialog = GridGeometryDialog(self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            return
+
+        if (module_key == MODULE_GRID_SPATIAL
+                and data.get("child_key") == "grid_properties"
+                and self.project_state is not None):
+            dialog = GridPropertyDialog(self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            return
+
         if module_key in MODULE_ICONS and self.project_state is not None:
             dialog = ModuleInputDialog(
                 module_key, self.project_state, data.get("child_key"), self)
-            dialog.values_applied.connect(
-                lambda saved_key, title, values:
-                    self.parameters_saved.emit(saved_key, title, values))
+            dialog.values_applied.connect(self._forward_values_applied)
             dialog.exec_()
             self.refresh_model_config_visibility()
             return
@@ -157,6 +186,10 @@ class InputTree(QTreeWidget):
         dialog = ObjectSettingsDialog(
             item.text(0), item.data(0, TYPE_ROLE) or "工程对象", self)
         dialog.exec_()
+
+    def _forward_values_applied(self, module_key, title, values):
+        self.refresh_configuration_statuses()
+        self.parameters_saved.emit(module_key, title, values)
 
     def refresh_case_data_sections(self, preserve_expanded=True):
         """旧版兼容入口；不再构建原始 CaseData 节点。"""
@@ -194,6 +227,40 @@ class InputTree(QTreeWidget):
         current = self.currentItem()
         if current is not None and current.isDisabled():
             self.setCurrentItem(None)
+        self.refresh_configuration_statuses()
+
+    def refresh_configuration_statuses(self):
+        """Apply red/green status text to the three configured workflow nodes."""
+        if self.project_state is None:
+            return
+        targets = (
+            (
+                self._find_item(MODULE_MODEL_CONFIGURATION),
+                model_configuration_is_configured(self.project_state),
+            ),
+            (
+                self._find_item(self.group_tree_key(
+                    MODULE_GRID_SPATIAL, "geometry")),
+                geometry_is_configured(self.project_state),
+            ),
+            (
+                self._find_item(self.group_tree_key(
+                    MODULE_GRID_SPATIAL, "grid_properties")),
+                grid_properties_are_configured(self.project_state),
+            ),
+        )
+        for item, configured in targets:
+            if item is None:
+                continue
+            color = (
+                STATUS_CONFIGURED_COLOR
+                if configured else STATUS_MISSING_COLOR)
+            item.setForeground(0, QBrush(QColor(color)))
+            font = item.font(0)
+            font.setBold(True)
+            item.setFont(0, font)
+            item.setToolTip(
+                0, "配置状态：已配置" if configured else "配置状态：尚未配置或数据无效")
 
     def export_ui_state(self):
         current_key = None

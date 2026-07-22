@@ -428,14 +428,8 @@ def validate_module_business_data(module_key, values):
 
     if module_key == MODULE_FLUID_PVT:
         positive("mu_w", "水相黏度")
-        positive("mu_o", "油相黏度")
         positive("cw", "水相压缩系数", allow_zero=True)
-        positive("co", "油相压缩系数", allow_zero=True)
         positive("p_ref", "参考压力")
-        for key, title in (("swi", "束缚水饱和度"),
-                           ("sor", "残余油饱和度"),
-                           ("sgc", "临界气饱和度")):
-            fraction(key, title)
         if values.get("temperature_c") is not None:
             temperature = _as_float(values.get("temperature_c"))
             add_check(
@@ -487,9 +481,10 @@ def validate_module_business_data(module_key, values):
         if sw is not None and sg is not None:
             total = sw + sg
             add_check(
-                "初始饱和度总和", total <= 1.0 + 1e-9,
+                "初始饱和度总和",
+                math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-9),
                 f"Sw + Sg = {total:.10g}",
-                error="初始含水和含气饱和度之和不能大于 1。")
+                error="初始含水和含气饱和度之和必须等于 1。")
 
     elif module_key == MODULE_SOLVER_OUTPUT:
         for key, title in (("total_time", "总模拟时间"),
@@ -508,6 +503,15 @@ def validate_module_business_data(module_key, values):
 
     elif module_key == MODULE_ROCK_PROPERTIES:
         positive("n", "相渗指数 n")
+        fraction("swi", "束缚水饱和度")
+        fraction("sgc", "残余气饱和度 Sgr")
+        swi = _as_float(values.get("swi"))
+        sgr = _as_float(values.get("sgc"))
+        if swi is not None and sgr is not None:
+            add_check(
+                "气水饱和度端点", swi + sgr < 1.0,
+                f"Swi + Sgr = {swi + sgr:.10g}",
+                error="气水饱和度端点必须满足 Swi + Sgr < 1。")
 
     elif module_key == MODULE_FRACTURE_SYSTEM:
         natural = values.get("natural_fractures") or {}
