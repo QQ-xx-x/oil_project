@@ -21,6 +21,7 @@ from front.uniform_parser import (
 )
 
 from .case_data_parser import parse_case_data
+from .keyword_file_parser import parse_keyword_array
 from .case_dataset_schema import (
     ARRAYS_FILE,
     CASE_SECTIONS_FILE,
@@ -101,6 +102,8 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
     validation = _new_validation()
     model_config = normalize_model_config(model_config)
     business_overrides = copy.deepcopy(dict(business_overrides or {}))
+    keyword_file_sources = dict(
+        business_overrides.get("keyword_file_sources") or {})
     _record_model_config_validation(validation, model_config)
 
     case_data = parse_case_data(case_data_path)
@@ -127,6 +130,7 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         validation,
         actnum_file=files.get("actnum_file"),
         actnum_edits=property_edits.get("actnum"),
+        keyword_file_sources=keyword_file_sources,
     )
     active_mask = arrays.get(MASK_ACTIVE_KEY)
 
@@ -145,9 +149,30 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
             grid_summary.get("nz"),
         ),
         property_edits=property_edits,
+        keyword_file_sources=keyword_file_sources,
     )
 
     dfn_payload, dfn_summary = _parse_dfn_payload(files, validation)
+    natural_override = business_overrides.get("natural_fractures")
+    if isinstance(natural_override, dict):
+        dfn_payload = copy.deepcopy(natural_override)
+        fractures = [
+            row for row in dfn_payload.get("fractures") or []
+            if isinstance(row, dict)
+        ]
+        dfn_payload["fracture_count"] = len(fractures)
+        dfn_summary = {
+            **dict(dfn_summary or {}),
+            "available": bool(fractures),
+            "source_key": "business_override",
+            "fracture_count": len(fractures),
+            "parsed_fracture_count": len(fractures),
+            "bbox_min": dfn_payload.get("bbox_min"),
+            "bbox_max": dfn_payload.get("bbox_max"),
+        }
+        _set_check(
+            validation, "dfn_business_data", bool(fractures),
+            f"{len(fractures)} fractures")
     wells_override = business_overrides.get("wells")
     if isinstance(wells_override, dict):
         wells_payload = copy.deepcopy(wells_override)
@@ -208,6 +233,8 @@ def build_case_dataset(case_data_path, output_dir, include_raw=True,
         "dfn": dfn_summary,
         "wells": wells_summary,
         "source_files": source_files,
+        "keyword_file_sources": _keyword_source_manifest(
+            keyword_file_sources),
         "validation": {
             "ok": bool(validation.get("ok")),
             "error_count": len(validation.get("errors") or []),
@@ -386,7 +413,7 @@ def _normalize_actnum_values(values):
 
 
 def _parse_grid_arrays(grid_file, arrays, validation, actnum_file=None,
-                       actnum_edits=None):
+                       actnum_edits=None, keyword_file_sources=None):
     if not grid_file:
         _add_error(validation, "缺少 grid_file")
         _set_check(validation, "grid_file_exists", False, "缺少 grid_file")
@@ -424,9 +451,15 @@ def _parse_grid_arrays(grid_file, arrays, validation, actnum_file=None,
         else:
             try:
                 override, null_count = _normalize_actnum_values(
-                    parse_property(actnum_file))
+                    _parse_property_source(
+                        actnum_file,
+                        "actnum_file",
+                        keyword_file_sources,
+                    ))
                 actnum = override
                 _set_check(validation, "actnum_override_parse_ok", True, actnum_file)
+                _record_selected_keyword_check(
+                    validation, "actnum_file", keyword_file_sources)
                 if null_count:
                     _add_warning(
                         validation,
@@ -435,6 +468,9 @@ def _parse_grid_arrays(grid_file, arrays, validation, actnum_file=None,
             except Exception as exc:
                 _add_error(validation, f"actnum_file 解析失败: {exc}")
                 _set_check(validation, "actnum_override_parse_ok", False, str(exc))
+                _record_selected_keyword_check(
+                    validation, "actnum_file", keyword_file_sources,
+                    ok=False, detail=str(exc))
 
     nx = int(grid.get("nx") or 0)
     ny = int(grid.get("ny") or 0)
@@ -480,7 +516,8 @@ def _parse_grid_arrays(grid_file, arrays, validation, actnum_file=None,
 def _parse_property_arrays(files, arrays, array_summary, active_mask,
                            expected_count, null_value, validation,
                            model_config=None, grid_shape=None,
-                           property_edits=None):
+                           property_edits=None,
+                           keyword_file_sources=None):
     required_file_keys = _required_file_keys(model_config)
     for file_key in required_file_keys:
         if file_key not in files:
@@ -504,7 +541,14 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
             _add_error(validation, f"{file_key} 文件不存在: {path}")
             continue
         try:
-            values = parse_property(path)
+            values = _parse_property_source(
+                path,
+                file_key,
+                keyword_file_sources,
+                expected_len=expected_count,
+            )
+            _record_selected_keyword_check(
+                validation, file_key, keyword_file_sources)
         except Exception as exc:
             _add_error(validation, f"{file_key} 解析失败: {exc}")
             continue
@@ -552,6 +596,59 @@ def _parse_property_arrays(files, arrays, array_summary, active_mask,
         all_lengths_match,
         f"expected={expected_count}",
     )
+
+
+def _parse_property_source(path, file_key, keyword_file_sources=None,
+                           expected_len=None):
+    """Read the content keyword verified by the UI, with legacy fallback."""
+
+    record = dict((keyword_file_sources or {}).get(file_key) or {})
+    keyword = str(record.get("detected_keyword") or "").strip()
+    if not keyword:
+        expected = list(record.get("expected_keywords") or [])
+        keyword = str(expected[0] if expected else "").strip()
+    if not keyword:
+        return parse_property(path, expected_len=expected_len)
+    parsed = parse_keyword_array(
+        path,
+        (keyword,),
+        expected_len=expected_len,
+    )
+    return list(parsed.values)
+
+
+def _record_selected_keyword_check(validation, file_key,
+                                   keyword_file_sources=None, *, ok=True,
+                                   detail=""):
+    record = dict((keyword_file_sources or {}).get(file_key) or {})
+    keyword = str(record.get("detected_keyword") or "").strip()
+    if keyword:
+        _set_check(
+            validation,
+            f"{file_key}_content_keyword",
+            ok,
+            detail or keyword,
+        )
+
+
+def _keyword_source_manifest(keyword_file_sources):
+    result = {}
+    for file_key, source in (keyword_file_sources or {}).items():
+        if not isinstance(source, dict):
+            continue
+        result[str(file_key)] = {
+            key: copy.deepcopy(source.get(key))
+            for key in (
+                "source_mode",
+                "value_key",
+                "detected_keyword",
+                "expected_keywords",
+                "copied_from",
+                "source_sha256",
+            )
+            if source.get(key) not in (None, "", [])
+        }
+    return result
 
 
 def _record_model_config_validation(validation, model_config):

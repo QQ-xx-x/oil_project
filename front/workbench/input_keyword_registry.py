@@ -54,6 +54,7 @@ class BusinessGroupSpec:
 
     key: str
     title: str
+    module_dialog_visible: bool = True
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,10 @@ MODULE_SPECS = (
         "岩石物理属性",
         groups=(
             BusinessGroupSpec("relative_permeability", "相渗指数"),
+            BusinessGroupSpec(
+                "relative_permeability_curve", "相渗曲线",
+                module_dialog_visible=False,
+            ),
             BusinessGroupSpec("fine_analysis", "吸附解析"),
             BusinessGroupSpec("sensitivity", "应力敏感"),
             BusinessGroupSpec("shape_factor", "形状因子"),

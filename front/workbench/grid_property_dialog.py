@@ -23,8 +23,10 @@ from .configuration_status import (
     property_is_configured,
 )
 from .input_keyword_registry import MODULE_GRID_SPATIAL
+from .input_source_registry import SOURCE_MODE_KEYWORD_FILE
 from .module_input_models import ModuleInputState, ModuleParsedData
 from .project_state import normalize_model_config
+from .single_file_import_service import SingleFileImportService
 
 
 NULL_VALUE = 99999.0
@@ -514,7 +516,27 @@ class GridPropertyDialog(QDialog):
                     self._working_source.get("keywords") or {}):
                 values = parse_grid(path).get("actnum") or []
             else:
-                values = parse_property(path)
+                record = (
+                    (self._working_source.get("keywords") or {}).get(
+                        spec.source_identity) or {})
+                if record.get("source_mode") == SOURCE_MODE_KEYWORD_FILE:
+                    # A copied permeability direction deliberately keeps the
+                    # original imported file/keyword as its persistent source.
+                    imported_value_key = str(
+                        record.get("value_key") or spec.value_key)
+                    result = SingleFileImportService().prepare(
+                        MODULE_GRID_SPATIAL,
+                        imported_value_key,
+                        path,
+                        expected_len=self.nx * self.ny * self.nz,
+                    )
+                    if not result.success:
+                        raise ValueError("\n".join(result.errors))
+                    values = result.values
+                else:
+                    # Existing projects may still contain a legacy CaseData
+                    # locator without intrinsic-keyword provenance.
+                    values = parse_property(path)
             array = self._normalize_imported_array(spec, values)
             for record in self._property_edits().get(spec.value_key, []):
                 apply_property_operation(array, record, self.nx, self.ny, self.nz, spec)
@@ -567,8 +589,15 @@ class GridPropertyDialog(QDialog):
         if not path:
             return
         try:
-            values = parse_property(path)
-            array = self._normalize_imported_array(spec, values)
+            result = SingleFileImportService().prepare(
+                MODULE_GRID_SPATIAL,
+                spec.value_key,
+                path,
+                expected_len=self.nx * self.ny * self.nz,
+            )
+            if not result.success:
+                raise ValueError("\n".join(result.errors))
+            array = self._normalize_imported_array(spec, result.values)
         except (OSError, TypeError, ValueError, OverflowError) as exc:
             QMessageBox.warning(self, "导入失败", str(exc) or "属性数据无法解析。")
             return
@@ -576,11 +605,7 @@ class GridPropertyDialog(QDialog):
         edits[spec.value_key] = []
         self._working_values["property_edits"] = edits
         keywords = copy.deepcopy(self._working_source.get("keywords") or {})
-        keywords[spec.source_identity] = {
-            "raw_value": os.path.abspath(path),
-            "resolved_path": os.path.abspath(path),
-            "exists": True,
-        }
+        keywords[spec.source_identity] = copy.deepcopy(result.source)
         self._working_source["keywords"] = keywords
         self._arrays[spec.value_key] = array
         self._changed_keys.add(spec.value_key)

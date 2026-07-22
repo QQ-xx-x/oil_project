@@ -347,15 +347,18 @@ def parse_grid(path: str) -> Dict[str, Any]:
     total = nx * ny * nz
 
     # COORD
-    coord_lines, coord_end = _extract_block(all_lines, 'COORD', 0)
+    # Each block is located independently by its intrinsic keyword.  This
+    # keeps Dataset generation consistent with the workbench keyword-file
+    # importer and avoids imposing a filename or block-order contract.
+    coord_lines, _ = _extract_block(all_lines, 'COORD', 0)
     coord_vals = expand_rle(' '.join(coord_lines))
 
     # ZCORN
-    zcorn_lines, zcorn_end = _extract_block(all_lines, 'ZCORN', coord_end)
+    zcorn_lines, _ = _extract_block(all_lines, 'ZCORN', 0)
     zcorn_vals = expand_rle(' '.join(zcorn_lines))
 
     # ACTNUM
-    actnum_lines, _ = _extract_block(all_lines, 'ACTNUM', zcorn_end)
+    actnum_lines, _ = _extract_block(all_lines, 'ACTNUM', 0)
     actnum_text = ' '.join(actnum_lines)
     actnum_vals: List[int] = []
     for tok in _split_tokens(actnum_text):

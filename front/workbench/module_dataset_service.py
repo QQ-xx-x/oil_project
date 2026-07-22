@@ -2,6 +2,7 @@
 """根据相互隔离的业务模块输入状态构建可运行 Dataset。"""
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -24,6 +25,7 @@ from .input_keyword_registry import (
     PARSER_LIST,
     PARSER_SCALAR,
 )
+from .input_source_registry import SOURCE_MODE_KEYWORD_FILE
 from .project_state import MODEL_TYPE_WR, WR_INPUT_MODE_FILE, normalize_model_config
 
 
@@ -148,6 +150,13 @@ class ModuleDatasetService:
                 continue
             for record in ((state.source or {}).get("keywords") or {}).values():
                 path = str((record or {}).get("resolved_path") or "").strip()
+                expected_hash = str(
+                    (record or {}).get("source_sha256") or "").strip()
+                if (path and os.path.isfile(path) and expected_hash
+                        and _sha256_file(path) != expected_hash):
+                    errors.append(
+                        f"{MODULE_TITLES[module_key]}的一项关键字文件在导入后已发生变化，请重新导入。")
+                    break
                 if path and not os.path.isfile(path):
                     errors.append(
                         f"{MODULE_TITLES[module_key]}的一项数据内容已不可用。")
@@ -312,6 +321,9 @@ class ModuleDatasetService:
 
     def _business_overrides(self):
         overrides = {}
+        keyword_file_sources = self._keyword_file_sources()
+        if keyword_file_sources:
+            overrides["keyword_file_sources"] = keyword_file_sources
         grid_state = self.project_state.get_module_input_state(
             MODULE_GRID_SPATIAL)
         if grid_state is not None:
@@ -322,12 +334,42 @@ class ModuleDatasetService:
         hydraulic = self._hydraulic_override()
         if hydraulic:
             overrides["hydraulic_fractures"] = hydraulic
+        fracture_state = self.project_state.get_module_input_state(
+            MODULE_FRACTURE_SYSTEM)
+        if fracture_state is not None:
+            natural = fracture_state.parsed_data.values.get(
+                "natural_fractures") or {}
+            if isinstance(natural, dict) and natural.get("fractures"):
+                overrides["natural_fractures"] = copy.deepcopy(natural)
         well_state = self.project_state.get_module_input_state(
             MODULE_WELL_PRODUCTION)
         if well_state is not None:
             wells = (well_state.parsed_data.values.get("wells") or {})
             overrides["wells"] = _dataset_wells_from_business(wells)
         return overrides
+
+    def _keyword_file_sources(self):
+        """Collect only sources verified by intrinsic file-content keywords."""
+
+        result = {}
+        module_inputs = (
+            self.project_state.active_case().input_state.module_inputs
+            if self.project_state.active_case() is not None else {})
+        for state in (module_inputs or {}).values():
+            for identity, record in (
+                    ((state.source or {}).get("keywords") or {}).items()):
+                if not isinstance(record, dict):
+                    continue
+                if record.get("source_mode") != SOURCE_MODE_KEYWORD_FILE:
+                    continue
+                qualified = str(identity or "")
+                if "." not in qualified:
+                    continue
+                _section, file_key = qualified.split(".", 1)
+                if not file_key:
+                    continue
+                result[file_key] = copy.deepcopy(record)
+        return result
 
     def _hydraulic_override(self):
         rows = self._hydraulic_rows()
@@ -398,6 +440,17 @@ def _hydraulic_signature(rows):
         for row in rows if isinstance(row, dict)
     ]
     return tuple(sorted(signature, key=lambda item: (item[0], item[1])))
+
+
+def _sha256_file(path):
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
 
 
 def _has_business_value(values, key):

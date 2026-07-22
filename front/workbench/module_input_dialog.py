@@ -40,8 +40,11 @@ from .fracture_system_widgets import (
     NaturalFracturePage,
 )
 from .grid_spatial_widgets import GridOverviewPage
+from .explicit_parameter_import_service import (
+    ExplicitParameterImportService,
+    has_explicit_parameter_rules,
+)
 from .module_import_service import (
-    ModuleImportService,
     natural_fracture_business_data,
     normalize_module_business_data,
     validate_module_business_data,
@@ -233,7 +236,12 @@ class ModuleInputDialog(QDialog):
     def _build_pages(self, initial_group_key):
         fields = display_fields_for_module(self.module_key)
         initial_row = 0
-        for index, group in enumerate(self.module_spec.groups):
+        for group in self.module_spec.groups:
+            # 独立窗口节点仍由注册表驱动输入树，但不在旧综合参数窗口
+            # 内重复创建页面。
+            if not group.module_dialog_visible:
+                continue
+            page_index = self.nav.count()
             item = QListWidgetItem(group.title)
             item.setData(Qt.UserRole, group.key)
             self.nav.addItem(item)
@@ -296,7 +304,7 @@ class ModuleInputDialog(QDialog):
             self._pages.append(page)
             self.stack.addWidget(page)
             if initial_group_key == group.key:
-                initial_row = index
+                initial_row = page_index
         if self.nav.count():
             self.nav.setCurrentRow(initial_row)
 
@@ -337,9 +345,13 @@ class ModuleInputDialog(QDialog):
         )
         if not path:
             return
-        result = ModuleImportService(self.project_state).prepare_module(
+        result = ExplicitParameterImportService(
+            self.project_state).prepare_module(
             self.module_key, path)
         if not result.success or result.state is None:
+            if not has_explicit_parameter_rules(self.module_key):
+                self.import_status.setText("\n".join(result.errors))
+                return
             message = "\n".join(result.errors or ("模块数据导入失败。",))
             QMessageBox.warning(self, "导入失败", message)
             return

@@ -21,12 +21,14 @@ from .configuration_status import (
     STATUS_MISSING_COLOR,
 )
 from .input_keyword_registry import MODULE_GRID_SPATIAL
+from .input_source_registry import SOURCE_MODE_KEYWORD_FILE
 from .module_input_models import ModuleInputState, ModuleParsedData
 from .project_state import (
     GRID_TYPE_CARTESIAN,
     GRID_TYPE_CORNER_POINT,
     normalize_model_config,
 )
+from .single_file_import_service import SingleFileImportService
 
 
 def _display_number(value):
@@ -337,8 +339,19 @@ class GridGeometryDialog(QDialog):
             self._set_corner_models({})
             return
         try:
-            self._corner_grid = parse_grid(path)
-        except Exception:
+            record = ((self._working_source.get("keywords") or {}).get(
+                "GRID.grid_file") or {})
+            if record.get("source_mode") == SOURCE_MODE_KEYWORD_FILE:
+                result = SingleFileImportService().prepare(
+                    MODULE_GRID_SPATIAL, "grid", path)
+                if not result.success:
+                    raise ValueError("\n".join(result.errors))
+                self._corner_grid = result.data
+            else:
+                # Existing projects without content-keyword provenance keep
+                # their legacy parser path until the later migration step.
+                self._corner_grid = parse_grid(path)
+        except (OSError, TypeError, ValueError, OverflowError):
             self.status_label.setText("已保存的角点网格源文件无法解析，请重新导入。")
             self._set_corner_models({})
             return
@@ -367,10 +380,15 @@ class GridGeometryDialog(QDialog):
         if not path:
             return
         try:
-            grid = parse_grid(path)
-        except Exception:
+            result = SingleFileImportService().prepare(
+                MODULE_GRID_SPATIAL, "grid", path)
+            if not result.success:
+                raise ValueError("\n".join(result.errors))
+            grid = result.data
+        except (OSError, TypeError, ValueError, OverflowError) as exc:
             QMessageBox.warning(
-                self, "导入失败", "所选文件无法解析为包含 SPECGRID、COORD 和 ZCORN 的角点网格。")
+                self, "导入失败",
+                str(exc) or "所选文件无法解析为包含 SPECGRID、COORD 和 ZCORN 的角点网格。")
             return
         grid_error = self._corner_grid_error(grid)
         if grid_error:
@@ -396,11 +414,7 @@ class GridGeometryDialog(QDialog):
 
         self._corner_grid = grid
         keywords = copy.deepcopy(self._working_source.get("keywords") or {})
-        keywords["GRID.grid_file"] = {
-            "raw_value": os.path.abspath(path),
-            "resolved_path": os.path.abspath(path),
-            "exists": True,
-        }
+        keywords["GRID.grid_file"] = copy.deepcopy(result.source)
         self._working_source["keywords"] = keywords
         summary = self._corner_grid_summary(grid)
         geometry = copy.deepcopy(self._working_values.get("geometry") or {})

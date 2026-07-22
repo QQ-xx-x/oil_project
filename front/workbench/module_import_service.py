@@ -316,7 +316,7 @@ class ModuleImportService:
         # 已解析业务数据必须能安全用于未来的普通对话框。
         wells = dict(wells)
         wells.pop("source_files", None)
-        parsed_values[track_rule.parsed_key] = _well_business_data(wells)
+        parsed_values[track_rule.parsed_key] = well_business_data(wells)
 
 
 def normalize_module_business_data(module_key, values):
@@ -759,7 +759,9 @@ def _fracture_stat(fractures, key):
     }
 
 
-def _well_business_data(wells):
+def well_business_data(wells):
+    """Convert parsed well files to the compact editable business structure."""
+
     data = dict(wells or {})
     well_list = []
     tracks = []

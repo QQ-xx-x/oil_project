@@ -26,6 +26,12 @@ from .input_keyword_registry import (
     MODULE_WELL_PRODUCTION,
 )
 from .module_input_dialog import ModuleInputDialog
+from .fluid_pvt_compass_dialog import FluidPvtCompassDialog
+from .fracture_system_compass_dialog import FractureSystemCompassDialog
+from .well_production_compass_dialog import WellProductionCompassDialog
+from .relative_permeability_compass_dialog import (
+    RelativePermeabilityCompassDialog,
+)
 from .grid_geometry_dialog import GridGeometryDialog
 from .grid_property_dialog import GridPropertyDialog
 from .project_state import MODEL_TYPE_WR, normalize_model_config
@@ -173,6 +179,50 @@ class InputTree(QTreeWidget):
             dialog = GridPropertyDialog(self.project_state, self)
             dialog.values_applied.connect(self._forward_values_applied)
             dialog.exec_()
+            return
+
+        # The module node owns the new integrated COMPASS-inspired editor.
+        # Its three legacy child nodes remain temporarily routed to their old
+        # pages until those navigation entries are removed in a later step.
+        if (module_key == MODULE_FLUID_PVT
+                and not data.get("child_key")
+                and self.project_state is not None):
+            dialog = FluidPvtCompassDialog(self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            self.refresh_model_config_visibility()
+            return
+
+        # The fracture-system parent owns the new three-pane editor.  Its
+        # legacy children remain routed to ModuleInputDialog for now.
+        if (module_key == MODULE_FRACTURE_SYSTEM
+                and not data.get("child_key")
+                and self.project_state is not None):
+            dialog = FractureSystemCompassDialog(self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            self.refresh_model_config_visibility()
+            return
+
+        # The well/production parent owns its new three-pane editor. Its two
+        # existing child nodes remain on ModuleInputDialog during migration.
+        if (module_key == MODULE_WELL_PRODUCTION
+                and not data.get("child_key")
+                and self.project_state is not None):
+            dialog = WellProductionCompassDialog(self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            self.refresh_model_config_visibility()
+            return
+
+        if (module_key == MODULE_ROCK_PROPERTIES
+                and data.get("child_key") == "relative_permeability_curve"
+                and self.project_state is not None):
+            dialog = RelativePermeabilityCompassDialog(
+                self.project_state, self)
+            dialog.values_applied.connect(self._forward_values_applied)
+            dialog.exec_()
+            self.refresh_model_config_visibility()
             return
 
         if module_key in MODULE_ICONS and self.project_state is not None:
