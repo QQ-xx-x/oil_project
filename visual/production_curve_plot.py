@@ -1596,6 +1596,177 @@ class ProductionCurvePlotWidget(QWidget):
             ),
         }
 
+    def get_all_curve_styles(self, property_names=None):
+        """
+        获取当前整套曲线样式。
+
+        返回的数据可以直接交给 ProductionCurveStyleTemplateManager
+        持久化保存。模板使用英文属性 key，不依赖中文显示名。
+        """
+        if property_names is None:
+            keys = list(self.property_order)
+
+            if isinstance(self.data, dict):
+                for key in self.data.keys():
+                    if key == "date":
+                        continue
+
+                    if key not in keys:
+                        keys.append(key)
+
+            for style_dict in (
+                self.property_colors,
+                self.property_line_widths,
+                self.property_line_styles,
+            ):
+                for key in style_dict.keys():
+                    if key == "date":
+                        continue
+
+                    if key not in keys:
+                        keys.append(key)
+        else:
+            keys = []
+
+            for property_name in property_names:
+                key = self._normalize_property_name(property_name)
+
+                if not key or key == "date":
+                    continue
+
+                if key not in keys:
+                    keys.append(key)
+
+        curves = {}
+
+        for key in keys:
+            color = self._get_property_color(key)
+            line_style = self.property_line_styles.get(
+                key,
+                self.default_line_style,
+            )
+            width = self.property_line_widths.get(
+                key,
+                self.default_line_width,
+            )
+
+            curves[key] = {
+                "color": [
+                    int(color[0]),
+                    int(color[1]),
+                    int(color[2]),
+                ],
+                "width": float(width),
+                "line_style": str(line_style),
+            }
+
+        return {
+            "version": 1,
+            "curves": curves,
+        }
+
+    def apply_curve_style_template(
+        self,
+        template_data,
+        refresh=True,
+    ):
+        """
+        批量应用一套曲线样式模板。
+
+        支持两种输入：
+        1. {"curves": {"CumOil": {...}}}
+        2. {"CumOil": {...}}
+
+        返回：
+        {
+            "applied": [...],
+            "skipped": [...],
+        }
+        """
+        result = {
+            "applied": [],
+            "skipped": [],
+        }
+
+        if not isinstance(template_data, dict):
+            return result
+
+        curves = template_data.get(
+            "curves",
+            template_data,
+        )
+
+        if not isinstance(curves, dict):
+            return result
+
+        for raw_key, style_info in curves.items():
+            key = self._normalize_property_name(raw_key)
+
+            if not key or key == "date":
+                result["skipped"].append(str(raw_key))
+                continue
+
+            if not isinstance(style_info, dict):
+                result["skipped"].append(str(raw_key))
+                continue
+
+            changed = False
+
+            if "color" in style_info:
+                rgb = self._normalize_color(
+                    style_info.get("color")
+                )
+
+                if rgb is not None:
+                    self.property_colors[key] = rgb
+                    changed = True
+
+            if "width" in style_info:
+                try:
+                    width = float(
+                        style_info.get("width")
+                    )
+                except Exception:
+                    width = None
+
+                if (
+                    width is not None
+                    and math.isfinite(width)
+                    and width > 0.0
+                ):
+                    self.property_line_widths[key] = width
+                    changed = True
+
+            if "line_style" in style_info:
+                line_style = self._normalize_line_style(
+                    style_info.get("line_style")
+                )
+
+                if line_style is not None:
+                    self.property_line_styles[key] = line_style
+                    changed = True
+
+            if changed:
+                result["applied"].append(key)
+            else:
+                result["skipped"].append(key)
+
+        if refresh:
+            self._refresh_current_plot()
+
+        return result
+
+    def export_curve_style_template(
+        self,
+        property_names=None,
+    ):
+        """
+        get_all_curve_styles() 的语义化别名。
+        """
+        return self.get_all_curve_styles(
+            property_names=property_names,
+        )
+
     def get_available_line_styles(self):
         """
         返回可用线型列表。

@@ -2,6 +2,7 @@
 基于 PyVista 的可视化渲染器。
 """
 
+
 from __future__ import annotations
 
 import sys
@@ -38,19 +39,6 @@ def get_bright_jet_cmap():
     ]
     return LinearSegmentedColormap.from_list("bright_jet", bright_jet_colors, N=4096)
 
-def get_soft_jet_cmap():
-    """低饱和 jet colormap，适合浅色背景下的 pressure 结果层。"""
-    from matplotlib.colors import LinearSegmentedColormap
-    soft_jet_colors = [
-        (0.14, 0.32, 0.74),   # 更明亮的深冷蓝
-        (0.20, 0.56, 0.88),   # 更鲜明的中蓝
-        (0.34, 0.82, 0.89),   # 明亮青蓝
-        (0.88, 0.90, 0.46),   # 更亮的黄绿过渡
-        (0.98, 0.72, 0.18),   # 更明艳的暖橙
-        (0.90, 0.34, 0.24),   # 更有存在感的暖红
-    ]
-    return LinearSegmentedColormap.from_list("soft_jet", soft_jet_colors, N=512)
-
 def _ensure_local_pyvista_site() -> None:
     project_root = Path(__file__).resolve().parent.parent
     local_site = project_root / ".deps" / "pyvista_site"
@@ -62,7 +50,7 @@ _ensure_local_pyvista_site()
 
 import numpy as np
 import pyvista as pv
-# 固定三面坐标系网格密度。
+
 COORDINATE_APPROX_DIVISIONS = 6
 COORDINATE_LABEL_FONT_SIZE = 12
 COORDINATE_TICK_LENGTH_RATIO = 0.010
@@ -70,27 +58,69 @@ COORDINATE_TICK_LABEL_OFFSET_RATIO = 0.025
 COORDINATE_AXIS_TITLE_GAP_RATIO = 0.028
 COORDINATE_LABEL_DEPTH_OFFSET_RATIO = 0.003
 COORDINATE_LABEL_SCREEN_EPSILON_PX = 2.0
-# 相机视线与 X / Y / Z 轴足够接近时，认为是标准六向视图。
+
 COORDINATE_STANDARD_VIEW_COS_THRESHOLD = 0.999
 
-RESULT_PROPERTY_OPACITY = 0.95
+RESULT_PROPERTY_OPACITY = 0.8
+
+RESULT_PRESSURE_OPACITY = RESULT_PROPERTY_OPACITY
+RESULT_PRESSURE_INTERPOLATE_BEFORE_MAP = False
+
+RESULT_PROPERTY_BACKFACE_CULLING = True
+RESULT_PROPERTY_MERGE_SHARED_POINTS = True
+RESULT_PROPERTY_POINT_MERGE_TOLERANCE_RATIO = 1.0e-9
+RESULT_PROPERTY_POINT_MERGE_ABSOLUTE_TOLERANCE = 1.0e-8
+
+RESULT_BOUNDARY_POINT_TOLERANCE_RATIO = 1.0e-8
+RESULT_BOUNDARY_POINT_TOLERANCE_ABSOLUTE = 1.0e-6
+RESULT_BOUNDARY_CHECK_NONCONFORMING = True
+RESULT_BOUNDARY_OUTSIDE_OFFSET_RATIO = 2.0e-5
+RESULT_BOUNDARY_OUTSIDE_OFFSET_ABSOLUTE = 1.0e-5
+RESULT_BOUNDARY_OUTSIDE_OFFSET_MULTIPLIERS = (1.0, 5.0, 25.0)
+RESULT_BOUNDARY_FACE_BATCH_SIZE = 20000
+RESULT_BOUNDARY_SAMPLE_UV = (
+    (0.25, 0.25),
+    (0.50, 0.25),
+    (0.75, 0.25),
+    (0.25, 0.50),
+    (0.50, 0.50),
+    (0.75, 0.50),
+    (0.25, 0.75),
+    (0.50, 0.75),
+    (0.75, 0.75),
+)
+
+
+RESULT_GRID_SURFACE_OPACITY = 0.6
+RESULT_GRID_EDGE_OPACITY = 1.0
+
+RESULT_GRID_PROPERTY_FOCUS_MODE = True
+RESULT_GRID_PROPERTY_SURFACE_OPACITY = 0.0
+RESULT_GRID_PROPERTY_EDGE_OPACITY = 0.3
+RESULT_GRID_RENDER_LINES_AS_TUBES = False
+
+RESULT_GRID_LINE_OFFSET_FACTOR = -1.0
+RESULT_GRID_LINE_OFFSET_UNITS = -1.0
+RESULT_GRID_SURFACE_OFFSET_FACTOR = 1.0
+RESULT_GRID_SURFACE_OFFSET_UNITS = 1.0
+
+RESULT_RENDER_STYLE_VERSION = "unified-preview-result-picking-v3"
+
+RESULT_WELL_LABEL_FONT_SIZE = 12
+RESULT_WELL_LABEL_MIN_FONT_SIZE = 8
+RESULT_WELL_LABEL_MAX_FONT_SIZE = 36
+RESULT_WELL_LABEL_ZOOM_EXPONENT = 0.80
+RESULT_WELL_LABEL_TEXT_COLOR = (0.05, 0.05, 0.05)
+RESULT_WELL_LABEL_OFFSET_SCENE_RATIO = 0.012
+RESULT_WELL_LABEL_OFFSET_RADIUS_MULTIPLIER = 4.0
+RESULT_WELL_RADIUS = 2.0
+
 RESULT_GEOMETRY_OPACITY = 1.0
-RESULT_DEPTH_PEEL_COUNT = 3
+RESULT_DEPTH_PEEL_COUNT = 100
 RESULT_DEPTH_PEEL_OCCLUSION_RATIO = 0.0
 RESULT_ENABLE_ANTI_ALIASING = True
 
-RESULT_GEOMETRY_ACTOR_CACHE_KEYS = (
-    "fracture_actors",
-    "well_actors",
-    "layer_frac_actors",
-    "layer_well_actors",
-    "layer_sw_frac_actors",
-    "layer_sw_well_actors",
-    "layer_phi_frac_actors",
-    "layer_phi_well_actors",
-    "layer_perm_frac_actors",
-    "layer_perm_well_actors",
-)
+RESULT_GEOMETRY_ACTOR_CACHE_KEYS = ()
 
 RESULT_PROPERTY_ACTOR_CACHE_KEYS = (
     "pressure_actor",
@@ -105,6 +135,26 @@ RESULT_PROPERTY_ACTOR_CACHE_KEYS = (
     "layer_perm_actor",
     "time_playback_actor",
 )
+
+RESULT_GRID_SURFACE_ACTOR_CACHE_KEYS = (
+    "corner_surface_actor",
+)
+
+RESULT_GRID_EDGE_ACTOR_CACHE_KEYS = (
+    "grid_lines_actor",
+    "corner_actor",
+    "corner_lgr_parent_grid_actor",
+    "corner_lgr_refined_grid_actor",
+    "layer_coarse_grid_actor",
+    "layer_sw_coarse_grid_actor",
+    "threshold_grid_actor",
+    "layer_phi_coarse_grid_actor",
+    "layer_perm_coarse_grid_actor",
+)
+
+RESULT_WELL_LABEL_ACTOR_CACHE_KEYS = ()
+
+RESULT_WELL_ACTOR_TO_LABEL_CACHE = ()
 
 RESULT_MAIN_SCENE_ACTOR_CACHE_KEYS = (
     "corner_actor",
@@ -138,6 +188,19 @@ class PyVistaRenderer:
         self._result_geometry_overlay_attached = False
         self._result_geometry_overlay_main_renderer = None
 
+        self._result_clipping_observer_ids = []
+        self._result_well_label_reference_view_scale = None
+        self._result_well_label_current_font_size = None
+
+        
+        self._property_switch_camera_state = None
+        self._preserve_camera_on_property_switch = False
+ 
+        self._active_property_context = None
+        self._property_display_mode = "full"
+
+        self._result_translucent_scene_configured = False
+
         pv.global_theme.allow_empty_mesh = True
 
         self._configure_result_translucent_scene()
@@ -163,12 +226,873 @@ class PyVistaRenderer:
         self._six_view_rotation_interactor = None
         self._six_view_rotation_observer_ids = []
 
-        # 静态属性预览渲染器
         from .pyvista_static_property_preview import StaticPropertyPreviewRenderer
         self.static_property_preview = StaticPropertyPreviewRenderer(self)
-        # 几何预览渲染器
+        
         from .pyvista_geometry_preview import GeometryPreviewRenderer
         self.geometry_preview = GeometryPreviewRenderer(self)
+
+        self.property_preview = self.static_property_preview
+        self.property_layers = self.static_property_preview
+        self.geometry_layers = self.geometry_preview
+        
+        self._install_result_clipping_observer()
+ 
+    # 统一属性场上下文
+
+    def get_property_display_mode(self):
+        """返回当前属性显示模式：full 或 fence。"""
+        mode = getattr(self, "_property_display_mode", None)
+        if mode not in ("full", "fence"):
+            mode = self.cache.get("property_display_mode", "full")
+        return mode if mode in ("full", "fence") else "full"
+
+    def _set_property_display_mode(self, mode):
+        """设置属性显示模式，并同步到缓存。"""
+        normalized = str(mode or "full").strip().lower()
+        if normalized not in ("full", "fence"):
+            normalized = "full"
+        self._property_display_mode = normalized
+        if isinstance(getattr(self, "cache", None), dict):
+            self.cache["property_display_mode"] = normalized
+        return normalized
+
+    def is_fence_property_display_mode(self):
+        """当前属性选择按钮是否应保持剖面显示。"""
+        return self.get_property_display_mode() == "fence"
+
+    @staticmethod
+    def _actor_visible_for_property_context(actor) -> bool:
+        if actor is None:
+            return False
+
+        try:
+            return bool(actor.GetVisibility())
+        except Exception:
+            pass
+
+        try:
+            return bool(actor.visibility)
+        except Exception:
+            return True
+
+
+    @staticmethod
+    def _dataset_has_cells(dataset) -> bool:
+        if dataset is None:
+            return False
+
+        try:
+            return int(dataset.n_cells) > 0
+        except Exception:
+            return False
+
+
+    @staticmethod
+    def _normalize_scene_property_name(property_name):
+        raw = str(
+            property_name
+            if property_name is not None
+            else ""
+        ).strip()
+
+        aliases = {
+            "p": "Pressure",
+            "pressure": "Pressure",
+            "sw": "Sw",
+            "water_saturation": "Sw",
+            "water saturation": "Sw",
+            "phi": "Phi",
+            "porosity": "Phi",
+            "kx": "Kx",
+            "permeability_x": "Kx",
+            "permeability x": "Kx",
+            "ky": "Ky",
+            "permeability_y": "Ky",
+            "permeability y": "Ky",
+            "kz": "Kz",
+            "permeability_z": "Kz",
+            "permeability z": "Kz",
+        }
+
+        return aliases.get(
+            raw.lower(),
+            raw,
+        )
+
+
+    def set_active_property_context(
+        self,
+        *,
+        source_mode,
+        sim_data,
+        property_name,
+        scalar_name,
+        volume_grid,
+        actor=None,
+        axis=None,
+        layer_index=None,
+        title=None,
+        unit="",
+        metadata=None,
+        refresh_picking=True,
+    ):
+        """
+        注册当前显示的属性场。
+
+        source_mode:
+            "preview"  静态预览属性；
+            "result"   模拟结果属性。
+
+        volume_grid 必须是保留完整 cell 的体网格。可见 actor 可以使用
+        extract_surface() 后的外壳，但拾取始终针对 volume_grid。
+        """
+        if not self._dataset_has_cells(volume_grid):
+            return None
+
+        incoming_metadata = dict(metadata or {})
+    
+        if incoming_metadata.get("operation") != "threshold":
+            old_threshold_context = self.cache.get("threshold_source_context")
+            if isinstance(old_threshold_context, dict):
+                self._remove_actor(self.cache.get("threshold_actor"))
+                self._remove_actor(self.cache.get("threshold_grid_actor"))
+                old_title = self.cache.get("threshold_scalar_bar_title")
+                if old_title:
+                    try:
+                        self.plotter.remove_scalar_bar(
+                            title=old_title,
+                            render=False,
+                        )
+                    except Exception:
+                        pass
+                self.cache["threshold_actor"] = None
+                self.cache["threshold_grid_actor"] = None
+                self.cache["threshold_scalar_bar"] = None
+                self.cache["threshold_scalar_bar_title"] = None
+                self.cache["threshold_source_context"] = None
+                self.cache["threshold_source_actor_states"] = []
+
+        context = {
+            "source_mode": str(source_mode).strip().lower(),
+            "sim_data": sim_data,
+            "property_name": str(property_name).strip(),
+            "scalar_name": str(scalar_name).strip(),
+            "volume_grid": volume_grid,
+            "actor": actor,
+            "axis": (
+                None
+                if axis is None
+                else str(axis).strip().lower()
+            ),
+            "layer_index": (
+                None
+                if layer_index is None
+                else int(layer_index)
+            ),
+            "title": (
+                str(title).strip()
+                if title is not None
+                else str(property_name).strip()
+            ),
+            "unit": str(unit or ""),
+            "metadata": incoming_metadata,
+        }
+
+        self._active_property_context = context
+
+        cache = getattr(self, "cache", None)
+        if isinstance(cache, dict):
+            cache["active_property_context"] = context
+            cache["cell_pick_property"] = context["property_name"]
+            cache["cell_pick_scalar_name"] = context["scalar_name"]
+            cache["cell_pick_source_mode"] = context["source_mode"]
+
+        if (
+            refresh_picking
+            and isinstance(cache, dict)
+            and cache.get("cell_pick_enabled", False)
+        ):
+            self._refresh_cell_pick_target(
+                render_now=False,
+            )
+
+        if self.is_fence_property_display_mode():
+            self.cache["fence_section_pending_property_refresh"] = True
+            self.cache["fence_section_property_context"] = context
+            self.cache["fence_section_grid"] = context.get("volume_grid")
+            self.cache["fence_section_context_token"] = (
+                id(context.get("volume_grid")),
+                id(context.get("actor")),
+                str(context.get("source_mode", "")),
+                str(context.get("property_name", "")),
+                str(context.get("scalar_name", "")),
+                context.get("axis"),
+                context.get("layer_index"),
+            )
+            self._set_scene_actor_visibility(context.get("actor"), False)
+            if self._vertical_fence_section_is_active():
+                self._hide_fence_section_context()
+
+        return context
+
+
+    def clear_active_property_context(
+        self,
+        *,
+        source_mode=None,
+        actor=None,
+        refresh_picking=True,
+        force=False,
+    ):
+        context = self._active_property_context
+
+        if not isinstance(context, dict):
+            return False
+
+        if not force and self.is_fence_property_display_mode():
+            self.cache["fence_section_pending_property_refresh"] = True
+            self.cache["fence_section_property_context"] = context
+            return True
+
+        if (
+            source_mode is not None
+            and context.get("source_mode")
+            != str(source_mode).strip().lower()
+        ):
+            return False
+
+        if (
+            actor is not None
+            and context.get("actor") is not actor
+        ):
+            return False
+
+        self._active_property_context = None
+
+        cache = getattr(self, "cache", None)
+        if isinstance(cache, dict):
+            cache["active_property_context"] = None
+            cache["cell_pick_source_mode"] = None
+            cache["cell_pick_scalar_name"] = None
+
+        if (
+            refresh_picking
+            and isinstance(cache, dict)
+            and cache.get("cell_pick_enabled", False)
+        ):
+            self._remove_actor(
+                cache.get("cell_pick_actor")
+            )
+            self._remove_actor(
+                cache.get(
+                    "cell_pick_highlight_actor"
+                )
+            )
+            cache["cell_pick_actor"] = None
+            cache["cell_pick_grid"] = None
+            cache["cell_pick_highlight_actor"] = None
+            cache["cell_pick_last_info"] = None
+
+        return True
+
+
+    def get_active_property_context(self):
+        """
+        返回当前属性场上下文。
+
+        为兼容旧 UI，即使静态预览文件没有显式注册，也会从
+        static_property_preview.current_grid 自动补建上下文。
+        """
+        context = self._active_property_context
+
+        if (
+            isinstance(context, dict)
+            and self._dataset_has_cells(
+                context.get("volume_grid")
+            )
+        ):
+            actor = context.get("actor")
+            if (
+                actor is None
+                or self._actor_visible_for_property_context(actor)
+                or self._vertical_fence_section_is_active()
+            ):
+                return context
+
+        static_preview = getattr(
+            self,
+            "static_property_preview",
+            None,
+        )
+
+        if static_preview is not None:
+            grid = getattr(
+                static_preview,
+                "current_grid",
+                None,
+            )
+            actor = getattr(
+                static_preview,
+                "actor",
+                None,
+            )
+            property_key = getattr(
+                static_preview,
+                "current_property_key",
+                None,
+            )
+
+            if (
+                self._dataset_has_cells(grid)
+                and actor is not None
+                and property_key is not None
+                and self._actor_visible_for_property_context(actor)
+            ):
+                scalar_name = None
+
+                try:
+                    scalar_names = list(
+                        grid.cell_data.keys()
+                    )
+                except Exception:
+                    scalar_names = []
+
+                preferred = (
+                    f"Static_{property_key}"
+                )
+
+                if preferred in scalar_names:
+                    scalar_name = preferred
+                elif scalar_names:
+                    scalar_name = scalar_names[0]
+
+                if scalar_name:
+                    context = {
+                        "source_mode": "preview",
+                        "sim_data": getattr(
+                            static_preview,
+                            "current_sim_data",
+                            None,
+                        ),
+                        "property_name": str(property_key),
+                        "scalar_name": str(scalar_name),
+                        "volume_grid": grid,
+                        "actor": actor,
+                        "axis": getattr(
+                            static_preview,
+                            "current_axis",
+                            None,
+                        ),
+                        "layer_index": getattr(
+                            static_preview,
+                            "current_layer_index",
+                            None,
+                        ),
+                        "title": getattr(
+                            static_preview,
+                            "scalar_bar_title",
+                            str(property_key),
+                        ),
+                        "unit": "",
+                        "metadata": {},
+                    }
+
+                    self._active_property_context = context
+                    self.cache["active_property_context"] = context
+                    return context
+
+        return None
+
+
+    @staticmethod
+    def _set_scene_actor_visibility(actor, visible):
+        """兼容 PyVista Actor 与 VTK Actor 的显隐设置。"""
+        if actor is None:
+            return False
+
+        visible = bool(visible)
+
+        try:
+            actor.SetVisibility(visible)
+            return True
+        except Exception:
+            pass
+
+        try:
+            actor.visibility = visible
+            return True
+        except Exception:
+            return False
+
+
+    @staticmethod
+    def _get_scene_actor_visibility(actor):
+        if actor is None:
+            return None
+
+        try:
+            return bool(actor.GetVisibility())
+        except Exception:
+            pass
+
+        try:
+            return bool(actor.visibility)
+        except Exception:
+            return None
+
+
+    def _active_property_scalar_bar_actors(self, context=None):
+        """返回当前属性场相关的颜色条 actor，不区分预览和模拟。"""
+        if context is None:
+            context = self.get_active_property_context()
+
+        actors = []
+        seen = set()
+
+        def add(actor):
+            if actor is None or id(actor) in seen:
+                return
+            seen.add(id(actor))
+            actors.append(actor)
+
+        static_preview = getattr(self, "static_property_preview", None)
+        if static_preview is not None:
+            add(getattr(static_preview, "scalar_bar_actor", None))
+
+        for key in (
+            "scalar_bar",
+            "pressure_scalar_bar",
+            "sw_scalar_bar",
+            "phi_scalar_bar",
+            "perm_scalar_bar",
+            "layer_pressure_scalar_bar",
+            "layer_sw_scalar_bar",
+            "layer_phi_scalar_bar",
+            "layer_perm_scalar_bar",
+            "threshold_scalar_bar",
+            "time_playback_scalar_bar",
+        ):
+            add(self.cache.get(key))
+
+        return actors
+
+
+    def _capture_actor_visibility_states(self, actors):
+        states = []
+        seen = set()
+
+        for actor in actors or []:
+            if actor is None or id(actor) in seen:
+                continue
+            seen.add(id(actor))
+            states.append({
+                "actor": actor,
+                "visible": self._get_scene_actor_visibility(actor),
+            })
+
+        return states
+
+
+    def _restore_actor_visibility_states(self, states):
+        for state in states or []:
+            actor = state.get("actor")
+            visible = state.get("visible")
+            if actor is None or visible is None:
+                continue
+            self._set_scene_actor_visibility(actor, visible)
+
+
+    def _resolve_property_operation_context(
+        self,
+        sim_data=None,
+        property_name=None,
+    ):
+        """
+        为拾取、阈值、剖面、等值线等功能解析统一属性上下文。
+
+        优先使用当前画面上的属性场；只有在没有当前属性场时，才兼容
+        旧 UI 通过 sim_data + property_name 构建模拟结果网格。
+        """
+        context = self.get_active_property_context()
+
+        if isinstance(context, dict) and self._dataset_has_cells(
+            context.get("volume_grid")
+        ):
+            return context
+
+        if sim_data is None:
+            return None
+
+        name = self._normalize_scene_property_name(
+            property_name if property_name is not None else "Pressure"
+        )
+        config = self._get_pick_property_config(name, quiet=True)
+
+        if config is None or config.get("column") is None:
+            return None
+
+        grid = self._build_cell_pick_grid(
+            sim_data=sim_data,
+            axis=None,
+            layer_index=None,
+            use_active_context=False,
+        )
+
+        if not self._dataset_has_cells(grid):
+            return None
+
+        scalar_name = str(config.get("scalar_name", name))
+        if scalar_name not in grid.cell_data:
+            return None
+
+        return {
+            "source_mode": "result",
+            "sim_data": sim_data,
+            "property_name": name,
+            "scalar_name": scalar_name,
+            "volume_grid": grid,
+            "actor": None,
+            "axis": None,
+            "layer_index": None,
+            "title": config.get("title", name),
+            "unit": config.get("unit", ""),
+            "metadata": {"compatibility_fallback": True},
+        }
+
+
+    def _context_cell_scalar_values(self, context, grid=None):
+        """返回上下文体网格中的 cell 标量和实际标量名。"""
+        if not isinstance(context, dict):
+            return None, None, None
+
+        if grid is None:
+            grid = context.get("volume_grid")
+
+        if not self._dataset_has_cells(grid):
+            return None, None, None
+
+        scalar_name = str(context.get("scalar_name", "")).strip()
+
+        if scalar_name:
+            try:
+                if scalar_name in grid.cell_data:
+                    values = np.asarray(
+                        grid.cell_data[scalar_name],
+                        dtype=np.float64,
+                    ).reshape(-1)
+                    if values.size == int(grid.n_cells):
+                        return grid, scalar_name, values
+            except Exception:
+                pass
+
+        config = self._get_pick_property_config(
+            context.get("property_name"),
+            quiet=True,
+        ) or {}
+        fallback_name = str(config.get("scalar_name", "")).strip()
+
+        if fallback_name:
+            try:
+                if fallback_name in grid.cell_data:
+                    values = np.asarray(
+                        grid.cell_data[fallback_name],
+                        dtype=np.float64,
+                    ).reshape(-1)
+                    if values.size == int(grid.n_cells):
+                        return grid, fallback_name, values
+            except Exception:
+                pass
+
+        metadata_names = {
+            "PickCellId", "SourceCellId", "OriginalRowIndex",
+            "I", "J", "K", "CellInfo0", "CellInfo1",
+            "CellInfo2", "CellInfo3", "CenterX", "CenterY",
+            "CenterZ", "Volume", "vtkOriginalCellIds",
+        }
+
+        try:
+            candidate_names = [
+                key for key in grid.cell_data.keys()
+                if key not in metadata_names
+            ]
+        except Exception:
+            candidate_names = []
+
+        for name in candidate_names:
+            try:
+                values = np.asarray(
+                    grid.cell_data[name],
+                    dtype=np.float64,
+                ).reshape(-1)
+            except Exception:
+                continue
+
+            if values.size == int(grid.n_cells):
+                return grid, str(name), values
+
+        return grid, None, None
+
+
+    def _active_property_bounds(self, context=None):
+        if context is None:
+            context = self.get_active_property_context()
+
+        if not isinstance(context, dict):
+            return None
+
+        grid = context.get("volume_grid")
+        if not self._dataset_has_cells(grid):
+            return None
+
+        try:
+            bounds = tuple(float(v) for v in grid.bounds)
+        except Exception:
+            return None
+
+        if len(bounds) != 6 or not np.isfinite(bounds).all():
+            return None
+
+        return bounds
+
+
+    def _decorate_result_property_grid(
+        self,
+        *,
+        grid,
+        sim_data,
+        source_indices=None,
+    ):
+        """给模拟结果体网格补齐与静态预览相同的拾取元数据。"""
+        if not self._dataset_has_cells(grid):
+            return grid
+
+        cell_data = getattr(
+            sim_data,
+            "cell_geometry_with_pressure",
+            None,
+        )
+
+        if (
+            cell_data is None
+            or getattr(cell_data, "ndim", 0) != 2
+            or cell_data.shape[0] == 0
+        ):
+            return grid
+
+        n_cells = int(grid.n_cells)
+
+        if source_indices is None:
+            if n_cells == cell_data.shape[0]:
+                source_indices = np.arange(
+                    n_cells,
+                    dtype=np.int64,
+                )
+            else:
+                source_indices = np.arange(
+                    n_cells,
+                    dtype=np.int64,
+                )
+
+        source_indices = np.asarray(
+            source_indices,
+            dtype=np.int64,
+        ).reshape(-1)
+
+        if source_indices.size != n_cells:
+            source_indices = np.arange(
+                n_cells,
+                dtype=np.int64,
+            )
+
+        valid = (
+            (source_indices >= 0)
+            & (source_indices < cell_data.shape[0])
+        )
+
+        if not np.all(valid):
+            source_indices = np.arange(
+                n_cells,
+                dtype=np.int64,
+            )
+            source_indices = np.clip(
+                source_indices,
+                0,
+                cell_data.shape[0] - 1,
+            )
+
+        rows = cell_data[
+            source_indices
+        ]
+
+        grid.cell_data["PickCellId"] = np.arange(
+            n_cells,
+            dtype=np.int32,
+        )
+        grid.cell_data["SourceCellId"] = (
+            source_indices
+        )
+        grid.cell_data["OriginalRowIndex"] = (
+            source_indices
+        )
+
+        for column, key in (
+            (0, "CellInfo0"),
+            (1, "CellInfo1"),
+            (2, "CellInfo2"),
+            (3, "CellInfo3"),
+        ):
+            if rows.shape[1] > column:
+                grid.cell_data[key] = rows[
+                    :,
+                    column,
+                ].astype(np.float64)
+
+        try:
+            nx = int(sim_data.grid_info["nx"])
+            ny = int(sim_data.grid_info["ny"])
+            parent_ids = np.rint(
+                rows[:, 1]
+            ).astype(np.int64)
+            grid.cell_data["I"] = (
+                parent_ids % nx
+            )
+            grid.cell_data["J"] = (
+                (parent_ids // nx) % ny
+            )
+            grid.cell_data["K"] = (
+                parent_ids // (nx * ny)
+            )
+        except Exception:
+            pass
+
+        for column, key in (
+            (28, "Pressure"),
+            (29, "Kx"),
+            (30, "Ky"),
+            (31, "Kz"),
+            (32, "Phi"),
+            (33, "Sw"),
+        ):
+            if rows.shape[1] > column:
+                grid.cell_data[key] = rows[
+                    :,
+                    column,
+                ].astype(np.float32)
+
+        try:
+            centers = np.asarray(
+                grid.cell_centers().points,
+                dtype=np.float64,
+            )
+            grid.cell_data["CenterX"] = (
+                centers[:, 0]
+            )
+            grid.cell_data["CenterY"] = (
+                centers[:, 1]
+            )
+            grid.cell_data["CenterZ"] = (
+                centers[:, 2]
+            )
+        except Exception:
+            pass
+
+        if "Volume" not in grid.cell_data:
+            try:
+                sized = grid.compute_cell_sizes(
+                    length=False,
+                    area=False,
+                    volume=True,
+                )
+                grid.cell_data["Volume"] = np.asarray(
+                    sized.cell_data["Volume"],
+                    dtype=np.float64,
+                )
+            except Exception:
+                grid.cell_data["Volume"] = np.zeros(
+                    n_cells,
+                    dtype=np.float64,
+                )
+
+        return grid
+
+
+    def _register_result_property_context(
+        self,
+        *,
+        sim_data,
+        property_name,
+        volume_grid,
+        actor,
+        axis=None,
+        layer_index=None,
+        title=None,
+        unit="",
+        source_indices=None,
+    ):
+        property_name = self._normalize_scene_property_name(
+            property_name
+        )
+
+        config = self._get_pick_property_config(
+            property_name,
+            quiet=True,
+        ) or {}
+
+        scalar_name = config.get(
+            "scalar_name",
+            property_name,
+        )
+
+        self._decorate_result_property_grid(
+            grid=volume_grid,
+            sim_data=sim_data,
+            source_indices=source_indices,
+        )
+
+        
+        
+        static_preview = getattr(
+            self,
+            "static_property_preview",
+            None,
+        )
+        if (
+            static_preview is not None
+            and getattr(
+                static_preview,
+                "actor",
+                None,
+            ) is not None
+        ):
+            try:
+                static_preview.clear(
+                    render_now=False,
+                )
+            except Exception:
+                pass
+
+        return self.set_active_property_context(
+            source_mode="result",
+            sim_data=sim_data,
+            property_name=property_name,
+            scalar_name=scalar_name,
+            volume_grid=volume_grid,
+            actor=actor,
+            axis=axis,
+            layer_index=layer_index,
+            title=(
+                title
+                if title is not None
+                else config.get("title", property_name)
+            ),
+            unit=(
+                unit
+                if unit
+                else config.get("unit", "")
+            ),
+        )
+
 
 
     def _main_result_renderer(self):
@@ -189,7 +1113,759 @@ class PyVistaRenderer:
         return renderer
 
 
+    @staticmethod
+    def _result_actor_is_visible(actor) -> bool:
+
+        if actor is None:
+            return False
+
+        try:
+            return bool(actor.GetVisibility())
+        except Exception:
+            pass
+
+        try:
+            return bool(actor.visibility)
+        except Exception:
+            return False
+
+
+    @staticmethod
+    def _result_actor_bounds(actor):
+
+        if actor is None:
+            return None
+
+        try:
+            bounds = actor.GetBounds()
+        except Exception:
+            try:
+                bounds = actor.bounds
+            except Exception:
+                return None
+
+        if bounds is None or len(bounds) != 6:
+            return None
+
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+        except Exception:
+            return None
+
+        if not np.isfinite(values).all():
+            return None
+
+        if (
+            values[1] < values[0]
+            or values[3] < values[2]
+            or values[5] < values[4]
+        ):
+            return None
+
+        return tuple(
+            float(value)
+            for value in values
+        )
+
+
+    def _visible_result_scene_bounds(self):
+        """返回属性/网格与统一几何渲染器中所有可见对象的合并范围。"""
+        cache = getattr(self, "cache", None)
+        bounds_values = []
+        seen = set()
+
+        if isinstance(cache, dict):
+            for cache_key in RESULT_MAIN_SCENE_ACTOR_CACHE_KEYS:
+                cached_value = cache.get(cache_key)
+
+                if isinstance(cached_value, (list, tuple, set)):
+                    actors = cached_value
+                else:
+                    actors = (cached_value,)
+
+                for actor in actors:
+                    if actor is None:
+                        continue
+
+                    actor_id = id(actor)
+                    if actor_id in seen:
+                        continue
+                    seen.add(actor_id)
+
+                    if not self._result_actor_is_visible(actor):
+                        continue
+
+                    bounds = self._result_actor_bounds(actor)
+                    if bounds is not None:
+                        bounds_values.append(bounds)
+
+        geometry_preview = getattr(self, "geometry_preview", None)
+        if geometry_preview is not None:
+            get_bounds = getattr(
+                geometry_preview,
+                "get_visible_geometry_bounds",
+                None,
+            )
+            if get_bounds is not None:
+                try:
+                    geometry_bounds = get_bounds()
+                except Exception:
+                    geometry_bounds = None
+
+                if geometry_bounds is not None and len(geometry_bounds) == 6:
+                    try:
+                        values = np.asarray(
+                            geometry_bounds,
+                            dtype=np.float64,
+                        ).reshape(6)
+                    except Exception:
+                        values = None
+
+                    if values is not None and np.isfinite(values).all():
+                        bounds_values.append(tuple(float(v) for v in values))
+
+        if not bounds_values:
+            return None
+
+        return (
+            float(min(bounds[0] for bounds in bounds_values)),
+            float(max(bounds[1] for bounds in bounds_values)),
+            float(min(bounds[2] for bounds in bounds_values)),
+            float(max(bounds[3] for bounds in bounds_values)),
+            float(min(bounds[4] for bounds in bounds_values)),
+            float(max(bounds[5] for bounds in bounds_values)),
+        )
+
+
+    def _apply_stable_result_clipping_range(self) -> bool:
+        """
+        使用几何预览中的稳定裁剪算法。
+
+        正式结果的属性场、网格、井和裂缝全部位于主 renderer，
+        因此只需要根据所有可见结果 actor 的合并 bounds 计算一次
+        near/far 裁剪范围。
+        """
+        bounds = self._visible_result_scene_bounds()
+
+        if bounds is None:
+            return False
+
+        geometry_preview = getattr(
+            self,
+            "geometry_layers",
+            getattr(
+                self,
+                "geometry_preview",
+                None,
+            ),
+        )
+
+        if geometry_preview is None:
+            return False
+
+        apply_clipping = getattr(
+            geometry_preview,
+            "_apply_stable_scene_clipping_range",
+            None,
+        )
+
+        if apply_clipping is None:
+            return False
+
+        try:
+            return bool(
+                apply_clipping(
+                    bounds=bounds,
+                )
+            )
+        except Exception:
+            return False
+
+    def _on_result_render_start(self, *_args):
+
+        self._update_result_well_label_font_size()
+        self._apply_stable_result_clipping_range()
+
+
+    def _install_result_clipping_observer(self) -> None:
+
+        render_window = getattr(
+            self.plotter,
+            "ren_win",
+            None,
+        )
+
+        if (
+            render_window is None
+            or not hasattr(render_window, "AddObserver")
+            or getattr(
+                self,
+                "_result_clipping_observer_installed",
+                False,
+            )
+        ):
+            return
+
+        try:
+            observer_id = render_window.AddObserver(
+                "StartEvent",
+                self._on_result_render_start,
+            )
+
+            self._result_clipping_observer_ids.append(
+                (
+                    render_window,
+                    observer_id,
+                )
+            )
+            self._result_clipping_observer_installed = True
+
+        except Exception:
+            pass
+
+
+
+    def _result_camera_view_scale(self):
+        """返回当前相机的视图尺度，用于让井名字号随缩放变化。"""
+        camera = getattr(
+            self.plotter,
+            "camera",
+            None,
+        )
+
+        if camera is None:
+            return None
+
+        try:
+            if bool(camera.GetParallelProjection()):
+                value = float(camera.GetParallelScale())
+            else:
+                position = np.asarray(
+                    camera.GetPosition(),
+                    dtype=np.float64,
+                )
+                focal_point = np.asarray(
+                    camera.GetFocalPoint(),
+                    dtype=np.float64,
+                )
+                distance = float(
+                    np.linalg.norm(
+                        position - focal_point
+                    )
+                )
+                view_angle = float(
+                    np.clip(
+                        camera.GetViewAngle(),
+                        1.0e-3,
+                        179.0,
+                    )
+                )
+                value = distance * np.tan(
+                    np.deg2rad(view_angle) * 0.5
+                )
+        except Exception:
+            return None
+
+        if not np.isfinite(value) or value <= 1.0e-12:
+            return None
+
+        return value
+
+
+    @staticmethod
+    def _result_well_label_text_property(actor):
+        if actor is None:
+            return None
+
+        getter = getattr(
+            actor,
+            "GetTextProperty",
+            None,
+        )
+
+        if getter is not None:
+            try:
+                text_property = getter()
+            except Exception:
+                text_property = None
+
+            if text_property is not None:
+                return text_property
+
+        try:
+            mapper = actor.GetMapper()
+        except Exception:
+            mapper = None
+
+        if mapper is not None:
+            for getter_name in (
+                "GetLabelTextProperty",
+                "GetTextProperty",
+            ):
+                getter = getattr(
+                    mapper,
+                    getter_name,
+                    None,
+                )
+
+                if getter is None:
+                    continue
+
+                try:
+                    text_property = getter()
+                except Exception:
+                    text_property = None
+
+                if text_property is not None:
+                    return text_property
+
+        return None
+
+
+    def _iter_result_well_label_actors(self):
+        cache = getattr(
+            self,
+            "cache",
+            None,
+        )
+
+        if not isinstance(cache, dict):
+            return []
+
+        actors = []
+        seen = set()
+
+        for cache_key in RESULT_WELL_LABEL_ACTOR_CACHE_KEYS:
+            for actor in cache.get(cache_key, []) or []:
+                if actor is None:
+                    continue
+
+                actor_id = id(actor)
+
+                if actor_id in seen:
+                    continue
+
+                seen.add(actor_id)
+                actors.append(actor)
+
+        return actors
+
+
+    def _set_result_well_label_font_size(self, font_size):
+        try:
+            font_size = int(round(float(font_size)))
+        except Exception:
+            return False
+
+        font_size = int(
+            np.clip(
+                font_size,
+                RESULT_WELL_LABEL_MIN_FONT_SIZE,
+                RESULT_WELL_LABEL_MAX_FONT_SIZE,
+            )
+        )
+
+        if self._result_well_label_current_font_size == font_size:
+            return False
+
+        changed = False
+
+        for actor in self._iter_result_well_label_actors():
+            text_property = (
+                self._result_well_label_text_property(
+                    actor
+                )
+            )
+
+            if text_property is None:
+                continue
+
+            try:
+                text_property.SetFontSize(
+                    font_size
+                )
+                changed = True
+            except Exception:
+                pass
+
+        if changed:
+            self._result_well_label_current_font_size = font_size
+
+        return changed
+
+
+    def _reset_result_well_label_zoom_reference(self):
+        self._result_well_label_reference_view_scale = (
+            self._result_camera_view_scale()
+        )
+        self._result_well_label_current_font_size = None
+        self._set_result_well_label_font_size(
+            RESULT_WELL_LABEL_FONT_SIZE
+        )
+
+
+    def _update_result_well_label_font_size(self):
+        if not self._iter_result_well_label_actors():
+            return False
+
+        current_scale = self._result_camera_view_scale()
+
+        if current_scale is None:
+            return False
+
+        reference_scale = (
+            self._result_well_label_reference_view_scale
+        )
+
+        if (
+            reference_scale is None
+            or not np.isfinite(reference_scale)
+            or reference_scale <= 1.0e-12
+        ):
+            self._result_well_label_reference_view_scale = (
+                current_scale
+            )
+            reference_scale = current_scale
+
+        zoom_ratio = max(
+            float(reference_scale / current_scale),
+            1.0e-6,
+        )
+
+        font_size = RESULT_WELL_LABEL_FONT_SIZE * (
+            zoom_ratio
+            ** RESULT_WELL_LABEL_ZOOM_EXPONENT
+        )
+
+        return self._set_result_well_label_font_size(
+            font_size
+        )
+
+
+    def _result_scene_reference_length(
+        self,
+        sim_data,
+        fallback_points=None,
+    ) -> float:
+        geometry_preview = getattr(
+            self,
+            "geometry_preview",
+            None,
+        )
+
+        preview_method = getattr(
+            geometry_preview,
+            "_scene_reference_length",
+            None,
+        )
+
+        if preview_method is not None:
+            try:
+                value = float(
+                    preview_method(
+                        sim_data,
+                        fallback_points=fallback_points,
+                    )
+                )
+
+                if np.isfinite(value) and value > 1.0e-12:
+                    return value
+            except Exception:
+                pass
+
+        bounds = None
+
+        try:
+            bounds = self.get_corner_model_bounds(
+                sim_data
+            )
+        except Exception:
+            bounds = None
+
+        if bounds is not None and len(bounds) == 6:
+            try:
+                dx = float(bounds[1] - bounds[0])
+                dy = float(bounds[3] - bounds[2])
+                dz = float(bounds[5] - bounds[4])
+                value = float(
+                    np.linalg.norm(
+                        [dx, dy, dz]
+                    )
+                )
+
+                if np.isfinite(value) and value > 1.0e-12:
+                    return value
+            except Exception:
+                pass
+
+        try:
+            points = np.asarray(
+                fallback_points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+
+            spans = np.ptp(
+                points,
+                axis=0,
+            )
+            value = float(
+                np.linalg.norm(spans)
+            )
+
+            if np.isfinite(value) and value > 1.0e-12:
+                return value
+        except Exception:
+            pass
+
+        return 1.0
+
+
+    def _result_well_name_label_point(
+        self,
+        sim_data,
+        ordered_points,
+        well_radius=RESULT_WELL_RADIUS,
+    ):
+        """按几何预览方法，把井名放在井口沿首段反方向偏移的位置。"""
+        try:
+            points = np.asarray(
+                ordered_points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return None
+
+        if points.shape[0] < 2:
+            return None
+
+        head = points[0]
+        first_segment = points[1] - head
+        segment_length = float(
+            np.linalg.norm(first_segment)
+        )
+
+        if (
+            not np.isfinite(segment_length)
+            or segment_length <= 1.0e-12
+        ):
+            direction = np.asarray(
+                [0.0, 0.0, 1.0],
+                dtype=np.float64,
+            )
+        else:
+            direction = (
+                -first_segment / segment_length
+            )
+
+            if abs(float(direction[2])) < 0.25:
+                direction = direction + np.asarray(
+                    [0.0, 0.0, 0.35],
+                    dtype=np.float64,
+                )
+                direction_length = float(
+                    np.linalg.norm(direction)
+                )
+
+                if direction_length > 1.0e-12:
+                    direction = (
+                        direction / direction_length
+                    )
+
+        reference_length = (
+            self._result_scene_reference_length(
+                sim_data,
+                fallback_points=points,
+            )
+        )
+
+        offset_distance = max(
+            reference_length
+            * RESULT_WELL_LABEL_OFFSET_SCENE_RATIO,
+            float(well_radius)
+            * RESULT_WELL_LABEL_OFFSET_RADIUS_MULTIPLIER,
+        )
+
+        label_point = (
+            head
+            + direction * offset_distance
+        )
+
+        if not np.isfinite(label_point).all():
+            return head.copy()
+
+        return label_point
+
+
+    @staticmethod
+    def _new_result_billboard_text_actor():
+        """仅通过 PyVista 内部 VTK 命名空间创建标签，不直接 import vtk。"""
+        vtk_namespace = getattr(
+            pv,
+            "_vtk",
+            None,
+        )
+
+        actor_class = (
+            getattr(
+                vtk_namespace,
+                "vtkBillboardTextActor3D",
+                None,
+            )
+            if vtk_namespace is not None
+            else None
+        )
+
+        if actor_class is None:
+            return None
+
+        try:
+            return actor_class()
+        except Exception:
+            return None
+
+
+    def _add_result_well_name_labels(
+        self,
+        well_head_points,
+        well_names,
+        cache_key="well_label_actors",
+    ):
+        if not well_head_points or not well_names:
+            return []
+
+        try:
+            points = np.asarray(
+                well_head_points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return []
+
+        labels = [
+            str(name).strip()
+            for name in well_names
+        ]
+
+        renderer = self._main_result_renderer()
+
+        if renderer is None:
+            return []
+
+        actors = []
+
+        for point, label in zip(points, labels):
+            if not label or not np.isfinite(point).all():
+                continue
+
+            actor = (
+                self._new_result_billboard_text_actor()
+            )
+
+            if actor is None:
+                continue
+
+            try:
+                actor.SetInput(label)
+                actor.SetPosition(
+                    float(point[0]),
+                    float(point[1]),
+                    float(point[2]),
+                )
+
+                text_property = actor.GetTextProperty()
+                text_property.SetFontSize(
+                    int(
+                        RESULT_WELL_LABEL_FONT_SIZE
+                    )
+                )
+                text_property.SetColor(
+                    *RESULT_WELL_LABEL_TEXT_COLOR
+                )
+
+                try:
+                    text_property.SetBackgroundOpacity(
+                        0.0
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    text_property.FrameOff()
+                except Exception:
+                    try:
+                        text_property.SetFrame(False)
+                    except Exception:
+                        pass
+
+                try:
+                    text_property.BoldOff()
+                except Exception:
+                    pass
+
+                try:
+                    text_property.ShadowOff()
+                except Exception:
+                    pass
+
+                try:
+                    text_property.SetJustificationToCentered()
+                    text_property.SetVerticalJustificationToCentered()
+                except Exception:
+                    pass
+
+                renderer.AddActor(actor)
+                actors.append(actor)
+
+            except Exception:
+                try:
+                    renderer.RemoveActor(actor)
+                except Exception:
+                    pass
+
+        
+        
+        if not actors:
+            try:
+                fallback_actor = self.plotter.add_point_labels(
+                    points=points,
+                    labels=labels,
+                    font_size=RESULT_WELL_LABEL_FONT_SIZE,
+                    text_color=RESULT_WELL_LABEL_TEXT_COLOR,
+                    show_points=False,
+                    fill_shape=False,
+                    shape_opacity=0.0,
+                    always_visible=True,
+                    render=False,
+                )
+
+                if fallback_actor is not None:
+                    actors.append(
+                        fallback_actor
+                    )
+            except Exception:
+                pass
+
+        if actors:
+            self.cache.setdefault(
+                cache_key,
+                [],
+            ).extend(actors)
+            self._reset_result_well_label_zoom_reference()
+
+        return actors
+
+
     def _configure_result_translucent_scene(self):
+
+        if getattr(
+            self,
+            "_result_translucent_scene_configured",
+            False,
+        ):
+            return
 
         try:
             render_window = getattr(
@@ -251,6 +1927,8 @@ class PyVistaRenderer:
             except Exception:
                 pass
 
+        self._result_translucent_scene_configured = True
+
 
     @staticmethod
     def _renderer_is_attached(render_window, renderer) -> bool:
@@ -277,7 +1955,12 @@ class PyVistaRenderer:
         self,
         attached: bool,
     ) -> None:
+        """
+        正式结果已禁用独立 overlay renderer。
 
+        该方法只负责移除旧版本可能残留的 overlay；即使传入
+        attached=True，也不会重新附加覆盖层。
+        """
         render_window = getattr(
             self.plotter,
             "ren_win",
@@ -289,228 +1972,1249 @@ class PyVistaRenderer:
             None,
         )
 
-        if render_window is None or overlay_renderer is None:
-            self._result_geometry_overlay_attached = False
-            return
-
-        is_attached = self._renderer_is_attached(
-            render_window,
-            overlay_renderer,
-        )
-
-        if attached and not is_attached:
+        if render_window is not None and overlay_renderer is not None:
             try:
-                render_window.AddRenderer(
-                    overlay_renderer
-                )
-                is_attached = True
+                if self._renderer_is_attached(
+                    render_window,
+                    overlay_renderer,
+                ):
+                    render_window.RemoveRenderer(
+                        overlay_renderer
+                    )
             except Exception:
                 pass
 
-        elif not attached and is_attached:
-            try:
-                render_window.RemoveRenderer(
-                    overlay_renderer
-                )
-                is_attached = False
-            except Exception:
-                pass
-
-        self._result_geometry_overlay_attached = bool(
-            is_attached
-        )
-
-        if not attached:
-            main_renderer = self._main_result_renderer()
-
-            if main_renderer is not None:
-                try:
-                    main_renderer.ResetCameraClippingRange()
-                except Exception:
-                    try:
-                        self.plotter.reset_camera_clipping_range()
-                    except Exception:
-                        pass
-
+        self._result_geometry_overlay_attached = False
 
     def _ensure_result_geometry_overlay_renderer(
         self,
         attach_to_window: bool = True,
     ):
+        """
+        正式结果不再使用独立 overlay renderer。
 
-        main_renderer = self._main_result_renderer()
-        render_window = getattr(
-            self.plotter,
-            "ren_win",
+        保留该兼容方法只是为了清理旧状态；无论调用参数为何，
+        都不会创建或附加新的 renderer。
+        """
+        self._clear_result_geometry_overlay(
+            detach=True,
+            remove_renderer=True,
+        )
+        return None
+
+    @staticmethod
+    def _set_result_actor_opacity(actor, opacity) -> None:
+
+        if actor is None:
+            return
+
+        try:
+            prop = actor.GetProperty()
+        except Exception:
+            prop = None
+
+        if prop is None:
+            return
+
+        try:
+            prop.SetOpacity(
+                float(opacity)
+            )
+        except Exception:
+            pass
+
+
+    def _result_property_is_visible(self) -> bool:
+        """判断正式结果中是否有可见属性场。"""
+        cache = getattr(
+            self,
+            "cache",
             None,
         )
 
-        if main_renderer is None or render_window is None:
+        if not isinstance(cache, dict):
+            return False
+
+        for cache_key in RESULT_PROPERTY_ACTOR_CACHE_KEYS:
+            actor = cache.get(cache_key)
+
+            if actor is None:
+                continue
+
+            if self._result_actor_is_visible(actor):
+                return True
+
+        return False
+
+
+    @staticmethod
+    def _configure_result_grid_surface_actor(
+        actor,
+        property_visible=False,
+    ) -> None:
+        """
+        按预览模块设置网格面透明度。
+
+        普通网格模式为 0.6；属性场显示时为 0.0。
+        """
+        if actor is None:
+            return
+
+        opacity = (
+            RESULT_GRID_PROPERTY_SURFACE_OPACITY
+            if (
+                RESULT_GRID_PROPERTY_FOCUS_MODE
+                and property_visible
+            )
+            else RESULT_GRID_SURFACE_OPACITY
+        )
+
+        try:
+            actor.ForceOpaqueOff()
+        except Exception:
+            try:
+                actor.SetForceOpaque(False)
+            except Exception:
+                pass
+
+        try:
+            actor.ForceTranslucentOn()
+        except Exception:
+            try:
+                actor.SetForceTranslucent(True)
+            except Exception:
+                pass
+
+        try:
+            prop = actor.GetProperty()
+        except Exception:
+            prop = None
+
+        if prop is not None:
+            try:
+                prop.SetOpacity(float(opacity))
+            except Exception:
+                pass
+
+            try:
+                prop.LightingOff()
+            except Exception:
+                try:
+                    prop.SetLighting(False)
+                except Exception:
+                    pass
+
+            try:
+                prop.SetAmbient(1.0)
+                prop.SetDiffuse(0.0)
+                prop.SetSpecular(0.0)
+            except Exception:
+                pass
+
+            try:
+                prop.EdgeVisibilityOff()
+            except Exception:
+                try:
+                    prop.SetEdgeVisibility(False)
+                except Exception:
+                    pass
+
+        try:
+            mapper = actor.GetMapper()
+        except Exception:
+            mapper = None
+
+        if mapper is not None:
+            try:
+                mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            except Exception:
+                pass
+
+            try:
+                mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(
+                    RESULT_GRID_SURFACE_OFFSET_FACTOR,
+                    RESULT_GRID_SURFACE_OFFSET_UNITS,
+                )
+            except Exception:
+                try:
+                    mapper.SetResolveCoincidentTopologyPolygonOffsetParameters(
+                        RESULT_GRID_SURFACE_OFFSET_FACTOR,
+                        RESULT_GRID_SURFACE_OFFSET_UNITS,
+                    )
+                except Exception:
+                    pass
+
+
+    @staticmethod
+    def _configure_result_grid_edge_actor(
+        actor,
+        property_visible=False,
+    ) -> None:
+        """
+        按预览模块设置网格线透明度。
+
+        普通网格模式为 1.0；属性场显示时为 0.3。
+        """
+        if actor is None:
+            return
+
+        opacity = (
+            RESULT_GRID_PROPERTY_EDGE_OPACITY
+            if (
+                RESULT_GRID_PROPERTY_FOCUS_MODE
+                and property_visible
+            )
+            else RESULT_GRID_EDGE_OPACITY
+        )
+
+        if opacity < 1.0 - 1.0e-12:
+            try:
+                actor.ForceOpaqueOff()
+            except Exception:
+                try:
+                    actor.SetForceOpaque(False)
+                except Exception:
+                    pass
+
+            try:
+                actor.ForceTranslucentOn()
+            except Exception:
+                try:
+                    actor.SetForceTranslucent(True)
+                except Exception:
+                    pass
+        else:
+            try:
+                actor.ForceTranslucentOff()
+            except Exception:
+                try:
+                    actor.SetForceTranslucent(False)
+                except Exception:
+                    pass
+
+            try:
+                actor.ForceOpaqueOn()
+            except Exception:
+                try:
+                    actor.SetForceOpaque(True)
+                except Exception:
+                    pass
+
+        try:
+            prop = actor.GetProperty()
+        except Exception:
+            prop = None
+
+        if prop is not None:
+            try:
+                prop.SetOpacity(float(opacity))
+            except Exception:
+                pass
+
+            try:
+                prop.LightingOff()
+            except Exception:
+                try:
+                    prop.SetLighting(False)
+                except Exception:
+                    pass
+
+            try:
+                prop.SetAmbient(1.0)
+                prop.SetDiffuse(0.0)
+                prop.SetSpecular(0.0)
+            except Exception:
+                pass
+
+            if RESULT_GRID_RENDER_LINES_AS_TUBES:
+                try:
+                    prop.RenderLinesAsTubesOn()
+                except Exception:
+                    try:
+                        prop.SetRenderLinesAsTubes(True)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    prop.RenderLinesAsTubesOff()
+                except Exception:
+                    try:
+                        prop.SetRenderLinesAsTubes(False)
+                    except Exception:
+                        pass
+
+        try:
+            mapper = actor.GetMapper()
+        except Exception:
+            mapper = None
+
+        if mapper is not None:
+            try:
+                mapper.SetResolveCoincidentTopologyToPolygonOffset()
+            except Exception:
+                pass
+
+            try:
+                mapper.SetRelativeCoincidentTopologyLineOffsetParameters(
+                    RESULT_GRID_LINE_OFFSET_FACTOR,
+                    RESULT_GRID_LINE_OFFSET_UNITS,
+                )
+            except Exception:
+                try:
+                    mapper.SetResolveCoincidentTopologyLineOffsetParameters(
+                        RESULT_GRID_LINE_OFFSET_FACTOR,
+                        RESULT_GRID_LINE_OFFSET_UNITS,
+                    )
+                except Exception:
+                    pass
+
+
+    @staticmethod
+    def _result_property_clean_tolerance(bounds) -> float:
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+
+            spans = np.asarray(
+                [
+                    abs(values[1] - values[0]),
+                    abs(values[3] - values[2]),
+                    abs(values[5] - values[4]),
+                ],
+                dtype=np.float64,
+            )
+
+            finite_spans = spans[
+                np.isfinite(spans)
+            ]
+
+            reference_span = (
+                float(np.max(finite_spans))
+                if finite_spans.size > 0
+                else 0.0
+            )
+        except Exception:
+            reference_span = 0.0
+
+        return max(
+            reference_span
+            * RESULT_PROPERTY_POINT_MERGE_TOLERANCE_RATIO,
+            RESULT_PROPERTY_POINT_MERGE_ABSOLUTE_TOLERANCE,
+        )
+
+
+    @staticmethod
+    def _result_hexa_face_local_ids():
+        """VTK_HEXAHEDRON 的六个四边形面。"""
+        return np.asarray(
+            [
+                [0, 1, 2, 3],
+                [4, 5, 6, 7],
+                [0, 4, 5, 1],
+                [1, 5, 6, 2],
+                [2, 6, 7, 3],
+                [3, 7, 4, 0],
+            ],
+            dtype=np.int64,
+        )
+
+
+    @staticmethod
+    def _result_hexa_connectivity(grid):
+        """
+        返回形状为 (n_cells, 8) 的六面体连接关系。
+
+        只有全部单元都是 VTK_HEXAHEDRON 时才使用拓扑外壳算法；
+        其他网格类型回退到 PyVista/VTK 的 extract_surface()。
+        """
+        if grid is None:
             return None
 
-        overlay_renderer = getattr(
-            self,
-            "_result_geometry_overlay_renderer",
+        try:
+            n_cells = int(grid.n_cells)
+        except Exception:
+            return None
+
+        if n_cells <= 0:
+            return None
+
+        try:
+            cell_types = np.asarray(
+                grid.celltypes,
+                dtype=np.uint8,
+            ).reshape(-1)
+        except Exception:
+            return None
+
+        if (
+            cell_types.size != n_cells
+            or not np.all(
+                cell_types
+                == int(pv.CellType.HEXAHEDRON)
+            )
+        ):
+            return None
+
+        try:
+            cells = np.asarray(
+                grid.cells,
+                dtype=np.int64,
+            ).reshape(-1)
+        except Exception:
+            return None
+
+        if cells.size != n_cells * 9:
+            return None
+
+        try:
+            records = cells.reshape(n_cells, 9)
+        except ValueError:
+            return None
+
+        if not np.all(records[:, 0] == 8):
+            return None
+
+        connectivity = records[:, 1:9]
+
+        try:
+            n_points = int(grid.n_points)
+        except Exception:
+            return None
+
+        if (
+            connectivity.size == 0
+            or np.min(connectivity) < 0
+            or np.max(connectivity) >= n_points
+        ):
+            return None
+
+        return connectivity
+
+
+    def _result_boundary_point_tolerance(self, bounds):
+        """计算边界面顶点归并容差。"""
+        try:
+            values = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+
+            spans = np.asarray(
+                [
+                    abs(values[1] - values[0]),
+                    abs(values[3] - values[2]),
+                    abs(values[5] - values[4]),
+                ],
+                dtype=np.float64,
+            )
+
+            finite_spans = spans[
+                np.isfinite(spans)
+            ]
+
+            reference_span = (
+                float(np.max(finite_spans))
+                if finite_spans.size > 0
+                else 0.0
+            )
+        except Exception:
+            reference_span = 0.0
+
+        return max(
+            reference_span
+            * RESULT_BOUNDARY_POINT_TOLERANCE_RATIO,
+            RESULT_BOUNDARY_POINT_TOLERANCE_ABSOLUTE,
+        )
+
+
+    @staticmethod
+    def _result_copy_boundary_data(
+        source_grid,
+        surface,
+        owner_cell_ids,
+        representative_point_ids,
+    ):
+        """把原网格的 cell_data/point_data 映射到边界面。"""
+        if (
+            source_grid is None
+            or surface is None
+        ):
+            return
+
+        owner_cell_ids = np.asarray(
+            owner_cell_ids,
+            dtype=np.int64,
+        )
+
+        representative_point_ids = np.asarray(
+            representative_point_ids,
+            dtype=np.int64,
+        )
+
+        try:
+            cell_keys = list(
+                source_grid.cell_data.keys()
+            )
+        except Exception:
+            cell_keys = []
+
+        for key in cell_keys:
+            try:
+                values = np.asarray(
+                    source_grid.cell_data[key]
+                )
+
+                if values.shape[0] != int(
+                    source_grid.n_cells
+                ):
+                    continue
+
+                surface.cell_data[key] = values[
+                    owner_cell_ids
+                ]
+            except Exception:
+                pass
+
+        try:
+            point_keys = list(
+                source_grid.point_data.keys()
+            )
+        except Exception:
+            point_keys = []
+
+        for key in point_keys:
+            try:
+                values = np.asarray(
+                    source_grid.point_data[key]
+                )
+
+                if values.shape[0] != int(
+                    source_grid.n_points
+                ):
+                    continue
+
+                surface.point_data[key] = values[
+                    representative_point_ids
+                ]
+            except Exception:
+                pass
+
+        try:
+            field_keys = list(
+                source_grid.field_data.keys()
+            )
+        except Exception:
+            field_keys = []
+
+        for key in field_keys:
+            try:
+                surface.field_data[key] = np.asarray(
+                    source_grid.field_data[key]
+                ).copy()
+            except Exception:
+                pass
+
+
+    @staticmethod
+    def _result_bilinear_face_samples(face_points):
+        """
+        在每个四边形内部生成 3×3 双线性采样点和对应法向。
+
+        返回：
+            sample_points: (n_faces, n_samples, 3)
+            sample_normals: (n_faces, n_samples, 3)
+        """
+        faces = np.asarray(
+            face_points,
+            dtype=np.float64,
+        )
+
+        p0 = faces[:, 0, :]
+        p1 = faces[:, 1, :]
+        p2 = faces[:, 2, :]
+        p3 = faces[:, 3, :]
+
+        uv_values = np.asarray(
+            RESULT_BOUNDARY_SAMPLE_UV,
+            dtype=np.float64,
+        )
+
+        u = uv_values[:, 0][None, :, None]
+        v = uv_values[:, 1][None, :, None]
+
+        p0e = p0[:, None, :]
+        p1e = p1[:, None, :]
+        p2e = p2[:, None, :]
+        p3e = p3[:, None, :]
+
+        sample_points = (
+            (1.0 - u) * (1.0 - v) * p0e
+            + u * (1.0 - v) * p1e
+            + u * v * p2e
+            + (1.0 - u) * v * p3e
+        )
+
+        du = (
+            -(1.0 - v) * p0e
+            + (1.0 - v) * p1e
+            + v * p2e
+            - v * p3e
+        )
+
+        dv = (
+            -(1.0 - u) * p0e
+            - u * p1e
+            + u * p2e
+            + (1.0 - u) * p3e
+        )
+
+        sample_normals = np.cross(
+            du,
+            dv,
+        )
+
+        lengths = np.linalg.norm(
+            sample_normals,
+            axis=2,
+            keepdims=True,
+        )
+
+        valid = lengths > 1.0e-20
+
+        sample_normals = np.divide(
+            sample_normals,
+            lengths,
+            out=np.zeros_like(sample_normals),
+            where=valid,
+        )
+
+        return sample_points, sample_normals
+
+
+    def _result_remove_nonconforming_internal_faces(
+        self,
+        grid,
+        owner_cell_ids,
+        face_points,
+    ):
+        """
+        删除 LGR 粗细网格交界处无法靠“四点完全相同”配对的内部面。
+
+        对每张候选四边形，在其外侧生成 3×3 个采样点；只有所有
+        采样点都进入其他 leaf cell 时，才把该面判定为内部面。
+        因而模型真正外边界以及 I/J/K 切层形成的新边界会被保留。
+        """
+        n_faces = int(len(face_points))
+
+        if n_faces == 0:
+            return np.zeros(
+                0,
+                dtype=bool,
+            )
+
+        if not RESULT_BOUNDARY_CHECK_NONCONFORMING:
+            return np.zeros(
+                n_faces,
+                dtype=bool,
+            )
+
+        find_containing_cell = getattr(
+            grid,
+            "find_containing_cell",
             None,
         )
-        overlay_main_renderer = getattr(
-            self,
-            "_result_geometry_overlay_main_renderer",
-            None,
+
+        if find_containing_cell is None:
+            return np.zeros(
+                n_faces,
+                dtype=bool,
+            )
+
+        owner_cell_ids = np.asarray(
+            owner_cell_ids,
+            dtype=np.int64,
+        )
+
+        face_points = np.asarray(
+            face_points,
+            dtype=np.float64,
+        )
+
+        try:
+            connectivity = self._result_hexa_connectivity(
+                grid
+            )
+
+            if connectivity is None:
+                return np.zeros(
+                    n_faces,
+                    dtype=bool,
+                )
+
+            grid_points = np.asarray(
+                grid.points,
+                dtype=np.float64,
+            )
+
+            cell_centers = np.mean(
+                grid_points[connectivity],
+                axis=1,
+            )
+        except Exception:
+            return np.zeros(
+                n_faces,
+                dtype=bool,
+            )
+
+        internal_mask = np.zeros(
+            n_faces,
+            dtype=bool,
+        )
+
+        sample_count = len(
+            RESULT_BOUNDARY_SAMPLE_UV
+        )
+
+        batch_size = max(
+            int(RESULT_BOUNDARY_FACE_BATCH_SIZE),
+            1,
+        )
+
+        for batch_start in range(
+            0,
+            n_faces,
+            batch_size,
+        ):
+            batch_end = min(
+                batch_start + batch_size,
+                n_faces,
+            )
+
+            batch_faces = face_points[
+                batch_start:batch_end
+            ]
+
+            batch_owners = owner_cell_ids[
+                batch_start:batch_end
+            ]
+
+            sample_points, sample_normals = (
+                self._result_bilinear_face_samples(
+                    batch_faces
+                )
+            )
+
+            owner_centers = cell_centers[
+                batch_owners
+            ][:, None, :]
+
+            outward_vectors = (
+                sample_points
+                - owner_centers
+            )
+
+            orientation = np.sum(
+                sample_normals
+                * outward_vectors,
+                axis=2,
+            )
+
+            flip_mask = orientation < 0.0
+            sample_normals[flip_mask] *= -1.0
+
+            edge_lengths = np.stack(
+                [
+                    np.linalg.norm(
+                        batch_faces[:, 1] - batch_faces[:, 0],
+                        axis=1,
+                    ),
+                    np.linalg.norm(
+                        batch_faces[:, 2] - batch_faces[:, 1],
+                        axis=1,
+                    ),
+                    np.linalg.norm(
+                        batch_faces[:, 3] - batch_faces[:, 2],
+                        axis=1,
+                    ),
+                    np.linalg.norm(
+                        batch_faces[:, 0] - batch_faces[:, 3],
+                        axis=1,
+                    ),
+                ],
+                axis=1,
+            )
+
+            face_scale = np.max(
+                edge_lengths,
+                axis=1,
+            )
+
+            base_offset = np.maximum(
+                face_scale
+                * RESULT_BOUNDARY_OUTSIDE_OFFSET_RATIO,
+                RESULT_BOUNDARY_OUTSIDE_OFFSET_ABSOLUTE,
+            )
+
+            sample_is_covered = np.zeros(
+                (
+                    batch_end - batch_start,
+                    sample_count,
+                ),
+                dtype=bool,
+            )
+
+            unresolved = np.ones_like(
+                sample_is_covered,
+                dtype=bool,
+            )
+
+            owner_matrix = np.repeat(
+                batch_owners[:, None],
+                sample_count,
+                axis=1,
+            )
+
+            for multiplier in (
+                RESULT_BOUNDARY_OUTSIDE_OFFSET_MULTIPLIERS
+            ):
+                if not np.any(unresolved):
+                    break
+
+                query_points = (
+                    sample_points
+                    + sample_normals
+                    * (
+                        base_offset[:, None, None]
+                        * float(multiplier)
+                    )
+                )
+
+                unresolved_flat = unresolved.reshape(-1)
+                query_flat = query_points.reshape(-1, 3)
+
+                try:
+                    located = np.asarray(
+                        find_containing_cell(
+                            query_flat[unresolved_flat]
+                        ),
+                        dtype=np.int64,
+                    ).reshape(-1)
+                except Exception:
+                    
+                    
+                    return np.zeros(
+                        n_faces,
+                        dtype=bool,
+                    )
+
+                located_full = np.full(
+                    unresolved_flat.shape,
+                    -2,
+                    dtype=np.int64,
+                )
+                located_full[unresolved_flat] = located
+                located_full = located_full.reshape(
+                    unresolved.shape
+                )
+
+                other_cell = (
+                    unresolved
+                    & (located_full >= 0)
+                    & (located_full != owner_matrix)
+                )
+
+                outside_union = (
+                    unresolved
+                    & (located_full < 0)
+                )
+
+                sample_is_covered[other_cell] = True
+
+                unresolved[
+                    other_cell
+                    | outside_union
+                ] = False
+
+                
+                
+
+            
+            
+            internal_mask[
+                batch_start:batch_end
+            ] = np.all(
+                sample_is_covered,
+                axis=1,
+            )
+
+        return internal_mask
+
+
+    def _build_result_property_shell_surface_fallback(
+        self,
+        grid,
+    ):
+        """非纯六面体网格的兼容回退路径。"""
+        stable_grid = grid
+
+        if RESULT_PROPERTY_MERGE_SHARED_POINTS:
+            tolerance = self._result_property_clean_tolerance(
+                grid.bounds
+            )
+
+            try:
+                stable_grid = grid.clean(
+                    tolerance=tolerance,
+                    remove_unused_points=True,
+                )
+            except TypeError:
+                try:
+                    stable_grid = grid.clean(
+                        tolerance=tolerance,
+                    )
+                except Exception:
+                    stable_grid = grid
+            except Exception:
+                stable_grid = grid
+
+            if (
+                stable_grid is None
+                or getattr(
+                    stable_grid,
+                    "n_cells",
+                    0,
+                ) == 0
+            ):
+                stable_grid = grid
+
+        try:
+            surface = stable_grid.extract_surface()
+        except Exception:
+            surface = grid.extract_surface()
+
+        if surface is None:
+            return None
+
+        try:
+            surface = surface.clean(
+                remove_unused_points=True,
+            )
+        except TypeError:
+            try:
+                surface = surface.clean()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return surface
+
+
+    def _build_result_property_shell_surface(self, grid):
+        """
+        基于六面体面归属关系构建真正的 leaf-cell 外表面。
+        """
+        if grid is None:
+            return None
+
+        working_grid = grid
+
+        if not isinstance(
+            working_grid,
+            pv.UnstructuredGrid,
+        ):
+            try:
+                working_grid = (
+                    working_grid.cast_to_unstructured_grid()
+                )
+            except Exception:
+                return self._build_result_property_shell_surface_fallback(
+                    grid
+                )
+
+        connectivity = self._result_hexa_connectivity(
+            working_grid
+        )
+
+        if connectivity is None:
+            return self._build_result_property_shell_surface_fallback(
+                grid
+            )
+
+        points = np.asarray(
+            working_grid.points,
+            dtype=np.float64,
         )
 
         if (
-            overlay_renderer is not None
-            and overlay_main_renderer is not None
-            and overlay_main_renderer is not main_renderer
+            points.ndim != 2
+            or points.shape[1] != 3
+            or not np.isfinite(points).all()
         ):
-            try:
-                render_window.RemoveRenderer(overlay_renderer)
-            except Exception:
-                pass
-
-            try:
-                overlay_renderer.RemoveAllViewProps()
-            except Exception:
-                pass
-
-            overlay_renderer = None
-            self._result_geometry_overlay_renderer = None
-            self._result_geometry_overlay_layer = None
-            self._result_geometry_overlay_attached = False
-            self._result_geometry_overlay_main_renderer = None
-
-        if overlay_renderer is None:
-            try:
-                overlay_renderer = main_renderer.NewInstance()
-            except Exception:
-                return None
-
-            try:
-                main_layer = int(main_renderer.GetLayer())
-            except Exception:
-                main_layer = 0
-
-            try:
-                current_layer_count = int(
-                    render_window.GetNumberOfLayers()
-                )
-            except Exception:
-                current_layer_count = 1
-
-            overlay_layer = max(
-                main_layer + 1,
-                current_layer_count,
+            return self._build_result_property_shell_surface_fallback(
+                grid
             )
 
-            try:
-                render_window.SetNumberOfLayers(
-                    overlay_layer + 1
-                )
-                overlay_renderer.SetLayer(
-                    overlay_layer
-                )
-            except Exception:
-                return None
-
-            self._result_geometry_overlay_renderer = overlay_renderer
-            self._result_geometry_overlay_layer = overlay_layer
-            self._result_geometry_overlay_attached = False
-            self._result_geometry_overlay_main_renderer = main_renderer
-
-        overlay_layer = getattr(
-            self,
-            "_result_geometry_overlay_layer",
-            None,
+        tolerance = self._result_boundary_point_tolerance(
+            working_grid.bounds
         )
 
-        if overlay_layer is not None:
-            try:
-                current_layer_count = int(
-                    render_window.GetNumberOfLayers()
-                )
-
-                if current_layer_count <= int(overlay_layer):
-                    render_window.SetNumberOfLayers(
-                        int(overlay_layer) + 1
-                    )
-
-                overlay_renderer.SetLayer(
-                    int(overlay_layer)
-                )
-            except Exception:
-                pass
-
-        if attach_to_window:
-            self._set_result_geometry_overlay_attached(True)
-
         try:
-            overlay_renderer.SetActiveCamera(
-                main_renderer.GetActiveCamera()
+            quantized_points = np.rint(
+                points / float(tolerance)
+            ).astype(
+                np.int64,
+                copy=False,
+            )
+
+            (
+                _unique_point_keys,
+                representative_point_ids,
+                merged_point_ids,
+            ) = np.unique(
+                quantized_points,
+                axis=0,
+                return_index=True,
+                return_inverse=True,
             )
         except Exception:
-            pass
+            return self._build_result_property_shell_surface_fallback(
+                grid
+            )
+
+        merged_points = points[
+            representative_point_ids
+        ]
+
+        merged_connectivity = merged_point_ids[
+            connectivity
+        ]
+
+        face_local_ids = self._result_hexa_face_local_ids()
+
+        face_vertex_ids = merged_connectivity[
+            :,
+            face_local_ids,
+        ]
+
+        n_cells = int(
+            merged_connectivity.shape[0]
+        )
+
+        flat_face_vertex_ids = face_vertex_ids.reshape(
+            n_cells * 6,
+            4,
+        )
+
+        face_keys = np.sort(
+            flat_face_vertex_ids,
+            axis=1,
+        )
 
         try:
-            overlay_renderer.SetViewport(
-                *main_renderer.GetViewport()
+            (
+                _unique_face_keys,
+                face_key_inverse,
+                face_key_counts,
+            ) = np.unique(
+                face_keys,
+                axis=0,
+                return_inverse=True,
+                return_counts=True,
             )
         except Exception:
-            pass
+            return self._build_result_property_shell_surface_fallback(
+                grid
+            )
 
-        try:
-            overlay_renderer.SetInteractive(False)
-        except Exception:
-            try:
-                overlay_renderer.InteractiveOff()
-            except Exception:
-                pass
+        
+        candidate_flat_ids = np.flatnonzero(
+            face_key_counts[
+                face_key_inverse
+            ] == 1
+        )
 
-        try:
-            overlay_renderer.SetPreserveColorBuffer(True)
-        except Exception:
-            try:
-                overlay_renderer.PreserveColorBufferOn()
-            except Exception:
-                pass
+        if candidate_flat_ids.size == 0:
+            return pv.PolyData()
 
-        try:
-            overlay_renderer.SetPreserveDepthBuffer(False)
-        except Exception:
-            try:
-                overlay_renderer.PreserveDepthBufferOff()
-            except Exception:
-                pass
+        owner_cell_ids = (
+            candidate_flat_ids // 6
+        ).astype(
+            np.int64,
+            copy=False,
+        )
 
-        try:
-            overlay_renderer.SetBackgroundAlpha(0.0)
-        except Exception:
-            pass
+        local_face_ids = (
+            candidate_flat_ids % 6
+        ).astype(
+            np.int64,
+            copy=False,
+        )
 
-        try:
-            overlay_renderer.SetUseDepthPeeling(False)
-        except Exception:
-            pass
+        candidate_face_ids = face_vertex_ids[
+            owner_cell_ids,
+            local_face_ids,
+        ].copy()
 
-        try:
-            overlay_renderer.DrawOn()
-        except Exception:
-            pass
+        candidate_face_points = merged_points[
+            candidate_face_ids
+        ]
 
-        if RESULT_ENABLE_ANTI_ALIASING:
-            try:
-                if hasattr(overlay_renderer, "SetUseFXAA"):
-                    overlay_renderer.SetUseFXAA(True)
-            except Exception:
-                pass
+        
+        tri_normal_1 = np.cross(
+            candidate_face_points[:, 1]
+            - candidate_face_points[:, 0],
+            candidate_face_points[:, 2]
+            - candidate_face_points[:, 0],
+        )
 
-        try:
-            if hasattr(overlay_renderer, "AutomaticLightCreationOn"):
-                overlay_renderer.AutomaticLightCreationOn()
-        except Exception:
-            pass
+        tri_normal_2 = np.cross(
+            candidate_face_points[:, 2]
+            - candidate_face_points[:, 0],
+            candidate_face_points[:, 3]
+            - candidate_face_points[:, 0],
+        )
 
-        return overlay_renderer
+        area_measure = (
+            np.linalg.norm(
+                tri_normal_1,
+                axis=1,
+            )
+            + np.linalg.norm(
+                tri_normal_2,
+                axis=1,
+            )
+        )
+
+        valid_face_mask = (
+            np.isfinite(area_measure)
+            & (area_measure > tolerance * tolerance)
+        )
+
+        candidate_face_ids = candidate_face_ids[
+            valid_face_mask
+        ]
+        candidate_face_points = candidate_face_points[
+            valid_face_mask
+        ]
+        owner_cell_ids = owner_cell_ids[
+            valid_face_mask
+        ]
+
+        if owner_cell_ids.size == 0:
+            return pv.PolyData()
+
+        
+        cell_centers = np.mean(
+            points[connectivity],
+            axis=1,
+        )
+
+        face_centers = np.mean(
+            candidate_face_points,
+            axis=1,
+        )
+
+        face_normals = (
+            tri_normal_1[valid_face_mask]
+            + tri_normal_2[valid_face_mask]
+        )
+
+        outward_vectors = (
+            face_centers
+            - cell_centers[owner_cell_ids]
+        )
+
+        reverse_mask = np.sum(
+            face_normals * outward_vectors,
+            axis=1,
+        ) < 0.0
+
+        if np.any(reverse_mask):
+            candidate_face_ids[reverse_mask] = (
+                candidate_face_ids[
+                    reverse_mask
+                ][:, [0, 3, 2, 1]]
+            )
+
+            candidate_face_points[reverse_mask] = (
+                candidate_face_points[
+                    reverse_mask
+                ][:, [0, 3, 2, 1]]
+            )
+
+        nonconforming_internal = (
+            self._result_remove_nonconforming_internal_faces(
+                grid=working_grid,
+                owner_cell_ids=owner_cell_ids,
+                face_points=candidate_face_points,
+            )
+        )
+
+        keep_mask = ~nonconforming_internal
+
+        boundary_face_ids = candidate_face_ids[
+            keep_mask
+        ]
+
+        boundary_owner_ids = owner_cell_ids[
+            keep_mask
+        ]
+
+        if boundary_owner_ids.size == 0:
+            return pv.PolyData()
+
+        used_merged_point_ids, compact_inverse = np.unique(
+            boundary_face_ids.reshape(-1),
+            return_inverse=True,
+        )
+
+        compact_points = merged_points[
+            used_merged_point_ids
+        ].astype(
+            np.float64,
+            copy=False,
+        )
+
+        compact_faces = compact_inverse.reshape(
+            -1,
+            4,
+        )
+
+        vtk_faces = np.empty(
+            (
+                compact_faces.shape[0],
+                5,
+            ),
+            dtype=np.int64,
+        )
+
+        vtk_faces[:, 0] = 4
+        vtk_faces[:, 1:5] = compact_faces
+
+        surface = pv.PolyData(
+            compact_points,
+            vtk_faces.reshape(-1),
+        )
+
+        output_representative_point_ids = (
+            representative_point_ids[
+                used_merged_point_ids
+            ]
+        )
+
+        self._result_copy_boundary_data(
+            source_grid=working_grid,
+            surface=surface,
+            owner_cell_ids=boundary_owner_ids,
+            representative_point_ids=(
+                output_representative_point_ids
+            ),
+        )
+      
+        return surface
 
 
     @staticmethod
@@ -528,32 +3232,68 @@ class PyVistaRenderer:
                 pass
 
         try:
-            actor.ForceTranslucentOff()
+            actor.ForceTranslucentOn()
         except Exception:
             try:
-                actor.SetForceTranslucent(False)
+                actor.SetForceTranslucent(True)
             except Exception:
                 pass
 
         try:
             prop = actor.GetProperty()
+        except Exception:
+            prop = None
 
-            if prop is not None:
-                prop.SetOpacity(
-                    RESULT_PROPERTY_OPACITY
-                )
+        if prop is None:
+            return
 
-                try:
-                    prop.FrontfaceCullingOff()
-                except Exception:
-                    pass
-
-                try:
-                    prop.BackfaceCullingOff()
-                except Exception:
-                    pass
+        try:
+            prop.SetOpacity(
+                RESULT_PROPERTY_OPACITY
+            )
         except Exception:
             pass
+
+        try:
+            prop.LightingOff()
+        except Exception:
+            try:
+                prop.SetLighting(False)
+            except Exception:
+                pass
+
+        try:
+            prop.SetAmbient(1.0)
+            prop.SetDiffuse(0.0)
+            prop.SetSpecular(0.0)
+        except Exception:
+            pass
+
+        try:
+            prop.EdgeVisibilityOff()
+        except Exception:
+            try:
+                prop.SetEdgeVisibility(False)
+            except Exception:
+                pass
+
+        try:
+            prop.FrontfaceCullingOff()
+        except Exception:
+            pass
+
+        try:
+            if RESULT_PROPERTY_BACKFACE_CULLING:
+                prop.BackfaceCullingOn()
+            else:
+                prop.BackfaceCullingOff()
+        except Exception:
+            try:
+                prop.SetBackfaceCulling(
+                    bool(RESULT_PROPERTY_BACKFACE_CULLING)
+                )
+            except Exception:
+                pass
 
 
     @staticmethod
@@ -784,7 +3524,7 @@ class PyVistaRenderer:
         self._configure_result_fracture_actor(
             actor
         )
-        self._move_actor_to_result_geometry_overlay(
+        self._move_actor_to_result_main_renderer_end(
             actor
         )
 
@@ -819,7 +3559,7 @@ class PyVistaRenderer:
         self._configure_result_geometry_actor(
             actor
         )
-        self._move_actor_to_result_geometry_overlay(
+        self._move_actor_to_result_main_renderer_end(
             actor
         )
 
@@ -827,7 +3567,7 @@ class PyVistaRenderer:
 
 
     def _move_actor_to_result_main_renderer_end(self, actor) -> None:
-
+        """将结果 actor 放入主 renderer，并移动到当前渲染队列末尾。"""
         if actor is None:
             return
 
@@ -836,6 +3576,7 @@ class PyVistaRenderer:
         if main_renderer is None:
             return
 
+        
         overlay_renderer = getattr(
             self,
             "_result_geometry_overlay_renderer",
@@ -846,14 +3587,26 @@ class PyVistaRenderer:
             try:
                 overlay_renderer.RemoveActor(actor)
             except Exception:
-                pass
+                try:
+                    overlay_renderer.RemoveViewProp(actor)
+                except Exception:
+                    pass
 
         try:
             main_renderer.RemoveActor(actor)
+        except Exception:
+            try:
+                main_renderer.RemoveViewProp(actor)
+            except Exception:
+                pass
+
+        try:
             main_renderer.AddActor(actor)
         except Exception:
-            pass
-
+            try:
+                main_renderer.AddViewProp(actor)
+            except Exception:
+                pass
 
     def _result_geometry_actors(self):
 
@@ -902,69 +3655,10 @@ class PyVistaRenderer:
         self,
         actor,
     ) -> None:
-
-        if actor is None:
-            return
-
-        overlay_renderer = self._ensure_result_geometry_overlay_renderer()
-        main_renderer = self._main_result_renderer()
-
-        if overlay_renderer is None:
-            if main_renderer is not None:
-                try:
-                    main_renderer.RemoveActor(actor)
-                    main_renderer.AddActor(actor)
-                except Exception:
-                    pass
-            return
-
-        render_window = getattr(
-            self.plotter,
-            "ren_win",
-            None,
+        """兼容旧调用：结果几何统一放入主 renderer。"""
+        self._move_actor_to_result_main_renderer_end(
+            actor
         )
-
-        if render_window is not None:
-            try:
-                renderers = render_window.GetRenderers()
-                renderers.InitTraversal()
-
-                for _ in range(int(renderers.GetNumberOfItems())):
-                    renderer = renderers.GetNextItem()
-
-                    if renderer is None or renderer is overlay_renderer:
-                        continue
-
-                    try:
-                        renderer.RemoveActor(actor)
-                    except Exception:
-                        try:
-                            renderer.RemoveViewProp(actor)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-
-        if main_renderer is not None:
-            try:
-                main_renderer.RemoveActor(actor)
-            except Exception:
-                pass
-
-        try:
-            overlay_renderer.RemoveActor(actor)
-        except Exception:
-            pass
-
-        try:
-            overlay_renderer.AddActor(actor)
-        except Exception:
-            if main_renderer is not None:
-                try:
-                    main_renderer.AddActor(actor)
-                except Exception:
-                    pass
-
 
     def _clear_result_geometry_overlay(
         self,
@@ -997,93 +3691,59 @@ class PyVistaRenderer:
 
 
     def _prepare_result_depth_rendering(self):
-
+        """
+        在真正渲染前只同步材质和裁剪范围，不再移动或重新挂载 actor。
+        """
         self._configure_result_translucent_scene()
 
-        cache = getattr(
-            self,
-            "cache",
-            None,
-        )
-
+        cache = getattr(self, "cache", None)
         if not isinstance(cache, dict):
-            self._set_result_geometry_overlay_attached(
-                False
-            )
             return
+
+        property_visible = self._result_property_is_visible()
 
         for cache_key in RESULT_MAIN_SCENE_ACTOR_CACHE_KEYS:
             actor = cache.get(cache_key)
-
             if actor is None:
                 continue
 
-            self._move_actor_to_result_main_renderer_end(actor)
-
             if cache_key in RESULT_PROPERTY_ACTOR_CACHE_KEYS:
                 self._configure_result_property_actor(actor)
-
-        geometry_actors = self._result_geometry_actors()
-
-        if geometry_actors:
-            overlay_renderer = (
-                self._ensure_result_geometry_overlay_renderer(
-                    attach_to_window=True,
+            elif cache_key in RESULT_GRID_SURFACE_ACTOR_CACHE_KEYS:
+                self._configure_result_grid_surface_actor(
+                    actor,
+                    property_visible=property_visible,
                 )
-            )
-
-            for cache_key, actor in geometry_actors:
-                if (
-                    cache_key == "fracture_actors"
-                    or "_frac_actors" in cache_key
-                ):
-                    self._configure_result_fracture_actor(
-                        actor
-                    )
-                else:
-                    self._configure_result_geometry_actor(
-                        actor
-                    )
-
-                self._move_actor_to_result_geometry_overlay(
-                    actor
+            elif cache_key in RESULT_GRID_EDGE_ACTOR_CACHE_KEYS:
+                self._configure_result_grid_edge_actor(
+                    actor,
+                    property_visible=property_visible,
                 )
 
-            if overlay_renderer is not None:
-                main_renderer = self._main_result_renderer()
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
 
-                if main_renderer is not None:
-                    try:
-                        overlay_renderer.SetActiveCamera(
-                            main_renderer.GetActiveCamera()
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        overlay_renderer.SetViewport(
-                            *main_renderer.GetViewport()
-                        )
-                    except Exception:
-                        pass
-
-        else:
-            self._set_result_geometry_overlay_attached(
-                False
+        if geometry is not None:
+            prepare = getattr(
+                geometry,
+                "prepare_scene_for_render",
+                None,
             )
-
-        main_renderer = self._main_result_renderer()
-
-        if main_renderer is not None:
-            try:
-                main_renderer.ResetCameraClippingRange()
-            except Exception:
+            if prepare is not None:
                 try:
-                    self.plotter.reset_camera_clipping_range()
+                    prepare()
                 except Exception:
                     pass
 
-    #箭头
+        self._clear_result_geometry_overlay(
+            detach=True,
+            remove_renderer=True,
+        )
+
+        
+        self._apply_stable_result_clipping_range()
+
     def _add_petrel_arrow(self):
 
         shaft = pv.Box(
@@ -1095,12 +3755,12 @@ class PyVistaRenderer:
         )
         pts = np.array([
 
-            # 前面
+            
             [0.62, -0.30, -0.05],
             [0.62,  0.30, -0.05],
             [1.08,  0.00, -0.05],
 
-            # 后面
+            
             [0.62, -0.30,  0.05],
             [0.62,  0.30,  0.05],
             [1.08,  0.00,  0.05],
@@ -1137,9 +3797,9 @@ class PyVistaRenderer:
             color="#39d353"
         )
 
-    # =====================================================================
+    
     # 动态三面三维坐标系
-    # =====================================================================
+    
     def _clear_fixed_coordinate_axes(self):
 
         self._remove_actor_list(
@@ -2282,9 +4942,9 @@ class PyVistaRenderer:
 
         x_side, y_side, z_side = signature
 
-        # ---------------------------------------------------------
-        # 标准六视图隐藏轴规则。
-        # ---------------------------------------------------------
+        
+        
+        
         hidden_axis = (
             self._get_hidden_coordinate_axis_for_standard_view()
         )
@@ -2301,14 +4961,14 @@ class PyVistaRenderer:
             hidden_axis != "z"
         )
 
-        # 左视图 / 右视图时：
-        # X 是屏幕深度方向。
-        # 因此 Z 轴刻度和 Z 标签要沿 Y 方向偏移。
+        
+        
+        
         is_side_x_view = (
             hidden_axis == "x"
         )
 
-        # 当前三个坐标面。
+        
         x_plane = (
             xmin
             if x_side == "xmin"
@@ -2327,7 +4987,7 @@ class PyVistaRenderer:
             else zmax
         )
 
-        # 对应另一侧边界。
+        
         x_outer = (
             xmax
             if x_side == "xmin"
@@ -2346,7 +5006,7 @@ class PyVistaRenderer:
             else zmin
         )
 
-        # 从坐标面向外偏移的方向。
+        
         sign_x_plane = (
             -1.0
             if x_side == "xmin"
@@ -2365,7 +5025,7 @@ class PyVistaRenderer:
             else 1.0
         )
 
-        # 从外侧边向外偏移的方向。
+        
         sign_x_outer = (
             1.0
             if x_outer == xmax
@@ -2386,9 +5046,9 @@ class PyVistaRenderer:
 
         self._clear_fixed_coordinate_axes()
 
-        # ---------------------------------------------------------
-        # 网格刻度。
-        # ---------------------------------------------------------
+        
+        
+        
         grid_step = self._get_fixed_grid_step(
             xmin=xmin,
             xmax=xmax,
@@ -2417,9 +5077,9 @@ class PyVistaRenderer:
             grid_step,
         )
 
-        # ---------------------------------------------------------
-        # 基于模型最大尺寸计算距离。
-        # ---------------------------------------------------------
+        
+        
+        
         reference_span = max(
             abs(x_span),
             abs(y_span),
@@ -2457,26 +5117,26 @@ class PyVistaRenderer:
             * COORDINATE_LABEL_DEPTH_OFFSET_RATIO
         )
 
-        # 主轴样式。
+        
         axis_color = (0.12, 0.12, 0.12)
         axis_line_width = 1.8
 
-        # 普通灰色边框样式。
+        
         edge_color = (0.58, 0.58, 0.58)
         edge_line_width = 1.0
 
-        # 内部网格样式。
+        
         grid_color = (0.62, 0.62, 0.62)
         grid_line_width = 0.7
 
         label_specs = []
 
-        # =========================================================
-        # 1. XY 平面
-        # z = z_plane
-        # =========================================================
+        
+        
+        
+        
 
-        # 前方 X 主轴。
+        
         if show_x_axis:
             self._add_fixed_coordinate_line(
                 (xmin, y_outer, z_plane),
@@ -2486,7 +5146,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # 前方 Y 主轴。
+        
         if show_y_axis:
             self._add_fixed_coordinate_line(
                 (x_outer, ymin, z_plane),
@@ -2496,7 +5156,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # XY 面普通边框。
+        
         self._add_fixed_coordinate_line(
             (xmin, y_plane, z_plane),
             (xmax, y_plane, z_plane),
@@ -2513,7 +5173,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # XY 面 X 向网格。
+        
         for x in x_ticks:
             self._add_fixed_coordinate_line(
                 (x, ymin, z_plane),
@@ -2523,7 +5183,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # XY 面 Y 向网格。
+        
         for y in y_ticks:
             self._add_fixed_coordinate_line(
                 (xmin, y, z_plane),
@@ -2533,12 +5193,12 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # =========================================================
-        # 2. YZ 平面
-        # x = x_plane
-        # =========================================================
+        
+        
+        
+        
 
-        # 左侧 Z 主轴。
+        
         if show_z_axis:
             self._add_fixed_coordinate_line(
                 (x_plane, y_outer, zmin),
@@ -2548,7 +5208,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # 顶部 Y 主轴。
+        
         if show_y_axis:
             self._add_fixed_coordinate_line(
                 (x_plane, ymin, z_outer),
@@ -2558,7 +5218,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # YZ 面普通边框。
+        
         self._add_fixed_coordinate_line(
             (x_plane, y_plane, zmin),
             (x_plane, y_plane, zmax),
@@ -2575,7 +5235,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # YZ 面 Y 向网格。
+        
         for y in y_ticks:
             self._add_fixed_coordinate_line(
                 (x_plane, y, zmin),
@@ -2585,7 +5245,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # YZ 面 Z 向网格。
+        
         for z in z_ticks:
             self._add_fixed_coordinate_line(
                 (x_plane, ymin, z),
@@ -2595,12 +5255,12 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # =========================================================
-        # 3. XZ 平面
-        # y = y_plane
-        # =========================================================
+        
+        
+        
+        
 
-        # 右侧 Z 主轴。
+        
         if show_z_axis:
             self._add_fixed_coordinate_line(
                 (x_outer, y_plane, zmin),
@@ -2610,7 +5270,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # 顶部 X 主轴。
+        
         if show_x_axis:
             self._add_fixed_coordinate_line(
                 (xmin, y_plane, z_outer),
@@ -2620,7 +5280,7 @@ class PyVistaRenderer:
                 opacity=1.0,
             )
 
-        # XZ 面普通边框。
+        
         self._add_fixed_coordinate_line(
             (x_plane, y_plane, zmin),
             (x_plane, y_plane, zmax),
@@ -2637,7 +5297,7 @@ class PyVistaRenderer:
             opacity=0.75,
         )
 
-        # XZ 面 X 向网格。
+        
         for x in x_ticks:
             self._add_fixed_coordinate_line(
                 (x, y_plane, zmin),
@@ -2647,7 +5307,7 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # XZ 面 Z 向网格。
+        
         for z in z_ticks:
             self._add_fixed_coordinate_line(
                 (xmin, y_plane, z),
@@ -2657,9 +5317,9 @@ class PyVistaRenderer:
                 opacity=0.45,
             )
 
-        # =========================================================
-        # 顶部 X 轴刻度与数字
-        # =========================================================
+        
+        
+        
         if show_x_axis:
             for x in x_ticks:
                 axis_point = (
@@ -2695,9 +5355,9 @@ class PyVistaRenderer:
                     ),
                 )
 
-        # =========================================================
-        # 顶部 Y 轴刻度与数字
-        # =========================================================
+        
+        
+        
         if show_y_axis:
             for y in y_ticks:
                 axis_point = (
@@ -2733,9 +5393,9 @@ class PyVistaRenderer:
                     ),
                 )
 
-        # =========================================================
-        # 前方 X 轴刻度与数字
-        # =========================================================
+        
+        
+        
         if show_x_axis:
             for x in x_ticks:
                 axis_point = (
@@ -2771,9 +5431,9 @@ class PyVistaRenderer:
                     ),
                 )
 
-        # =========================================================
-        # 前方 Y 轴刻度与数字
-        # =========================================================
+        
+        
+        
         if show_y_axis:
             for y in y_ticks:
                 axis_point = (
@@ -2809,16 +5469,16 @@ class PyVistaRenderer:
                     ),
                 )
 
-        # =========================================================
-        # 左右两侧 Z 轴刻度与数字
-        # =========================================================
+        
+        
+        
         if show_z_axis:
             for z in z_ticks:
 
-                # -------------------------------------------------
-                # 第一条 Z 边：YZ 面外侧
-                # 位置：x_plane, y_outer
-                # -------------------------------------------------
+                
+                
+                
+                
                 axis_point = (
                     x_plane,
                     y_outer,
@@ -2867,10 +5527,10 @@ class PyVistaRenderer:
                     ),
                 )
 
-                # -------------------------------------------------
-                # 第二条 Z 边：XZ 面外侧
-                # 位置：x_outer, y_plane
-                # -------------------------------------------------
+                
+                
+                
+                
                 axis_point = (
                     x_outer,
                     y_plane,
@@ -2919,11 +5579,11 @@ class PyVistaRenderer:
                     ),
                 )
 
-        # =========================================================
-        # 坐标轴标题
-        # =========================================================
+        
+        
+        
 
-        # X-axis
+        
         if show_x_axis:
             axis_point = (
                 (xmin + xmax) * 0.5,
@@ -2948,7 +5608,7 @@ class PyVistaRenderer:
                 text="X-axis",
             )
 
-        # Y-axis
+        
         if show_y_axis:
             axis_point = (
                 x_outer,
@@ -2973,7 +5633,7 @@ class PyVistaRenderer:
                 text="Y-axis",
             )
 
-        # Z-axis
+        
         if show_z_axis:
             axis_point = (
                 x_plane,
@@ -3037,9 +5697,9 @@ class PyVistaRenderer:
             force=True
         )
 
-    # =====================================================================
-    # 相机旋转监听
-    # =====================================================================
+    
+    
+    
     def _get_render_interactor_for_coordinate_axes(self):
         """
         获取 PyVistaQt / PyVista 的交互器。
@@ -3230,9 +5890,9 @@ class PyVistaRenderer:
             self._render()
 
 
-    # =====================================================================
-    # UI 调用接口
-    # =====================================================================
+    
+    
+    
     def show_coordinate_axes_for_model(self, sim_data):
         """
         根据当前完整模型显示动态三面坐标系。
@@ -3339,7 +5999,9 @@ class PyVistaRenderer:
             "corner_actor": None,
             "corner_surface_actor": None,
             "corner_grid_hash": None,
+            "corner_grid_camera_initialized": False,
             "well_actors": [],
+            "well_label_actors": [],
 
             "original_grid_opacity": None,
             "original_pressure_opacity": None,
@@ -3356,6 +6018,7 @@ class PyVistaRenderer:
             "layer_coarse_grid_actor": None,
             "layer_frac_actors": [],
             "layer_well_actors": [],
+            "layer_well_label_actors": [],
             
             "sw_field_actor": None,
             "sw_scalar_bar": None,
@@ -3364,6 +6027,7 @@ class PyVistaRenderer:
             "layer_sw_coarse_grid_actor": None,
             "layer_sw_frac_actors": [],
             "layer_sw_well_actors": [],
+            "layer_sw_well_label_actors": [],
 
             "phi_field_actor": None,
             "phi_scalar_bar": None,
@@ -3372,11 +6036,15 @@ class PyVistaRenderer:
             "layer_phi_coarse_grid_actor": None,
             "layer_phi_frac_actors": [],
             "layer_phi_well_actors": [],
+            "layer_phi_well_label_actors": [],
 
             "threshold_actor": None,
             "threshold_scalar_bar": None,
             "threshold_grid_actor": None,
             "threshold_grid_visible": True,
+            "threshold_scalar_bar_title": None,
+            "threshold_source_context": None,
+            "threshold_source_actor_states": [],
 
             "perm_field_actor": None,
             "perm_scalar_bar": None,
@@ -3385,8 +6053,9 @@ class PyVistaRenderer:
             "layer_perm_coarse_grid_actor": None,
             "layer_perm_frac_actors": [],
             "layer_perm_well_actors": [],
+            "layer_perm_well_label_actors": [],
 
-            # 单元拾取 / cell picking
+            
             "cell_pick_grid": None,
             "cell_pick_actor": None,
             "cell_pick_highlight_actor": None,
@@ -3394,8 +6063,11 @@ class PyVistaRenderer:
             "cell_pick_enabled": False,
             "cell_pick_property": "Pressure",
             "cell_pick_last_info": None,
+            "cell_pick_source_mode": None,
+            "cell_pick_scalar_name": None,
+            "active_property_context": None,
 
-            # 动态测距
+            
             "measure_enabled": False,
             "measure_start_point": None,
             "measure_end_point": None,
@@ -3405,7 +6077,7 @@ class PyVistaRenderer:
             "measure_is_previewing": False,
             "measure_last_info": None,
 
-            # 时间步播放
+            
             "time_playback_actor": None,
             "time_playback_scalar_bar": None,
             "time_playback_surface": None,
@@ -3422,7 +6094,7 @@ class PyVistaRenderer:
             "time_playback_clim": None,
             "time_playback_selected_cell_ids": None,
 
-            # 动态三面坐标系
+            
             "fixed_coordinate_axis_actors": [],
             "fixed_coordinate_label_actor": None,
             "fixed_coordinate_label_actors": [],
@@ -3435,13 +6107,14 @@ class PyVistaRenderer:
             "camera_aware_coordinate_signature": None,
             "camera_aware_coordinate_observers": [],
 
-            # 2D Magnify
+            
             "magnify_2d_active": False,
             "magnify_2d_dragging": False,
             "magnify_2d_world_bounds": None,
             "magnify_2d_start_xy": None,
 
-            # 折线垂向剖面
+            
+            "property_display_mode": "full",
             "fence_section_drawing": False,
             "fence_section_finished": False,
             "fence_section_sim_data": None,
@@ -3468,10 +6141,23 @@ class PyVistaRenderer:
             "fence_section_context_actor_states": [],
             "fence_section_context_captured": False,
             "fence_section_context_hidden_once": False,
+            "fence_section_property_context": None,
+            "fence_section_property_config": None,
+            "fence_section_refreshing_property": False,
+            "fence_section_persistent_active": False,
+            "fence_section_pending_property_refresh": False,
+            "fence_section_context_token": None,
+            "fence_section_applied_context_token": None,
+            "fence_section_render_guard": False,
         }
 
     def _render(self):
+        """在最终绘制前同步材质，再让持久剖面状态最后生效。"""
         self._prepare_result_depth_rendering()
+
+        if not self.cache.get("fence_section_render_guard", False):
+            self._ensure_vertical_fence_section_before_render()
+
         self.plotter.render()
 
     def render_now(self):
@@ -3510,6 +6196,91 @@ class PyVistaRenderer:
             self._render()
         except Exception:
             pass
+
+    def _capture_property_switch_camera(self):
+        """保存属性切换前的完整摄像头状态，不触发渲染。"""
+        try:
+            self._property_switch_camera_state = self.capture_camera_state()
+        except Exception:
+            self._property_switch_camera_state = None
+
+        self._preserve_camera_on_property_switch = True
+        return self._property_switch_camera_state
+
+    def _restore_property_switch_camera(self, consume=False):
+        """恢复属性切换前视角；只写相机参数，不主动 render。"""
+        state = getattr(
+            self,
+            "_property_switch_camera_state",
+            None,
+        )
+
+        if not state:
+            return False
+
+        try:
+            camera_position = (
+                state.get("position"),
+                state.get("focal_point"),
+                state.get("view_up"),
+            )
+
+            if all(value is not None for value in camera_position):
+                self.plotter.camera_position = camera_position
+
+            cam = self.plotter.camera
+
+            try:
+                cam.parallel_projection = bool(
+                    state.get("parallel_projection", False)
+                )
+            except Exception:
+                pass
+
+            try:
+                parallel_scale = state.get("parallel_scale")
+                if parallel_scale is not None:
+                    cam.parallel_scale = float(parallel_scale)
+            except Exception:
+                pass
+
+            try:
+                view_angle = state.get("view_angle")
+                if view_angle is not None:
+                    cam.view_angle = float(view_angle)
+            except Exception:
+                pass
+
+            try:
+                clipping_range = state.get("clipping_range")
+                if clipping_range is not None:
+                    cam.clipping_range = tuple(
+                        float(value)
+                        for value in clipping_range
+                    )
+            except Exception:
+                pass
+
+            return True
+
+        except Exception:
+            return False
+
+        finally:
+            if consume:
+                self._property_switch_camera_state = None
+
+    def _finish_property_switch_render(self):
+        """属性/网格替换完成后恢复视角，并只渲染一次。"""
+        if self.is_fence_property_display_mode():
+            self.cache["fence_section_pending_property_refresh"] = True
+            self._set_fence_section_well_labels_hidden(True)
+            if self._vertical_fence_section_is_active():
+                self._hide_fence_section_context()
+
+        self._restore_property_switch_camera(consume=True)
+        self._preserve_camera_on_property_switch = False
+        self._render()
 
     def configure_selection_camera(self, world_bounds) -> None:
         if not world_bounds or len(world_bounds) != 6:
@@ -3746,78 +6517,173 @@ class PyVistaRenderer:
         self._selection_overlay_state["handle_radius"] = None
         self._render()
 
-    def clear_scene(self):
+    def _remove_cached_property_scalar_bar(self, cache_key):
+        scalar_bar = self.cache.get(cache_key)
 
+        if scalar_bar is None:
+            return
+
+        try:
+            self.plotter.remove_scalar_bar(
+                title=getattr(scalar_bar, "title", None),
+                render=False,
+            )
+        except Exception:
+            try:
+                self.plotter.remove_scalar_bar(render=False)
+            except Exception:
+                pass
+
+        self.cache[cache_key] = None
+
+
+    def clear_result_property_view(self, render_now=False):
+        """
+        属性切换专用轻量清理：清属性、网格和颜色条，保留井、裂缝、
+        坐标轴、摄像头及交互工具。预览和模拟共用该入口。
+        """
+        self._capture_property_switch_camera()
+
+        if self.is_fence_property_display_mode():
+            self.cache["fence_section_pending_property_refresh"] = True
+        else:
+            self.clear_active_property_context(refresh_picking=True)
+
+        static_property_preview = getattr(
+            self,
+            "static_property_preview",
+            None,
+        )
+        if static_property_preview is not None:
+            try:
+                static_property_preview.clear(render_now=False)
+            except Exception:
+                pass
+
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
+        if geometry is not None:
+            clear_grid = getattr(geometry, "clear_grid", None)
+            if clear_grid is not None:
+                try:
+                    clear_grid(render_now=False)
+                except Exception:
+                    pass
+
+        for key in tuple(dict.fromkeys(RESULT_PROPERTY_ACTOR_CACHE_KEYS)):
+            self._remove_actor(self.cache.get(key))
+            self.cache[key] = None
+
+        for key in tuple(dict.fromkeys(
+            RESULT_GRID_SURFACE_ACTOR_CACHE_KEYS
+            + RESULT_GRID_EDGE_ACTOR_CACHE_KEYS
+        )):
+            self._remove_actor(self.cache.get(key))
+            self.cache[key] = None
+
+        threshold_title = self.cache.get("threshold_scalar_bar_title")
+        if threshold_title:
+            try:
+                self.plotter.remove_scalar_bar(
+                    title=threshold_title,
+                    render=False,
+                )
+            except Exception:
+                pass
+
+        for key in (
+            "scalar_bar", "pressure_scalar_bar", "layer_pressure_scalar_bar",
+            "sw_scalar_bar", "layer_sw_scalar_bar", "phi_scalar_bar",
+            "layer_phi_scalar_bar", "threshold_scalar_bar", "perm_scalar_bar",
+            "layer_perm_scalar_bar", "time_playback_scalar_bar",
+        ):
+            self._remove_cached_property_scalar_bar(key)
+
+        self.cache["threshold_scalar_bar_title"] = None
+        self.cache["threshold_source_context"] = None
+        self.cache["threshold_source_actor_states"] = []
+        self.cache["threshold_actor"] = None
+        self.cache["threshold_grid_actor"] = None
+
+        self.cache["corner_grid_hash"] = None
+        self.cache["data_hash"] = None
+
+        
+        
+        
+        if render_now:
+            self._restore_property_switch_camera(consume=False)
+
+        return True
+
+    def clear_scene(self, render_now=False):
+        """兼容属性按钮原调用：只清属性场、网格和颜色条。"""
+        return self.clear_result_property_view(render_now=render_now)
+
+    def clear_all_scene(self, render_now=True):
+        """真正清空整个工作台，仅用于换工程或用户主动清空。"""
+        self.disable_cell_info_picking(
+            clear_highlight=True,
+            render_now=False,
+        )
+        self.clear_active_property_context(
+            refresh_picking=False,
+            force=True,
+        )
         self._remove_actor(self.cache.get("pressure_actor"))
         self._remove_actor(self.cache.get("pressure_field_actor"))
-
         self._remove_actor(self.cache.get("corner_actor"))
         self._remove_actor(self.cache.get("corner_surface_actor"))
-
         self._remove_actor(self.cache.get("grid_lines_actor"))
-
         self._remove_actor(self.cache.get("corner_lgr_parent_grid_actor"))
         self._remove_actor(self.cache.get("corner_lgr_refined_grid_actor"))
-
         self._remove_actor(self.cache.get("selection_outline_actor"))
         self._remove_actor(self.cache.get("selection_fill_actor"))
-
         self._remove_actor_list(self.cache.get("fracture_actors", []))
         self._remove_actor_list(self.cache.get("well_actors", []))
-
         self._remove_actor(self.cache.get("layer_pressure_actor"))
         self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
         self._remove_actor_list(self.cache.get("layer_frac_actors", []))
         self._remove_actor_list(self.cache.get("layer_well_actors", []))
-
         self._remove_actor_list(self.cache.get("selection_handle_actors", []))
-
         self._remove_actor(self.cache.get("sw_field_actor"))
         self._remove_actor(self.cache.get("layer_sw_actor"))
         self._remove_actor(self.cache.get("layer_sw_coarse_grid_actor"))
         self._remove_actor_list(self.cache.get("layer_sw_frac_actors", []))
         self._remove_actor_list(self.cache.get("layer_sw_well_actors", []))
-        
         self._remove_actor(self.cache.get("threshold_actor"))
         self._remove_actor(self.cache.get("threshold_grid_actor"))
-
         self._remove_actor(self.cache.get("phi_field_actor"))
         self._remove_actor(self.cache.get("layer_phi_actor"))
         self._remove_actor(self.cache.get("layer_phi_coarse_grid_actor"))
         self._remove_actor_list(self.cache.get("layer_phi_frac_actors", []))
         self._remove_actor_list(self.cache.get("layer_phi_well_actors", []))
-
         self._remove_actor(self.cache.get("perm_field_actor"))
         self._remove_actor(self.cache.get("layer_perm_actor"))
         self._remove_actor(self.cache.get("layer_perm_coarse_grid_actor"))
         self._remove_actor_list(self.cache.get("layer_perm_frac_actors", []))
         self._remove_actor_list(self.cache.get("layer_perm_well_actors", []))
-
         self._remove_actor(self.cache.get("cell_pick_actor"))
         self._remove_actor(self.cache.get("cell_pick_highlight_actor"))
-
         self._remove_actor(self.cache.get("measure_line_actor"))
-
         self._remove_actor(self.cache.get("time_playback_actor"))
 
         if hasattr(self, "disable_vertical_fence_section"):
             self.disable_vertical_fence_section(
                 clear_result=True,
                 render=False,
+                force_clear=True,
             )
-        
-        # 清除静态属性预览渲染器
-        if hasattr(self, "static_property_preview") and self.static_property_preview is not None:
+
+        if getattr(self, "static_property_preview", None) is not None:
             self.static_property_preview.clear(render_now=False)
-        # 清除几何预览渲染器
-        if hasattr(self, "geometry_preview") and self.geometry_preview is not None:
+
+        if getattr(self, "geometry_preview", None) is not None:
             self.geometry_preview.clear_all(render_now=False)
 
         self.disable_camera_aware_coordinate_axes(clear_axes=True)
-        
-        self.deactivate_2d_magnify(
-            render=False,
-        )
+        self.deactivate_2d_magnify(render=False)
 
         try:
             self.plotter.remove_scalar_bar(render=False)
@@ -3830,37 +6696,76 @@ class PyVistaRenderer:
         )
 
         self.cache = self._new_cache()
+        self._active_property_context = None
+        self._property_display_mode = "full"
+        self._property_switch_camera_state = None
+        self._preserve_camera_on_property_switch = False
         self._six_view_projection_active = False
         self._six_view_left_button_down = False
         self._six_view_press_position = None
 
-        self._render()
+        if render_now:
+            self._render()
 
-    def clear_cache(self):
+        return True
+
+    def clear_cache(self, full=False, render_now=False):
+        """
+        兼容外层旧代码。
+
+        属性切换代码即使仍调用 clear_cache()，默认也只做轻量清理，
+        不再执行 plotter.clear()。需要真正清空时传 full=True，
+        或直接调用 clear_all_cache()。
+        """
+        if not full:
+            return self.clear_result_property_view(
+                render_now=render_now,
+            )
+
+        return self.clear_all_cache(render_now=render_now)
+
+    def clear_all_cache(self, render_now=False):
+        """彻底清空 Plotter 和缓存，仅用于换工程/重新载入数据。"""
+        self.disable_cell_info_picking(
+            clear_highlight=True,
+            render_now=False,
+        )
+        self.clear_active_property_context(
+            refresh_picking=False,
+            force=True,
+        )
         self._clear_result_geometry_overlay(
             detach=True,
             remove_renderer=False,
         )
 
-        self.plotter.clear()  # 彻底清空主 Renderer 中的 actor
+        if getattr(self, "static_property_preview", None) is not None:
+            self.static_property_preview.clear(render_now=False)
+
+        if getattr(self, "geometry_preview", None) is not None:
+            self.geometry_preview.clear_all(render_now=False)
+
+        self.plotter.clear()
         self.cache = self._new_cache()
+        self._active_property_context = None
+        self._property_display_mode = "full"
+        self._property_switch_camera_state = None
+        self._preserve_camera_on_property_switch = False
         self._six_view_projection_active = False
         self._six_view_left_button_down = False
         self._six_view_press_position = None
-        self._selection_overlay_state = {
-            "world_bounds": None,
-            "handle_radius": None,
-            "outline_mesh": None,
-            "fill_mesh": None,
-        }
-        self._render()
+
+        if render_now:
+            self._render()
+
+        return True
 
 
     def _remove_actor(self, actor):
         if actor is None:
             return
 
-        # 正式结果的裂缝/井可能已经从主 Renderer 转移到了独立覆盖层。
+        
         result_overlay = getattr(
             self,
             "_result_geometry_overlay_renderer",
@@ -3873,8 +6778,8 @@ class PyVistaRenderer:
             except Exception:
                 pass
 
-        # 几何预览也有自己的覆盖层。这里一并尝试移除，确保预览对象通过
-        # host._remove_actor() 回调时不会残留在额外 Renderer 中。
+        
+        
         preview_overlay = getattr(
             self,
             "_geometry_preview_overlay_renderer",
@@ -3904,6 +6809,28 @@ class PyVistaRenderer:
             pass
 
     def _remove_actor_list(self, actors):
+        # 删除任一井 actor 列表时，同步删除对应井名标签。
+        cache = getattr(
+            self,
+            "cache",
+            None,
+        )
+
+        if isinstance(cache, dict):
+            for actor_key, label_key in (
+                RESULT_WELL_ACTOR_TO_LABEL_CACHE
+            ):
+                if actors is cache.get(actor_key):
+                    for label_actor in (
+                        cache.get(label_key, [])
+                        or []
+                    ):
+                        self._remove_actor(
+                            label_actor
+                        )
+
+                    cache[label_key] = []
+
         for actor in actors or []:
             self._remove_actor(actor)
 
@@ -3993,7 +6920,7 @@ class PyVistaRenderer:
             self.render_pressure_field(sim_data)
             return
 
-        surface = grid.extract_surface()
+        surface = self._build_result_property_shell_surface(grid)
         min_p = float(np.min(scalars))
         max_p = float(np.max(scalars))
 
@@ -4028,9 +6955,97 @@ class PyVistaRenderer:
         self.setup_camera(sim_data)
         self._render()
     
-    #裂缝旧接口
+    
+    # 统一井 / 裂缝显隐
+    
+    # 模拟前预览和模拟后结果始终共用 GeometryPreviewRenderer 中同一批 actor。
+    # 本类不再创建任何模拟专用井或裂缝 actor。
+    
+    def set_shared_fractures_visible(
+        self,
+        visible,
+        sim_data=None,
+        render_now=True,
+    ):
+        visible = bool(visible)
+
+        if sim_data is not None:
+            self.geometry_layers.set_scene_data(
+                sim_data,
+                render_now=False,
+            )
+        else:
+            sim_data = getattr(
+                self.geometry_layers,
+                "_last_sim_data",
+                None,
+            )
+
+        current = self.geometry_layers.is_fractures_visible()
+
+        if visible and not current and sim_data is not None:
+            self.geometry_layers.render_fractures(
+                sim_data,
+                render_now=False,
+            )
+        elif not visible and current:
+            self.geometry_layers.clear_fractures(
+                render_now=False,
+            )
+
+        if render_now:
+            self._render()
+
+        return self.geometry_layers.is_fractures_visible()
+
+
+    def set_shared_wells_visible(
+        self,
+        visible,
+        sim_data=None,
+        render_now=True,
+    ):
+        visible = bool(visible)
+
+        if sim_data is not None:
+            self.geometry_layers.set_scene_data(
+                sim_data,
+                render_now=False,
+            )
+        else:
+            sim_data = getattr(
+                self.geometry_layers,
+                "_last_sim_data",
+                None,
+            )
+
+        current = self.geometry_layers.is_wells_visible()
+
+        if visible and not current and sim_data is not None:
+            self.geometry_layers.render_wells(
+                sim_data,
+                render_now=False,
+            )
+        elif not visible and current:
+            self.geometry_layers.clear_wells(
+                render_now=False,
+            )
+
+        if render_now:
+            self._render()
+
+        return self.geometry_layers.is_wells_visible()
+
+
+    
     def render_fractures(self, sim_data):
-        self.render_corner_fractures(sim_data)
+        """统一裂缝按钮接口：只切换预览阶段创建的同一批裂缝 actor。"""
+        visible = self.geometry_layers.is_fractures_visible()
+        return self.set_shared_fractures_visible(
+            visible=not visible,
+            sim_data=sim_data,
+            render_now=True,
+        )
  
     def create_grid_lines(self, sim_data):
         self._remove_actor(self.cache["grid_lines_actor"])
@@ -4095,25 +7110,34 @@ class PyVistaRenderer:
         self._render()
 
     def has_fractures(self) -> bool:
-        actors = self.cache.get("fracture_actors") or []
-        return len(actors) > 0
+        return bool(
+            self.geometry_layers.is_fractures_visible()
+        )
 
     def ensure_fractures(self, sim_data) -> bool:
-        if self.has_fractures():
+        if self.geometry_layers.is_fractures_visible():
             return True
-        if not getattr(sim_data, "fractures", None):
-            return False
-        self.render_fractures(sim_data)
-        return self.has_fractures()
+
+        return bool(
+            self.geometry_layers.render_fractures(
+                sim_data,
+                render_now=True,
+            )
+        )
 
     def toggle_fractures(self, show):
-        if self.cache["pressure_actor"] is not None:
-            self.cache["pressure_actor"].prop.opacity = RESULT_PROPERTY_OPACITY
-        for actor in self.cache["fracture_actors"]:
-            actor.visibility = show
-        self._render()
+        """旧接口：直接控制预览/模拟共用的裂缝 actor。"""
+        return self.set_shared_fractures_visible(
+            visible=show,
+            render_now=True,
+        )
+
 
     def setup_camera(self, sim_data):
+        if getattr(self, "_preserve_camera_on_property_switch", False):
+            self._restore_property_switch_camera(consume=False)
+            return
+
         lx = sim_data.grid_info["Lx"]
         ly = sim_data.grid_info["Ly"]
         lz = sim_data.grid_info["Lz"]
@@ -4129,9 +7153,11 @@ class PyVistaRenderer:
         self.plotter.camera.Zoom(1.1)
 
     def render_fracture_only(self, sim_data):
-        self.plotter.clear_actors()
-        if sim_data.fractures:
-            self.render_fractures(sim_data)
+        self.clear_all_scene(render_now=False)
+        self.geometry_layers.render_fractures(
+            sim_data,
+            render_now=False,
+        )
         self.setup_camera(sim_data)
         self._render()
 
@@ -4290,7 +7316,7 @@ class PyVistaRenderer:
 
             self.setup_camera_for_corner_grid(cpg)
 
-            self._render()
+            self._finish_property_switch_render()
             return
 
         self._remove_actor(
@@ -4381,16 +7407,18 @@ class PyVistaRenderer:
             edges,
             color=(0.5, 0.5, 0.5),
             line_width=0.6,
+            reset_camera=False,
             render=False,
         )
 
-        surface = grid.extract_surface()
+        surface = self._build_result_property_shell_surface(grid)
 
         surface_actor = self.plotter.add_mesh(
             surface,
             color=(1.0, 1.0, 1.0),
             opacity=0.1,
             show_edges=False,
+            reset_camera=False,
             render=False,
         )
 
@@ -4416,9 +7444,13 @@ class PyVistaRenderer:
 
         self.setup_camera_for_corner_grid(cpg)
 
-        self._render()
+        self._finish_property_switch_render()
 
     def setup_camera_for_corner_grid(self, cpg):
+        if getattr(self, "_preserve_camera_on_property_switch", False):
+            self._restore_property_switch_camera(consume=False)
+            return
+
         min_x = min_y = min_z = float("inf")
         max_x = max_y = max_z = float("-inf")
 
@@ -4457,282 +7489,121 @@ class PyVistaRenderer:
         self.plotter.reset_camera(render=False)
         self.plotter.camera.Zoom(1.0)
 
-    #不处理裂缝数据，直接渲染
+    
     def render_corner_fractures(self, sim_data):
-
-        self._remove_actor_list(
-            self.cache["fracture_actors"]
-        )
-        self.cache["fracture_actors"] = []
-
-        if not sim_data.fractures:
-            return
-
-        for fracture in sim_data.fractures:
-            frac_points = fracture.get("points", []) or []
-
-            if len(frac_points) < 3:
-                continue
-
-            # -----------------------------------------------------
-            # 裂缝类型判断
-            # -----------------------------------------------------
-            is_hydraulic = (
-                int(fracture.get("is_hydraulic", 0)) == 1
-                or fracture.get("type") == "hydraulic"
-            )
-
-            if is_hydraulic:
-                # 人工裂缝：红色
-                frac_color = (0.72, 0.38, 0.38)
-                edge_color = (0.54, 0.29, 0.29)
-            else:
-                # 天然裂缝：深蓝色
-                frac_color = (0.0, 0.25, 0.4)
-                edge_color = (0.0, 0.15, 0.25)
-
-            points = np.array(
-                frac_points,
-                dtype=float,
-            )
-
-            actor = self._add_result_fracture_actor(
-                points=points,
-                color=frac_color,
-                edge_color=edge_color,
-            )
-
-            if actor is not None:
-                self.cache["fracture_actors"].append(
-                    actor
-                )
-
-
-        self._render()
+        """兼容旧名称，实际调用统一几何渲染器的切换接口。"""
+        return self.render_fractures(sim_data)
 
     def hide_fractures(self):
-        self._remove_actor_list(self.cache["fracture_actors"])
-        self.cache["fracture_actors"] = []
-        self._render()
+        return self.set_shared_fractures_visible(
+            False,
+            render_now=True,
+        )
 
-    #井
+    
     def set_parsed_well_data(self, well_data):
-        """
-        保存 uniform_parser.parse_wells() 返回的井数据。
-        """
+        """保存 parse_wells() 结果，供模拟前后统一井渲染使用。"""
         if not isinstance(well_data, dict):
             print("[WellRender] 设置井数据失败：well_data 不是 dict。")
             self._parsed_well_data = None
-            return
+            return False
+
         wells = well_data.get("wells", [])
         if not isinstance(wells, list):
             print("[WellRender] 设置井数据失败：well_data 中没有 wells 列表。")
             self._parsed_well_data = None
-            return
+            return False
 
         self._parsed_well_data = well_data
-        print(
-            f"[WellRender] 已保存解析井数据：{len(wells)} 口井"
-        )
-
-    # =====================================================================
-    # 渲染井
-    #
-    # 数据来源：
-    # uniform_parser.parse_wells() 返回的 well_data
-    # =====================================================================
+        print(f"[WellRender] 已保存解析井数据：{len(wells)} 口井")
+        return True
 
     def render_wells(self, sim_data):
-        """
-        根据 parse_wells() 返回的 JSON/dict 直接渲染真实井轨迹。
-        井轨迹数据来自 self._parsed_well_data。
-        """
-        self._remove_actor_list(
-            self.cache["well_actors"]
+        """统一井按钮接口：只切换预览阶段创建的同一批井 actor。"""
+        visible = self.geometry_layers.is_wells_visible()
+        return self.set_shared_wells_visible(
+            visible=not visible,
+            sim_data=sim_data,
+            render_now=True,
         )
-        self.cache["well_actors"] = []
-        # -------------------------------------------------------------
-        # 1. 获取 parse_wells() 保存的数据
-        # -------------------------------------------------------------
-        # 模拟完成后，优先从当前 sim_data 获取 parser 解析出的井 JSON。
-        well_data = getattr(
-            sim_data,
-            "parsed_well_data",
-            None,
-        )
-        # 以后做“模拟前井预览”时，仍可通过 set_parsed_well_data() 使用这个备用入口。
-        if not isinstance(well_data, dict):
-            well_data = getattr(
-                self,
-                "_parsed_well_data",
-                None,
-            )
-        if not isinstance(well_data, dict):
-            print(
-                "[WellRender] 当前没有井数据。"
-            )
-            print(
-                "[WellRender] 请先调用："
-                "renderer.set_parsed_well_data(well_data)"
-            )
-            self._render()
-            return
-        wells = well_data.get(
-            "wells",
-            [],
-        )
-        if not isinstance(wells, list) or not wells:
-            print(
-                "[WellRender] well_data 中没有可渲染的井。"
-            )
-            self._render()
-            return
-
-        rendered_count = 0
-        # -------------------------------------------------------------
-        # 2. 每口井单独绘制
-        # -------------------------------------------------------------
-        for well in wells:
-            if not isinstance(well, dict):
-                continue
-
-            well_name = str(
-                well.get(
-                    "well_name",
-                    "Unknown",
-                )
-            ).strip()
-
-            raw_track = well.get(
-                "track",
-                [],
-            )
-            if not isinstance(raw_track, list):
-                continue
-            # ---------------------------------------------------------
-            # 3. 从 track 中提取真实 XYZ 坐标
-            # ---------------------------------------------------------
-            valid_points = []
-            for point in raw_track:
-                if not isinstance(point, dict):
-                    continue
-
-                try:
-                    md = float(
-                        point["md_m"]
-                    )
-                    x = float(
-                        point["x_m"]
-                    )
-                    y = float(
-                        point["y_m"]
-                    )
-                    z = float(
-                        point["z_m"]
-                    )
-                except (
-                    KeyError,
-                    TypeError,
-                    ValueError,
-                ):
-                    continue
-
-                if not np.isfinite(
-                    [md, x, y, z]
-                ).all():
-                    continue
-                valid_points.append(
-                    (
-                        md,
-                        np.array(
-                            [x, y, z],
-                            dtype=float,
-                        ),
-                    )
-                )
-            if len(valid_points) < 2:
-                print(
-                    f"[WellRender] {well_name} "
-                    "有效轨迹点少于 2 个，跳过。"
-                )
-                continue
-            # ---------------------------------------------------------
-            # 4. 按 md_m 排序
-            # ---------------------------------------------------------
-            valid_points.sort(
-                key=lambda item: item[0]
-            )
-            ordered_points = []
-            for _, xyz in valid_points:
-                if not ordered_points:
-                    ordered_points.append(
-                        xyz
-                    )
-                    continue
-                # 过滤连续重复点，防止出现零长度 tube
-                if np.linalg.norm(
-                    xyz - ordered_points[-1]
-                ) > 1e-8:
-                    ordered_points.append(
-                        xyz
-                    )
-            if len(ordered_points) < 2:
-                print(
-                    f"[WellRender] {well_name} "
-                    "去重后轨迹点少于 2 个，跳过。"
-                )
-                continue
-            # ---------------------------------------------------------
-            # 5. 相邻轨迹点连接成线段
-            # ---------------------------------------------------------
-            segments = [
-                (
-                    ordered_points[index].tolist(),
-                    ordered_points[index + 1].tolist(),
-                )
-                for index in range(
-                    len(ordered_points) - 1
-                )
-            ]
-            well_line = self._polydata_from_line_segments(
-                segments
-            )
-            if well_line is None:
-                continue
-            # ---------------------------------------------------------
-            # 6. 生成井筒 tube
-            # ---------------------------------------------------------
-            well_tube = well_line.tube(
-                radius=2.0,
-                n_sides=16,
-                capping=True,
-            )
-            actor = self._add_result_well_actor(
-                mesh=well_tube,
-                color=(0.08, 0.24, 0.62),
-                lighting=True,
-                ambient=0.9,
-                diffuse=1.0,
-            )
-
-            if actor is not None:
-                self.cache["well_actors"].append(
-                    actor
-                )
-            rendered_count += 1
-
-        self._render()
 
     def hide_wells(self):
-        self._remove_actor_list(
-            self.cache["well_actors"]
+        return self.set_shared_wells_visible(
+            False,
+            render_now=True,
         )
-        self.cache["well_actors"] = []
-
-        self._render()
 
     def render_corner_wells(self, sim_data):
-        self.render_wells(sim_data)
+        """兼容旧名称，实际调用统一几何渲染器的切换接口。"""
+        return self.render_wells(sim_data)
+
+    @staticmethod
+    def _prepare_exact_cell_scalar_surface(
+        surface,
+        scalar_name,
+    ):
+        """强制表面只使用原始 cell scalar，不生成或使用 point scalar。"""
+        if surface is None:
+            return None
+
+        scalar_name = str(scalar_name)
+
+        if scalar_name not in surface.cell_data:
+            raise RuntimeError(
+                f"surface.cell_data 中缺少 {scalar_name}"
+            )
+
+        try:
+            if scalar_name in surface.point_data:
+                del surface.point_data[scalar_name]
+        except Exception:
+            pass
+
+        try:
+            surface.set_active_scalars(
+                scalar_name,
+                preference="cell",
+            )
+        except TypeError:
+            surface.set_active_scalars(
+                scalar_name,
+            )
+
+        return surface
+
+
+    @staticmethod
+    def _configure_exact_cell_scalar_actor(actor):
+        """只固定 cell 标量映射方式，不修改透明度、光照或材质。"""
+        if actor is None:
+            return
+
+        try:
+            mapper = actor.GetMapper()
+        except Exception:
+            mapper = None
+
+        if mapper is None:
+            return
+
+        try:
+            mapper.SetScalarModeToUseCellData()
+        except Exception:
+            pass
+
+        try:
+            mapper.InterpolateScalarsBeforeMappingOff()
+        except Exception:
+            try:
+                mapper.SetInterpolateScalarsBeforeMapping(False)
+            except Exception:
+                pass
+
+        try:
+            mapper.ScalarVisibilityOn()
+        except Exception:
+            pass
+
 
     def render_pressure_field(self, sim_data):
         if not sim_data.pressure_field:
@@ -4772,7 +7643,10 @@ class PyVistaRenderer:
             if n_cells == 0:
                 return
 
-            pressures = cell_data[:, 28].astype(np.float32)
+            pressures = np.asarray(
+                cell_data[:, 28],
+                dtype=np.float64,
+            ).copy()
             pmin, pmax = float(np.min(pressures)), float(np.max(pressures))
 
             all_points = []
@@ -4781,7 +7655,10 @@ class PyVistaRenderer:
 
             for i in range(n_cells):
 
-                pts = cell_data[i, 4:28].reshape(8, 3).astype(np.float32)
+                pts = np.asarray(
+                    cell_data[i, 4:28],
+                    dtype=np.float64,
+                ).reshape(8, 3)
                 all_points.append(pts)
 
                 cells.append([
@@ -4804,18 +7681,29 @@ class PyVistaRenderer:
 
             grid.cell_data["Pressure"] = pressures
 
-            surface = grid.extract_surface()
-
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
+            surface = self._build_result_property_shell_surface(grid)
+            surface = self._prepare_exact_cell_scalar_surface(
+                surface,
+                "Pressure",
             )
+
+            if (
+                surface is None
+                or surface.n_cells == 0
+                or "Pressure" not in surface.cell_data
+                or len(surface.cell_data["Pressure"]) != surface.n_cells
+            ):
+                raise RuntimeError(
+                    "Pressure 外壳面与原始单元值映射失败"
+                )
+
             actor = self.plotter.add_mesh(
                 surface,
                 scalars="Pressure",
+                preference="cell",
                 cmap=get_bright_jet_cmap(),
                 clim=[pmin, pmax],
-                opacity=RESULT_PROPERTY_OPACITY,
+                opacity=RESULT_PRESSURE_OPACITY,
                 show_edges=False,
                 show_scalar_bar=False,
                 lighting=False,
@@ -4823,8 +7711,14 @@ class PyVistaRenderer:
                 ambient=1.0,
                 diffuse=0.0,
                 specular=0.0,
-                interpolate_before_map=False,
+                interpolate_before_map=(
+                    RESULT_PRESSURE_INTERPOLATE_BEFORE_MAP
+                ),
+                reset_camera=False,
                 render=False,
+            )
+            self._configure_exact_cell_scalar_actor(
+                actor
             )
 
             scalar_bar = self._replace_scalar_bar(
@@ -4844,13 +7738,16 @@ class PyVistaRenderer:
             self.cache["pressure_field_actor"] = actor
             self.cache["pressure_scalar_bar"] = scalar_bar
 
-            if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(sim_data)
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name="Pressure",
+                volume_grid=grid,
+                actor=actor,
+                title="Pressure",
+                unit="bar",
+            )
 
-            if getattr(sim_data, "wells", None):
-                self.render_corner_wells(sim_data)
-            
-            self._render()
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -4910,124 +7807,182 @@ class PyVistaRenderer:
             self.cache["pressure_scalar_bar"] = None
         self._render()
 
+
     def toggle_grid_visibility(self, visible):
-        if self.cache["corner_actor"] is not None:
-            self.cache["corner_actor"].visibility = visible
-        if self.cache["corner_surface_actor"] is not None:
-            self.cache["corner_surface_actor"].visibility = visible
-        if self.cache.get("layer_coarse_grid_actor") is not None:
-            self.cache["layer_coarse_grid_actor"].visibility = visible
+        """预览和模拟共用的网格显隐入口。"""
+        visible = bool(visible)
+
+        for key in (
+            "corner_actor",
+            "corner_surface_actor",
+            "grid_lines_actor",
+            "corner_lgr_parent_grid_actor",
+            "corner_lgr_refined_grid_actor",
+            "layer_coarse_grid_actor",
+            "layer_sw_coarse_grid_actor",
+            "layer_phi_coarse_grid_actor",
+            "layer_perm_coarse_grid_actor",
+            "threshold_grid_actor",
+        ):
+            self._set_scene_actor_visibility(
+                self.cache.get(key),
+                visible,
+            )
+
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
+
+        if geometry is not None:
+            for actor_name in (
+                "grid_actor",
+                "grid_edge_actor",
+                "grid_internal_edge_actor",
+            ):
+                actor = getattr(geometry, actor_name, None)
+                if actor_name == "grid_internal_edge_actor":
+                    requested = bool(
+                        getattr(geometry, "show_internal_grid_edges", True)
+                    )
+                    self._set_scene_actor_visibility(
+                        actor,
+                        visible and requested,
+                    )
+                else:
+                    self._set_scene_actor_visibility(actor, visible)
+
         self._render()
+        return True
 
     def toggle_fractures_visibility(self, visible):
-        for actor in self.cache.get("fracture_actors", []):
-            try:
-                actor.visibility = visible
-            except Exception:
-                pass
-
-        for actor in self.cache.get("layer_frac_actors", []):
-            try:
-                actor.visibility = visible
-            except Exception:
-                pass
-
-        pressure_actor = self.cache.get("pressure_field_actor")
-
-        if pressure_actor is not None:
-            try:
-                prop = pressure_actor.GetProperty()
-
-                if visible:
-                    prop.SetAmbient(0.45)
-                    prop.SetDiffuse(0.85)
-
-                else:
-                    prop.SetAmbient(0.25)
-                    prop.SetDiffuse(1.0)
-
-            except Exception:
-                pass
-
-        self._render()
+        """模拟和预览按钮共同控制同一批预览裂缝 actor。"""
+        return self.set_shared_fractures_visible(
+            visible=visible,
+            render_now=True,
+        )
 
     def toggle_wells_visibility(self, visible):
-        for actor in self.cache["well_actors"]:
-            actor.visibility = visible
-        for actor in self.cache.get("layer_well_actors", []):
-            try:
-                actor.visibility = visible
-            except Exception:
-                pass
-        self._render()
+        """模拟和预览按钮共同控制同一批预览井 actor。"""
+        return self.set_shared_wells_visible(
+            visible=visible,
+            render_now=True,
+        )
+
 
     def toggle_pressure_visibility(self, visible):
-        pressure_actor = self.cache.get("pressure_field_actor")
-        if pressure_actor is not None:
-            try:
-                pressure_actor.SetVisibility(visible)
-            except Exception:
-                pass
+        """
+        兼容旧 UI 名称：控制当前属性显示；剖面模式下只控制剖面。
+        """
+        visible = bool(visible)
+        context = self.get_active_property_context()
 
-        scalar_bar = self.cache.get("pressure_scalar_bar")
-        if scalar_bar is not None:
-            try:
-                scalar_bar.visibility = visible
-            except Exception:
-                pass
+        if self.is_fence_property_display_mode():
+            self._set_scene_actor_visibility(
+                self.cache.get("fence_section_actor"),
+                visible,
+            )
+            self._set_scene_actor_visibility(
+                self.cache.get("fence_section_scalar_bar"),
+                visible,
+            )
+            if isinstance(context, dict):
+                self._set_scene_actor_visibility(context.get("actor"), False)
+            self._hide_fence_section_context()
+        else:
+            if isinstance(context, dict):
+                self._set_scene_actor_visibility(
+                    context.get("actor"),
+                    visible,
+                )
 
-        layer_pressure = self.cache.get("layer_pressure_actor")
-        if layer_pressure is not None:
-            try:
-                layer_pressure.SetVisibility(visible)
-            except Exception:
-                pass
-
-        layer_scalar_bar = self.cache.get("layer_pressure_scalar_bar")
-        if layer_scalar_bar is not None:
-            try:
-                layer_scalar_bar.visibility = visible
-            except Exception:
-                pass
-
-        self._render()
-
-    def apply_layer_visibility(self, show_grid, show_fractures, show_wells, show_pressure):
-        """Apply visibility only to layer-render actors."""
-        layer_grid = self.cache.get("layer_coarse_grid_actor")
-        if layer_grid is not None:
-            try:
-                layer_grid.visibility = show_grid
-            except Exception:
-                pass
-
-        for actor in self.cache.get("layer_frac_actors", []):
-            try:
-                actor.visibility = show_fractures
-            except Exception:
-                pass
-
-        for actor in self.cache.get("layer_well_actors", []):
-            try:
-                actor.visibility = show_wells
-            except Exception:
-                pass
-
-        layer_pressure = self.cache.get("layer_pressure_actor")
-        if layer_pressure is not None:
-            try:
-                layer_pressure.SetVisibility(show_pressure)
-            except Exception:
-                pass
-
-        layer_scalar_bar = self.cache.get("layer_pressure_scalar_bar")
-        if layer_scalar_bar is not None:
-            try:
-                layer_scalar_bar.visibility = show_pressure
-            except Exception:
-                pass
+            for actor in self._active_property_scalar_bar_actors(context):
+                self._set_scene_actor_visibility(actor, visible)
 
         self._render()
+        return True
+
+
+    def apply_layer_visibility(
+        self,
+        show_grid,
+        show_fractures,
+        show_wells,
+        show_pressure,
+    ):
+        """
+        统一分层显隐入口。
+
+        show_pressure 兼容旧名称，实际控制当前预览/模拟属性 actor；
+        井和裂缝始终控制 GeometryLayerRenderer 中唯一的一套 actor。
+        """
+        show_grid = bool(show_grid)
+        show_property = bool(show_pressure)
+
+        for key in (
+            "layer_coarse_grid_actor",
+            "layer_sw_coarse_grid_actor",
+            "layer_phi_coarse_grid_actor",
+            "layer_perm_coarse_grid_actor",
+        ):
+            self._set_scene_actor_visibility(
+                self.cache.get(key),
+                show_grid,
+            )
+
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
+
+        if geometry is not None:
+            for actor_name in (
+                "grid_actor",
+                "grid_edge_actor",
+                "grid_internal_edge_actor",
+            ):
+                actor = getattr(geometry, actor_name, None)
+                if actor_name == "grid_internal_edge_actor":
+                    requested = bool(
+                        getattr(geometry, "show_internal_grid_edges", True)
+                    )
+                    self._set_scene_actor_visibility(
+                        actor,
+                        show_grid and requested,
+                    )
+                else:
+                    self._set_scene_actor_visibility(actor, show_grid)
+
+        context = self.get_active_property_context()
+        if self.is_fence_property_display_mode():
+            self._set_scene_actor_visibility(
+                self.cache.get("fence_section_actor"),
+                show_property,
+            )
+            self._set_scene_actor_visibility(
+                self.cache.get("fence_section_scalar_bar"),
+                show_property,
+            )
+            if isinstance(context, dict):
+                self._set_scene_actor_visibility(context.get("actor"), False)
+            self._hide_fence_section_context()
+        elif isinstance(context, dict):
+            self._set_scene_actor_visibility(
+                context.get("actor"),
+                show_property,
+            )
+            for actor in self._active_property_scalar_bar_actors(context):
+                self._set_scene_actor_visibility(actor, show_property)
+
+        self.set_shared_fractures_visible(
+            visible=show_fractures,
+            render_now=False,
+        )
+        self.set_shared_wells_visible(
+            visible=show_wells,
+            render_now=False,
+        )
+
+        self._render()
+        return True
 
     @staticmethod
     def _get_grid_line_tolerance(*grid_geometries):
@@ -5216,10 +8171,10 @@ class PyVistaRenderer:
         if line_poly_data is None:
             return (None, edge_keys) if return_edge_keys else None
 
-        # 小于 1 像素的 OpenGL 线在旋转时很容易发生亚像素跳动。
+        
         stable_line_width = max(
             float(line_width),
-            0.6,
+            1.0,
         )
 
         stable_opacity = float(
@@ -5227,6 +8182,7 @@ class PyVistaRenderer:
         )
 
         mesh_kwargs = dict(
+            reset_camera=False,
             color=color,
             line_width=stable_line_width,
             opacity=stable_opacity,
@@ -5237,11 +8193,13 @@ class PyVistaRenderer:
         try:
             actor = self.plotter.add_mesh(
                 line_poly_data,
-                render_lines_as_tubes=True,
+                render_lines_as_tubes=(
+                    RESULT_GRID_RENDER_LINES_AS_TUBES
+                ),
                 **mesh_kwargs,
             )
         except TypeError:
-            # 兼容较旧 PyVista 版本。
+            
             actor = self.plotter.add_mesh(
                 line_poly_data,
                 **mesh_kwargs,
@@ -5261,13 +8219,21 @@ class PyVistaRenderer:
                         pass
 
                     try:
-                        prop.RenderLinesAsTubesOn()
+                        if RESULT_GRID_RENDER_LINES_AS_TUBES:
+                            prop.RenderLinesAsTubesOn()
+                        else:
+                            prop.RenderLinesAsTubesOff()
                     except Exception:
-                        pass
+                        try:
+                            prop.SetRenderLinesAsTubes(
+                                bool(RESULT_GRID_RENDER_LINES_AS_TUBES)
+                            )
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
-            # 加密网格使用不透明线，避免它进入 Depth Peeling 的透明排序过程。
+            
             if stable_opacity >= 0.999:
                 try:
                     actor.ForceTranslucentOff()
@@ -5335,7 +8301,7 @@ class PyVistaRenderer:
 
         self._render()
 
-    # 旧实现（注释块，不执行）——生效版本见下方 render_corner_lgr_grid()
+    
     """def render_corner_lgr_grid(self, sim_data):
 
         self._remove_actor(self.cache["corner_lgr_parent_grid_actor"])
@@ -5411,7 +8377,7 @@ class PyVistaRenderer:
 
             grid = grid.cell_data_to_point_data()
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
             actor = self.plotter.add_mesh(
                 surface,
                 scalars="Pressure",
@@ -5494,14 +8460,14 @@ class PyVistaRenderer:
                 "corner_lgr_refined_grid_actor"
             ] = self._create_grid_lines_actor(
                 grid_geom=refined_geom,
-                color=(0.64, 0.69, 0.76),
-                line_width=0.6,
+                color=(0.5, 0.5, 0.5),
+                line_width=1.0,
                 opacity=1.0,
                 excluded_edge_keys=parent_edge_keys,
                 tolerance=common_tolerance,
             )
 
-        self._render()
+        self._finish_property_switch_render()
 
     def toggle_corner_lgr_grid_visibility(self, visible):
         if self.cache["corner_lgr_parent_grid_actor"] is not None:
@@ -5510,45 +8476,56 @@ class PyVistaRenderer:
             self.cache["corner_lgr_refined_grid_actor"].visibility = visible
         self._render()
 
+
     def set_full_corner_result_visibility(self, visible):
-        """Hide/show full-field corner result actors without affecting layer actors."""
-        if self.cache.get("corner_actor") is not None:
-            self.cache["corner_actor"].visibility = visible
-        if self.cache.get("corner_surface_actor") is not None:
-            self.cache["corner_surface_actor"].visibility = visible
+        """
+        兼容旧接口：控制当前整体属性和网格，预览/模拟均可使用。
+        井和裂缝是全局几何层，不受该接口影响。
+        """
+        visible = bool(visible)
 
-        pressure_actor = self.cache.get("pressure_field_actor")
-        if pressure_actor is not None:
-            try:
-                pressure_actor.SetVisibility(visible)
-            except Exception:
-                pass
+        for key in (
+            "corner_actor",
+            "corner_surface_actor",
+            "grid_lines_actor",
+            "corner_lgr_parent_grid_actor",
+            "corner_lgr_refined_grid_actor",
+        ):
+            self._set_scene_actor_visibility(
+                self.cache.get(key),
+                visible,
+            )
 
-        scalar_bar = self.cache.get("pressure_scalar_bar")
-        if scalar_bar is not None:
-            try:
-                scalar_bar.visibility = visible
-            except Exception:
-                pass
+        context = self.get_active_property_context()
+        if isinstance(context, dict) and context.get("axis") is None:
+            self._set_scene_actor_visibility(
+                context.get("actor"),
+                visible,
+            )
+            for actor in self._active_property_scalar_bar_actors(context):
+                self._set_scene_actor_visibility(actor, visible)
 
-        for actor in self.cache.get("fracture_actors", []):
-            try:
-                actor.visibility = visible
-            except Exception:
-                pass
-
-        for actor in self.cache.get("well_actors", []):
-            try:
-                actor.visibility = visible
-            except Exception:
-                pass
-
-        if self.cache.get("corner_lgr_parent_grid_actor") is not None:
-            self.cache["corner_lgr_parent_grid_actor"].visibility = visible
-        if self.cache.get("corner_lgr_refined_grid_actor") is not None:
-            self.cache["corner_lgr_refined_grid_actor"].visibility = visible
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is not None:
+            for actor_name in (
+                "grid_actor",
+                "grid_edge_actor",
+                "grid_internal_edge_actor",
+            ):
+                actor = getattr(geometry, actor_name, None)
+                if actor_name == "grid_internal_edge_actor":
+                    requested = bool(
+                        getattr(geometry, "show_internal_grid_edges", True)
+                    )
+                    self._set_scene_actor_visibility(
+                        actor,
+                        visible and requested,
+                    )
+                else:
+                    self._set_scene_actor_visibility(actor, visible)
 
         self._render()
+        return True
 
 
     def _get_layer_row_indices_by_parent_id(
@@ -5613,6 +8590,63 @@ class PyVistaRenderer:
         return np.flatnonzero(mask).astype(np.int64)
 
 
+    def _replace_layer_grid_with_refined_grid(
+        self,
+        selected_rows,
+        cache_key,
+        show_grid=True,
+    ):
+        """
+        用当前分层命中的 leaf/refined cells 绘制网格线。
+
+        cache_key 继续沿用原来的 *_coarse_grid_actor 名称，
+        以兼容现有 UI 显隐逻辑；实际保存的 actor 已经是加密网格。
+        """
+        self._remove_actor(
+            self.cache.get(cache_key)
+        )
+        self.cache[cache_key] = None
+
+        if not show_grid:
+            return None
+
+        try:
+            refined_geometry = np.asarray(
+                selected_rows[:, 4:28],
+                dtype=np.float64,
+            ).reshape(-1, 8, 3)
+        except (
+            TypeError,
+            ValueError,
+            IndexError,
+        ):
+            return None
+
+        if refined_geometry.size == 0:
+            return None
+
+        valid_cell_mask = np.isfinite(
+            refined_geometry
+        ).all(axis=(1, 2))
+
+        refined_geometry = refined_geometry[
+            valid_cell_mask
+        ]
+
+        if refined_geometry.shape[0] == 0:
+            return None
+
+        actor = self._create_grid_lines_actor(
+            grid_geom=refined_geometry,
+            color=(0.5, 0.5, 0.5),
+            line_width=1.0,
+            opacity=1.0,
+        )
+
+        self.cache[cache_key] = actor
+        return actor
+
+
     def clear_layer_render(self):
         """Remove layer-render actors so full-field rendering can take over cleanly."""
         self._remove_actor(self.cache.get("layer_pressure_actor"))
@@ -5642,15 +8676,21 @@ class PyVistaRenderer:
         pressures_all
     ):
 
+        surface = self._prepare_exact_cell_scalar_surface(
+            surface,
+            "Pressure",
+        )
+
         actor = self.plotter.add_mesh(
             surface,
             scalars="Pressure",
+            preference="cell",
             cmap=get_bright_jet_cmap(),
             clim=[
                 float(np.min(pressures_all)),
                 float(np.max(pressures_all))
             ],
-            opacity=RESULT_PROPERTY_OPACITY,
+            opacity=RESULT_PRESSURE_OPACITY,
             show_scalar_bar=False,
             show_edges=False,
             lighting=False,
@@ -5658,8 +8698,13 @@ class PyVistaRenderer:
             ambient=1.0,
             diffuse=0.0,
             specular=0.0,
-            interpolate_before_map=False,
+            interpolate_before_map=(
+                RESULT_PRESSURE_INTERPOLATE_BEFORE_MAP
+            ),
             render=False,
+        )
+        self._configure_exact_cell_scalar_actor(
+            actor
         )
 
         scalar_bar = self._replace_scalar_bar(
@@ -5688,15 +8733,11 @@ class PyVistaRenderer:
         self._remove_actor(self.cache.get("layer_pressure_actor"))
         self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
 
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
 
-        self.cache["layer_frac_actors"] = []
         self.cache["layer_pressure_actor"] = None
-        self.cache["layer_well_actors"] = []
         self.cache["layer_coarse_grid_actor"] = None
 
-        # 移除之前的颜色条，确保分层渲染时显示正确的颜色条
+        
         try:
             self.plotter.remove_scalar_bar(render=False)
         except Exception:
@@ -5757,24 +8798,8 @@ class PyVistaRenderer:
             coarse_cell_types.append(pv.CellType.HEXAHEDRON)
             point_offset += 8
 
-        if coarse_points:
-            coarse_grid = pv.UnstructuredGrid(
-                np.array(coarse_cell_array, dtype=np.int64),
-                np.array(coarse_cell_types, dtype=np.uint8),
-                np.array(coarse_points, dtype=np.float32)
-            )
-
-            if coarse_grid.n_points > 0:
-                coarse_edges = coarse_grid.extract_all_edges()
-                if coarse_edges.n_points > 0:
-                    coarse_actor = self.plotter.add_mesh(
-                        coarse_edges,
-                        color=(0.78, 0.82, 0.87),
-                        line_width=1,
-                        opacity=1,
-                        render=False,
-                    )
-                    self.cache["layer_coarse_grid_actor"] = coarse_actor
+        
+        
 
         all_data = sim_data.cell_geometry_with_pressure
 
@@ -5819,137 +8844,39 @@ class PyVistaRenderer:
             cell_array[i * 9 + 1:i * 9 + 9] = ids
 
         grid = pv.UnstructuredGrid(cell_array, cell_types, points)
-        pressures = selected_rows[:, 28].astype(np.float32)
-        pressures_all = sim_data.cell_geometry_with_pressure[:, 28].astype(np.float32)
+        pressures = np.asarray(selected_rows[:, 28], dtype=np.float64).copy()
+        pressures_all = np.asarray(
+            sim_data.cell_geometry_with_pressure[:, 28],
+            dtype=np.float64,
+        ).copy()
         grid.cell_data["Pressure"] = pressures
-        #grid = grid.cell_data_to_point_data()
 
-        surface = grid.extract_surface()
+        surface = self._build_result_property_shell_surface(grid)
         self._add_layer_pressure_mesh(
             surface,
             pressures_all
         )
 
-        # -------------------------
-        # 天然裂缝保持原逻辑
-        # -------------------------
-        if hasattr(sim_data, "fractures"):
-            for frac in sim_data.fractures:
-                if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
-                    continue
+        self._replace_layer_grid_with_refined_grid(
+            selected_rows=selected_rows,
+            cache_key="layer_coarse_grid_actor",
+            show_grid=True,
+        )
 
-                pts = np.array(frac["points"], dtype=np.float64)
-                if len(pts) < 3:
-                    continue
+        self._register_result_property_context(
+            sim_data=sim_data,
+            property_name="Pressure",
+            volume_grid=grid,
+            actor=self.cache.get("layer_pressure_actor"),
+            axis="k",
+            layer_index=k_layer,
+            title="Pressure",
+            unit="bar",
+            source_indices=selected_indices,
+        )
 
-                cx, cy, cz = pts.mean(axis=0)
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-                if not inside:
-                    continue
-
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.0, 0.25, 0.4),
-                    edge_color=(0.0, 0.15, 0.25),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-
-        # -------------------------
-        # 人工裂缝显示规则：只要一个人工裂缝在层内，显示所有人工裂缝
-        # -------------------------
-        show_all_hydraulic = False
-        for frac in sim_data.fractures:
-            if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
-                continue
-            pts = np.array(frac["points"], dtype=np.float64)
-            if len(pts) < 3:
-                continue
-            cx, cy, cz = pts.mean(axis=0)
-            if any(box["xmin"] <= cx <= box["xmax"] and
-                box["ymin"] <= cy <= box["ymax"] and
-                box["zmin"] <= cz <= box["zmax"] for box in coarse_boxes):
-                show_all_hydraulic = True
-                break
-
-        if show_all_hydraulic:
-            for frac in sim_data.fractures:
-                if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
-                    continue  # 只显示人工裂缝
-                pts = np.array(frac["points"], dtype=np.float64)
-                if len(pts) < 3:
-                    continue
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.72, 0.38, 0.38),
-                    edge_color=(0.54, 0.29, 0.29),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-
-        well_centers = []
-
-        if show_all_hydraulic:
-
-            for frac in sim_data.fractures:
-
-                if not (int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic"):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                well_centers.append([cx, cy, cz])
-
-        if len(well_centers) >= 2:
-
-            well_centers = np.array(well_centers)
-
-            well_centers = well_centers[
-                np.argsort(well_centers[:, 0])
-            ]
-
-            segments = [
-                (
-                    well_centers[i].tolist(),
-                    well_centers[i + 1].tolist()
-                )
-                for i in range(len(well_centers) - 1)
-            ]
-
-            well_line = self._polydata_from_line_segments(segments)
-
-            if well_line:
-
-                actor = self._add_result_well_actor(
-                    mesh=well_line.tube(radius=2.0),
-                    color=(0.31, 0.35, 0.40),
-                    lighting=True,
-                    ambient=0.9,
-                    diffuse=1.0,
-                )
-
-                if actor is not None:
-                    self.cache["layer_well_actors"].append(
-                        actor
-                    )
-
-        self._render()
+        
+        self._finish_property_switch_render()
 
     #i方向
     def render_corner_grid_by_layer_i(self, sim_data, i_layer: int):
@@ -5957,12 +8884,8 @@ class PyVistaRenderer:
         self._remove_actor(self.cache.get("layer_pressure_actor"))
         self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
 
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
 
-        self.cache["layer_frac_actors"] = []
         self.cache["layer_pressure_actor"] = None
-        self.cache["layer_well_actors"] = []
         self.cache["layer_coarse_grid_actor"] = None
 
         if not sim_data.corner_point_grid:
@@ -5981,9 +8904,9 @@ class PyVistaRenderer:
             print(f"Invalid i_layer = {i_layer}")
             return
 
-        # -------------------------------------------------
-        # 提取 I 方向 coarse cells
-        # -------------------------------------------------
+        
+        
+        
         coarse_cells = []
 
         for j in range(ny):
@@ -6042,32 +8965,8 @@ class PyVistaRenderer:
 
             point_offset += 8
 
-        # -------------------------------------------------
-        # 渲染 coarse grid
-        # -------------------------------------------------
-        if coarse_points:
-
-            coarse_grid = pv.UnstructuredGrid(
-                np.array(coarse_cell_array, dtype=np.int64),
-                np.array(coarse_cell_types, dtype=np.uint8),
-                np.array(coarse_points, dtype=np.float32)
-            )
-
-            if coarse_grid.n_points > 0:
-
-                coarse_edges = coarse_grid.extract_all_edges()
-
-                if coarse_edges.n_points > 0:
-
-                    coarse_actor = self.plotter.add_mesh(
-                        coarse_edges,
-                        color=(0.78, 0.82, 0.87),
-                        line_width=1,
-                        opacity=1,
-                        render=False,
-                    )
-
-                    self.cache["layer_coarse_grid_actor"] = coarse_actor
+        
+        
 
         all_data = sim_data.cell_geometry_with_pressure
 
@@ -6140,162 +9039,42 @@ class PyVistaRenderer:
             points
         )
 
-        pressures = selected_rows[:, 28].astype(np.float32)
+        pressures = np.asarray(selected_rows[:, 28], dtype=np.float64).copy()
 
-        pressures_all = sim_data.cell_geometry_with_pressure[:, 28].astype(np.float32)
+        pressures_all = np.asarray(
+            sim_data.cell_geometry_with_pressure[:, 28],
+            dtype=np.float64,
+        ).copy()
 
         grid.cell_data["Pressure"] = pressures
 
-        #grid = grid.cell_data_to_point_data()
 
-        surface = grid.extract_surface()
+        surface = self._build_result_property_shell_surface(grid)
         self._add_layer_pressure_mesh(
             surface,
             pressures_all
         )
 
-        #天然裂缝
-        if hasattr(sim_data, "fractures"):
+        self._replace_layer_grid_with_refined_grid(
+            selected_rows=selected_rows,
+            cache_key="layer_coarse_grid_actor",
+            show_grid=True,
+        )
 
-            for frac in sim_data.fractures:
+        self._register_result_property_context(
+            sim_data=sim_data,
+            property_name="Pressure",
+            volume_grid=grid,
+            actor=self.cache.get("layer_pressure_actor"),
+            axis="i",
+            layer_index=i_layer,
+            title="Pressure",
+            unit="bar",
+            source_indices=selected_indices,
+        )
 
-                # 跳过人工裂缝
-                if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.0, 0.25, 0.4),
-                    edge_color=(0.0, 0.15, 0.25),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-        #人工裂缝
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                # 只处理人工裂缝
-                if not (
-                    int(frac.get("is_hydraulic", 0)) == 1 or
-                    frac.get("type") == "hydraulic"
-                ):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.72, 0.38, 0.38),
-                    edge_color=(0.54, 0.29, 0.29),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-
-        # -------------------------------------------------
-        # 井线（只连接当前层内人工裂缝）
-        # -------------------------------------------------
-        well_centers = []
-
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                if not (
-                    int(frac.get("is_hydraulic", 0)) == 1 or
-                    frac.get("type") == "hydraulic"
-                ):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if inside:
-                    well_centers.append([cx, cy, cz])
-
-        if len(well_centers) >= 2:
-
-            well_centers = np.array(well_centers)
-
-            well_centers = well_centers[
-                np.argsort(well_centers[:, 1])
-            ]
-
-            segments = [
-                (
-                    well_centers[i].tolist(),
-                    well_centers[i + 1].tolist()
-                )
-                for i in range(len(well_centers) - 1)
-            ]
-
-            well_line = self._polydata_from_line_segments(segments)
-
-            if well_line:
-
-                actor = self._add_result_well_actor(
-                    mesh=well_line.tube(radius=2.0),
-                    color=(0.31, 0.35, 0.40),
-                    lighting=True,
-                    ambient=0.9,
-                    diffuse=1.0,
-                )
-
-                if actor is not None:
-                    self.cache["layer_well_actors"].append(
-                        actor
-                    )
-
-        self._render()
+        
+        self._finish_property_switch_render()
 
     # j方向
     def render_corner_grid_by_layer_j(self, sim_data, j_layer: int):
@@ -6303,12 +9082,8 @@ class PyVistaRenderer:
         self._remove_actor(self.cache.get("layer_pressure_actor"))
         self._remove_actor(self.cache.get("layer_coarse_grid_actor"))
 
-        self._remove_actor_list(self.cache.get("layer_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_well_actors", []))
 
-        self.cache["layer_frac_actors"] = []
         self.cache["layer_pressure_actor"] = None
-        self.cache["layer_well_actors"] = []
         self.cache["layer_coarse_grid_actor"] = None
 
         if not sim_data.corner_point_grid:
@@ -6385,29 +9160,8 @@ class PyVistaRenderer:
 
             point_offset += 8
 
-        if coarse_points:
-
-            coarse_grid = pv.UnstructuredGrid(
-                np.array(coarse_cell_array, dtype=np.int64),
-                np.array(coarse_cell_types, dtype=np.uint8),
-                np.array(coarse_points, dtype=np.float32)
-            )
-
-            if coarse_grid.n_points > 0:
-
-                coarse_edges = coarse_grid.extract_all_edges()
-
-                if coarse_edges.n_points > 0:
-
-                    coarse_actor = self.plotter.add_mesh(
-                        coarse_edges,
-                        color=(0.78, 0.82, 0.87),
-                        line_width=1,
-                        opacity=1,
-                        render=False,
-                    )
-
-                    self.cache["layer_coarse_grid_actor"] = coarse_actor
+        
+        
 
         all_data = sim_data.cell_geometry_with_pressure
 
@@ -6480,165 +9234,42 @@ class PyVistaRenderer:
             points
         )
 
-        pressures = selected_rows[:, 28].astype(np.float32)
+        pressures = np.asarray(selected_rows[:, 28], dtype=np.float64).copy()
 
-        pressures_all = sim_data.cell_geometry_with_pressure[:, 28].astype(np.float32)
+        pressures_all = np.asarray(
+            sim_data.cell_geometry_with_pressure[:, 28],
+            dtype=np.float64,
+        ).copy()
 
         grid.cell_data["Pressure"] = pressures
 
-        #grid = grid.cell_data_to_point_data()
 
-        surface = grid.extract_surface()
+        surface = self._build_result_property_shell_surface(grid)
         self._add_layer_pressure_mesh(
             surface,
             pressures_all
         )
 
-        # -------------------------------------------------
-        # 天然裂缝
-        # -------------------------------------------------
-        if hasattr(sim_data, "fractures"):
+        self._replace_layer_grid_with_refined_grid(
+            selected_rows=selected_rows,
+            cache_key="layer_coarse_grid_actor",
+            show_grid=True,
+        )
 
-            for frac in sim_data.fractures:
+        self._register_result_property_context(
+            sim_data=sim_data,
+            property_name="Pressure",
+            volume_grid=grid,
+            actor=self.cache.get("layer_pressure_actor"),
+            axis="j",
+            layer_index=j_layer,
+            title="Pressure",
+            unit="bar",
+            source_indices=selected_indices,
+        )
 
-                if int(frac.get("is_hydraulic", 0)) == 1 or frac.get("type") == "hydraulic":
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.0, 0.25, 0.4),
-                    edge_color=(0.0, 0.15, 0.25),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-
-        # -------------------------------------------------
-        # 人工裂缝
-        # -------------------------------------------------
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                if not (
-                    int(frac.get("is_hydraulic", 0)) == 1 or
-                    frac.get("type") == "hydraulic"
-                ):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if not inside:
-                    continue
-
-                fac = self._add_result_fracture_actor(
-                    points=pts,
-                    color=(0.72, 0.38, 0.38),
-                    edge_color=(0.54, 0.29, 0.29),
-                )
-
-                if fac is not None:
-                    self.cache["layer_frac_actors"].append(
-                        fac
-                    )
-
-        # -------------------------------------------------
-        # 井线
-        # -------------------------------------------------
-        well_centers = []
-
-        if hasattr(sim_data, "fractures"):
-
-            for frac in sim_data.fractures:
-
-                if not (
-                    int(frac.get("is_hydraulic", 0)) == 1 or
-                    frac.get("type") == "hydraulic"
-                ):
-                    continue
-
-                pts = np.array(frac["points"], dtype=np.float64)
-
-                if len(pts) < 3:
-                    continue
-
-                cx, cy, cz = pts.mean(axis=0)
-
-                inside = any(
-                    box["xmin"] <= cx <= box["xmax"] and
-                    box["ymin"] <= cy <= box["ymax"] and
-                    box["zmin"] <= cz <= box["zmax"]
-                    for box in coarse_boxes
-                )
-
-                if inside:
-                    well_centers.append([cx, cy, cz])
-
-        if len(well_centers) >= 2:
-
-            well_centers = np.array(well_centers)
-
-            well_centers = well_centers[
-                np.argsort(well_centers[:, 0])
-            ]
-
-            segments = [
-                (
-                    well_centers[i].tolist(),
-                    well_centers[i + 1].tolist()
-                )
-                for i in range(len(well_centers) - 1)
-            ]
-
-            well_line = self._polydata_from_line_segments(segments)
-
-            if well_line:
-
-                actor = self._add_result_well_actor(
-                    mesh=well_line.tube(radius=2.0),
-                    color=(0.31, 0.35, 0.40),
-                    lighting=True,
-                    ambient=0.9,
-                    diffuse=1.0,
-                )
-
-                if actor is not None:
-                    self.cache["layer_well_actors"].append(
-                        actor
-                    )
-
-        self._render()
+        
+        self._finish_property_switch_render()
 
 
 
@@ -6667,7 +9298,7 @@ class PyVistaRenderer:
             if n_cells == 0:
                 return
 
-            # 水饱和度在第 33 列
+            
             sw = cell_data[:, 33].astype(np.float32)
 
             valid_sw = sw[np.isfinite(sw)]
@@ -6731,12 +9362,8 @@ class PyVistaRenderer:
 
             grid.cell_data["Sw"] = sw
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
-            )
 
             actor = self.plotter.add_mesh(
                 surface,
@@ -6752,6 +9379,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -6772,11 +9400,13 @@ class PyVistaRenderer:
             self.cache["sw_field_actor"] = actor
             self.cache["sw_scalar_bar"] = scalar_bar
 
-            if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(sim_data)
-
-            if getattr(sim_data, "wells", None):
-                self.render_corner_wells(sim_data)
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name="Sw",
+                volume_grid=grid,
+                actor=actor,
+                title="Water Saturation",
+            )
 
             print(
                 f"[Sw Field] "
@@ -6784,7 +9414,7 @@ class PyVistaRenderer:
                 f"sw_range=[{smin:.6f}, {smax:.6f}]"
             )
 
-            self._render()
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -6796,9 +9426,9 @@ class PyVistaRenderer:
 
 
 
-    # =====================================================================
+    
     # 水饱和度 Sw 分层渲染
-    # =====================================================================
+    
 
     def render_corner_sw_by_layer(
         self,
@@ -6832,7 +9462,7 @@ class PyVistaRenderer:
         if cell_data is None or cell_data.shape[0] == 0:
             return
 
-        # Sw 对应 cell_geometry_with_pressure 第 33 列
+        
         sw_col = 33
 
         if cell_data.shape[1] <= sw_col:
@@ -6851,18 +9481,9 @@ class PyVistaRenderer:
             self.cache.get("layer_sw_coarse_grid_actor")
         )
 
-        self._remove_actor_list(
-            self.cache.get("layer_sw_frac_actors", [])
-        )
-
-        self._remove_actor_list(
-            self.cache.get("layer_sw_well_actors", [])
-        )
 
         self.cache["layer_sw_actor"] = None
         self.cache["layer_sw_coarse_grid_actor"] = None
-        self.cache["layer_sw_frac_actors"] = []
-        self.cache["layer_sw_well_actors"] = []
 
         if self.cache.get("layer_sw_scalar_bar") is not None:
             try:
@@ -6875,9 +9496,9 @@ class PyVistaRenderer:
             self.cache["layer_sw_scalar_bar"] = None
 
         try:
-            # =========================================================
-            # 2. 根据 I/J/K 方向选当前 coarse cells
-            # =========================================================
+            
+            
+            
             cpg = sim_data.corner_point_grid
 
             nx = int(sim_data.grid_info["nx"])
@@ -6952,9 +9573,9 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            # =========================================================
-            # 3. 构建 coarse_boxes，并绘制 Sw 当前层粗网格边线
-            # =========================================================
+            
+            
+            
             coarse_boxes = []
 
             coarse_points = []
@@ -7018,70 +9639,12 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            if show_grid and coarse_points:
+            
+            
 
-                coarse_grid = pv.UnstructuredGrid(
-                    np.asarray(
-                        coarse_cell_array,
-                        dtype=np.int64,
-                    ),
-                    np.asarray(
-                        coarse_cell_types,
-                        dtype=np.uint8,
-                    ),
-                    np.asarray(
-                        coarse_points,
-                        dtype=np.float32,
-                    ),
-                )
-
-                if coarse_grid.n_points > 0:
-
-                    coarse_edges = (
-                        coarse_grid.extract_all_edges()
-                    )
-
-                    if coarse_edges.n_points > 0:
-
-                        coarse_actor = self.plotter.add_mesh(
-                            coarse_edges,
-                            color=(0.78, 0.82, 0.87),
-                            line_width=1.0,
-                            opacity=1.0,
-                            lighting=False,
-                            render=False,
-                        )
-
-                        self.cache[
-                            "layer_sw_coarse_grid_actor"
-                        ] = coarse_actor
-
-            # =========================================================
-            # 4. 按 parent_id 获取当前 I/J/K 逻辑层 active leaf
-            # =========================================================
-            selected_indices = (
-                self._get_layer_row_indices_by_parent_id(
-                    sim_data=sim_data,
-                    axis=axis,
-                    layer_index=layer_index,
-                    cell_data=cell_data,
-                )
-            )
-
-            if selected_indices.size == 0:
-                print(
-                    f"No leaf cells found for Sw, "
-                    f"axis={axis}, "
-                    f"layer={layer_index}"
-                )
-                self._render()
-                return
-
-            selected_rows = cell_data[selected_indices]
-
-            # =========================================================
-            # 5. 构建当前层 Sw UnstructuredGrid
-            # =========================================================
+            
+            
+            
             all_points = []
 
             for row in selected_rows:
@@ -7149,16 +9712,12 @@ class PyVistaRenderer:
 
             grid.cell_data["Sw"] = selected_sw
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True,
-            )
 
-            # =========================================================
-            # 6. 计算全场 Sw min/max，作为所有 Sw 切片统一颜色范围
-            # =========================================================
+            
+            
+            
             valid_sw = all_sw[
                 np.isfinite(all_sw)
             ]
@@ -7186,9 +9745,9 @@ class PyVistaRenderer:
                 sw_min -= delta
                 sw_max += delta
 
-            # =========================================================
-            # 7. 渲染当前层 Sw
-            # =========================================================
+            
+            
+            
             sw_actor = self.plotter.add_mesh(
                 surface,
                 scalars="Sw",
@@ -7205,6 +9764,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -7225,239 +9785,25 @@ class PyVistaRenderer:
             self.cache["layer_sw_actor"] = sw_actor
             self.cache["layer_sw_scalar_bar"] = scalar_bar
 
-            # =========================================================
-            # 8. 当前层 / 剖面裂缝显示
-            #
-            # 天然裂缝：
-            #   I/J/K 都只显示中心处于当前 coarse_boxes 内的裂缝。
-            #
-            # 人工裂缝：
-            #   K 层：当前 K 层命中任意人工裂缝，显示所有人工裂缝；
-            #   I/J：仅显示当前剖面内人工裂缝。
-            # =========================================================
-            selected_hydraulic_fracs = []
-            show_all_hydraulic = False
+            self._replace_layer_grid_with_refined_grid(
+                selected_rows=selected_rows,
+                cache_key="layer_sw_coarse_grid_actor",
+                show_grid=show_grid,
+            )
 
-            if (
-                show_fractures
-                and getattr(sim_data, "fractures", None)
-            ):
-
-                # -----------------------------------------------------
-                # 8.1 显示天然裂缝，并判断人工裂缝是否属于当前层
-                # -----------------------------------------------------
-                for frac in sim_data.fractures:
-
-                    is_hydraulic = (
-                        int(
-                            frac.get(
-                                "is_hydraulic",
-                                0,
-                            )
-                        ) == 1
-                        or frac.get("type") == "hydraulic"
-                    )
-
-                    pts = np.asarray(
-                        frac.get("points", []),
-                        dtype=np.float64,
-                    )
-
-                    if len(pts) < 3:
-                        continue
-
-                    cx, cy, cz = pts.mean(axis=0)
-
-                    inside = any(
-                        box["xmin"] <= cx <= box["xmax"]
-                        and box["ymin"] <= cy <= box["ymax"]
-                        and box["zmin"] <= cz <= box["zmax"]
-                        for box in coarse_boxes
-                    )
-
-                    # -------------------------------------------------
-                    # 人工裂缝
-                    # -------------------------------------------------
-                    if is_hydraulic:
-
-                        if axis == "k":
-                            if inside:
-                                show_all_hydraulic = True
-
-                        else:
-                            if inside:
-                                selected_hydraulic_fracs.append(
-                                    frac
-                                )
-
-                        continue
-
-                    # -------------------------------------------------
-                    # 天然裂缝
-                    # -------------------------------------------------
-                    if not inside:
-                        continue
-
-                    frac_actor = self._add_result_fracture_actor(
-                        points=pts,
-                        color=(0.0, 0.25, 0.40),
-                        edge_color=(0.0, 0.15, 0.25),
-                    )
-
-                    if frac_actor is not None:
-                        self.cache["layer_sw_frac_actors"].append(
-                            frac_actor
-                        )
-
-                # -----------------------------------------------------
-                # 8.2 按 I/J/K 的规则显示人工裂缝
-                # -----------------------------------------------------
-                if axis == "k" and show_all_hydraulic:
-
-                    hydraulic_fracs_to_render = [
-                        frac
-                        for frac in sim_data.fractures
-                        if (
-                            int(
-                                frac.get(
-                                    "is_hydraulic",
-                                    0,
-                                )
-                            ) == 1
-                            or frac.get("type")
-                            == "hydraulic"
-                        )
-                    ]
-
-                else:
-                    hydraulic_fracs_to_render = (
-                        selected_hydraulic_fracs
-                    )
-
-                for frac in hydraulic_fracs_to_render:
-
-                    pts = np.asarray(
-                        frac.get("points", []),
-                        dtype=np.float64,
-                    )
-
-                    if len(pts) < 3:
-                        continue
-
-                    frac_actor = self._add_result_fracture_actor(
-                        points=pts,
-                        color=(0.72, 0.38, 0.38),
-                        edge_color=(0.54, 0.29, 0.29),
-                    )
-
-                    if frac_actor is not None:
-                        self.cache["layer_sw_frac_actors"].append(
-                            frac_actor
-                        )
-
-            # =========================================================
-            # 9. 当前层 / 剖面井线显示
-            # =========================================================
-            if (
-                show_wells
-                and getattr(sim_data, "fractures", None)
-            ):
-
-                well_centers = []
-
-                if axis == "k" and show_all_hydraulic:
-
-                    well_source_fracs = [
-                        frac
-                        for frac in sim_data.fractures
-                        if (
-                            int(
-                                frac.get(
-                                    "is_hydraulic",
-                                    0,
-                                )
-                            ) == 1
-                            or frac.get("type")
-                            == "hydraulic"
-                        )
-                    ]
-
-                else:
-                    well_source_fracs = (
-                        selected_hydraulic_fracs
-                    )
-
-                for frac in well_source_fracs:
-
-                    pts = np.asarray(
-                        frac.get("points", []),
-                        dtype=np.float64,
-                    )
-
-                    if len(pts) < 3:
-                        continue
-
-                    well_centers.append(
-                        pts.mean(axis=0)
-                    )
-
-                if len(well_centers) >= 2:
-
-                    well_centers = np.asarray(
-                        well_centers,
-                        dtype=np.float64,
-                    )
-
-                    # I 剖面固定 I，显示 Y-Z 面，所以按 Y 排序；
-                    # J 剖面固定 J，显示 X-Z 面，所以按 X 排序；
-                    # K 平面显示 X-Y 面，仍按 X 排序。
-                    if axis == "i":
-                        sorted_idx = np.argsort(
-                            well_centers[:, 1]
-                        )
-                    else:
-                        sorted_idx = np.argsort(
-                            well_centers[:, 0]
-                        )
-
-                    ordered_centers = well_centers[
-                        sorted_idx
-                    ]
-
-                    segments = [
-                        (
-                            ordered_centers[i].tolist(),
-                            ordered_centers[
-                                i + 1
-                            ].tolist(),
-                        )
-                        for i in range(
-                            len(ordered_centers) - 1
-                        )
-                    ]
-
-                    well_line = self._polydata_from_line_segments(
-                        segments
-                    )
-
-                    if well_line is not None:
-
-                        well_actor = self._add_result_well_actor(
-                            mesh=well_line.tube(radius=2.0),
-                            color=(0.31, 0.35, 0.40),
-                            lighting=True,
-                            ambient=0.9,
-                            diffuse=1.0,
-                        )
-
-                        if well_actor is not None:
-                            self.cache["layer_sw_well_actors"].append(
-                                well_actor
-                            )
-
-            # =========================================================
-            # 10. 输出检查信息
-            # =========================================================
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
             selected_parent_ids = np.rint(
                 selected_rows[:, 1]
             ).astype(np.int64)
@@ -7470,14 +9816,21 @@ class PyVistaRenderer:
                 f"unique_parent_count="
                 f"{len(np.unique(selected_parent_ids))}, "
                 f"coarse_box_count={len(coarse_boxes)}, "
-                f"sw_range=[{sw_min:.6f}, {sw_max:.6f}], "
-                f"fracture_actor_count="
-                f"{len(self.cache['layer_sw_frac_actors'])}, "
-                f"well_actor_count="
-                f"{len(self.cache['layer_sw_well_actors'])}"
+                f"sw_range=[{sw_min:.6f}, {sw_max:.6f}]"
             )
 
-            self._render()
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name="Sw",
+                volume_grid=grid,
+                actor=sw_actor,
+                axis=axis,
+                layer_index=layer_index,
+                title="Water Saturation",
+                source_indices=selected_indices,
+            )
+
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -7488,9 +9841,9 @@ class PyVistaRenderer:
             print("\n")
 
 
-    # =====================================================================
-    # I 方向 Sw 剖面
-    # =====================================================================
+    
+    
+    
 
     def render_corner_sw_by_layer_i(
         self,
@@ -7506,9 +9859,9 @@ class PyVistaRenderer:
         )
 
 
-    # =====================================================================
-    # J 方向 Sw 剖面
-    # =====================================================================
+    
+    
+    
 
     def render_corner_sw_by_layer_j(
         self,
@@ -7524,9 +9877,9 @@ class PyVistaRenderer:
         )
 
 
-    # =====================================================================
-    # K 方向 Sw 层面
-    # =====================================================================
+    
+    
+    
 
     def render_corner_sw_by_layer_k(
         self,
@@ -7565,7 +9918,7 @@ class PyVistaRenderer:
             if n_cells == 0:
                 return
 
-            # 孔隙度在第 32 列
+            
             phi = cell_data[:, 32].astype(np.float32)
 
             pmin = float(np.nanmin(phi))
@@ -7600,12 +9953,8 @@ class PyVistaRenderer:
 
             grid.cell_data["Phi"] = phi
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
-            )
 
             actor = self.plotter.add_mesh(
                 surface,
@@ -7621,6 +9970,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -7641,13 +9991,15 @@ class PyVistaRenderer:
             self.cache["phi_field_actor"] = actor
             self.cache["phi_scalar_bar"] = scalar_bar
 
-            if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(sim_data)
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name="Phi",
+                volume_grid=grid,
+                actor=actor,
+                title="Porosity",
+            )
 
-            if getattr(sim_data, "wells", None):
-                self.render_corner_wells(sim_data)
-
-            self._render()
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -7697,19 +10049,15 @@ class PyVistaRenderer:
             )
             return
 
-        # =========================================================
-        # 1. 清除上一帧孔隙度分层渲染
-        # =========================================================
+        
+        
+        
         self._remove_actor(self.cache.get("layer_phi_actor"))
         self._remove_actor(self.cache.get("layer_phi_coarse_grid_actor"))
 
-        self._remove_actor_list(self.cache.get("layer_phi_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_phi_well_actors", []))
 
         self.cache["layer_phi_actor"] = None
         self.cache["layer_phi_coarse_grid_actor"] = None
-        self.cache["layer_phi_frac_actors"] = []
-        self.cache["layer_phi_well_actors"] = []
 
         if self.cache.get("layer_phi_scalar_bar") is not None:
             try:
@@ -7719,9 +10067,9 @@ class PyVistaRenderer:
             self.cache["layer_phi_scalar_bar"] = None
 
         try:
-            # =========================================================
-            # 2. 根据 I/J/K 方向选 coarse cells
-            # =========================================================
+            
+            
+            
             cpg = sim_data.corner_point_grid
 
             nx = int(sim_data.grid_info["nx"])
@@ -7770,9 +10118,9 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            # =========================================================
-            # 3. 构建 coarse boxes，并渲染当前层 coarse grid 边线
-            # =========================================================
+            
+            
+            
             coarse_boxes = []
 
             coarse_points = []
@@ -7822,50 +10170,12 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            if show_grid and coarse_points:
-                coarse_grid = pv.UnstructuredGrid(
-                    np.array(coarse_cell_array, dtype=np.int64),
-                    np.array(coarse_cell_types, dtype=np.uint8),
-                    np.array(coarse_points, dtype=np.float32)
-                )
+            
+            
 
-                if coarse_grid.n_points > 0:
-                    coarse_edges = coarse_grid.extract_all_edges()
-
-                    if coarse_edges.n_points > 0:
-                        coarse_actor = self.plotter.add_mesh(
-                            coarse_edges,
-                            color=(0.78, 0.82, 0.87),
-                            line_width=1,
-                            opacity=1.0,
-                            render=False,
-                        )
-
-                        self.cache["layer_phi_coarse_grid_actor"] = coarse_actor
-
-            # =========================================================
-            # 4. 从 cell_geometry_with_pressure 里筛当前层 refined cells
-            # =========================================================
-            selected_indices = self._get_layer_row_indices_by_parent_id(
-                sim_data=sim_data,
-                axis=axis,
-                layer_index=layer_index,
-                cell_data=cell_data,
-            )
-
-            if selected_indices.size == 0:
-                print(
-                    f"No leaf cells found for Phi, "
-                    f"axis={axis}, layer={layer_index}"
-                )
-                self._render()
-                return
-
-            selected_rows = cell_data[selected_indices]
-
-            # =========================================================
-            # 5. 构建当前层孔隙度 UnstructuredGrid
-            # =========================================================
+            
+            
+            
             all_points = []
             cell_corner_ids = []
 
@@ -7908,12 +10218,8 @@ class PyVistaRenderer:
 
             grid.cell_data["Phi"] = selected_phi
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
-            )
 
             valid_values = all_phi[np.isfinite(all_phi)]
 
@@ -7930,10 +10236,10 @@ class PyVistaRenderer:
                 phimin -= delta
                 phimax += delta
 
-            # =========================================================
-            # 6. 渲染当前层孔隙度
-            # 颜色条范围：Phi 全场 min/max，模仿 pressure 分层
-            # =========================================================
+            
+            
+            
+            
             actor = self.plotter.add_mesh(
                 surface,
                 scalars="Phi",
@@ -7950,6 +10256,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -7970,203 +10277,24 @@ class PyVistaRenderer:
             self.cache["layer_phi_actor"] = actor
             self.cache["layer_phi_scalar_bar"] = scalar_bar
 
-            # =========================================================
-            # 7. 当前层/剖面裂缝显示
-            #
-            # 规则：
-            #   天然裂缝：
-            #       I/J/K 都只显示中心落在当前层/剖面内的天然裂缝
-            #
-            #   人工裂缝：
-            #       K 层：只要有一个人工裂缝中心在当前 K 层内，
-            #            就显示所有人工裂缝，适合平面图展示完整压裂段
-            #
-            #       I/J 剖面：只显示中心落在当前 I/J 剖面内的人工裂缝，
-            #            不显示所有人工裂缝，避免剖面图混乱
-            # =========================================================
-            selected_hydraulic_fracs = []
-            show_all_hydraulic = False
+            self._replace_layer_grid_with_refined_grid(
+                selected_rows=selected_rows,
+                cache_key="layer_phi_coarse_grid_actor",
+                show_grid=show_grid,
+            )
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name="Phi",
+                volume_grid=grid,
+                actor=actor,
+                axis=axis,
+                layer_index=layer_index,
+                title="Porosity",
+                source_indices=selected_indices,
+            )
 
-            if show_fractures and getattr(sim_data, "fractures", None):
-
-                # -----------------------------------------------------
-                # 7.1 第一遍：判断哪些裂缝属于当前层/剖面
-                # -----------------------------------------------------
-                for frac in sim_data.fractures:
-
-                    is_hydraulic = (
-                        int(frac.get("is_hydraulic", 0)) == 1
-                        or frac.get("type") == "hydraulic"
-                    )
-
-                    pts = np.array(frac["points"], dtype=np.float64)
-
-                    if len(pts) < 3:
-                        continue
-
-                    cx, cy, cz = pts.mean(axis=0)
-
-                    inside = any(
-                        box["xmin"] <= cx <= box["xmax"] and
-                        box["ymin"] <= cy <= box["ymax"] and
-                        box["zmin"] <= cz <= box["zmax"]
-                        for box in coarse_boxes
-                    )
-
-                    # -------------------------------------------------
-                    # 人工裂缝
-                    # -------------------------------------------------
-                    if is_hydraulic:
-
-                        if axis == "k":
-                            # K 层平面图：
-                            # 只要有一个人工裂缝中心落在当前 K 层内，
-                            # 就显示所有人工裂缝。
-                            if inside:
-                                show_all_hydraulic = True
-
-                        else:
-                            # I/J 剖面：
-                            # 只显示当前剖面内的人工裂缝。
-                            if inside:
-                                selected_hydraulic_fracs.append(frac)
-
-                        continue
-
-                    # -------------------------------------------------
-                    # 天然裂缝：
-                    # I/J/K 都只显示当前层/剖面内的天然裂缝。
-                    # -------------------------------------------------
-                    if not inside:
-                        continue
-
-                    fac = self._add_result_fracture_actor(
-                        points=pts,
-                        color=(0.0, 0.25, 0.4),
-                        edge_color=(0.0, 0.15, 0.25),
-                    )
-
-                    if fac is not None:
-                        self.cache["layer_phi_frac_actors"].append(
-                            fac
-                        )
-
-                # -----------------------------------------------------
-                # 7.2 根据 I/J/K 规则渲染人工裂缝
-                # -----------------------------------------------------
-                if axis == "k" and show_all_hydraulic:
-                    # K 层：显示所有人工裂缝
-                    hydraulic_fracs_to_render = [
-                        frac for frac in sim_data.fractures
-                        if (
-                            int(frac.get("is_hydraulic", 0)) == 1
-                            or frac.get("type") == "hydraulic"
-                        )
-                    ]
-                else:
-                    # I/J 剖面：只显示当前剖面内的人工裂缝
-                    hydraulic_fracs_to_render = selected_hydraulic_fracs
-
-                for frac in hydraulic_fracs_to_render:
-
-                    pts = np.array(frac["points"], dtype=np.float64)
-
-                    if len(pts) < 3:
-                        continue
-
-                    fac = self._add_result_fracture_actor(
-                        points=pts,
-                        color=(0.72, 0.38, 0.38),
-                        edge_color=(0.54, 0.29, 0.29),
-                    )
-
-                    if fac is not None:
-                        self.cache["layer_phi_frac_actors"].append(
-                            fac
-                        )
-
-            # =========================================================
-            # 8. 当前层/剖面井显示
-            #
-            # 规则：
-            #   K 层：
-            #       如果当前 K 层命中人工裂缝，则用所有人工裂缝中心连井线
-            #
-            #   I 剖面：
-            #       只用当前 I 剖面内的人工裂缝中心连井线
-            #       因为 I 剖面是固定 i，看的是 Y-Z 面，所以按 Y 排序
-            #
-            #   J 剖面：
-            #       只用当前 J 剖面内的人工裂缝中心连井线
-            #       因为 J 剖面是固定 j，看的是 X-Z 面，所以按 X 排序
-            # =========================================================
-            if show_wells and getattr(sim_data, "fractures", None):
-
-                well_centers = []
-
-                if axis == "k" and show_all_hydraulic:
-                    # K 层平面图：使用所有人工裂缝中心生成完整井线
-                    well_source_fracs = [
-                        frac for frac in sim_data.fractures
-                        if (
-                            int(frac.get("is_hydraulic", 0)) == 1
-                            or frac.get("type") == "hydraulic"
-                        )
-                    ]
-                else:
-                    # I/J 剖面：只使用当前剖面内的人工裂缝中心
-                    well_source_fracs = selected_hydraulic_fracs
-
-                for frac in well_source_fracs:
-
-                    pts = np.array(frac["points"], dtype=np.float64)
-
-                    if len(pts) < 3:
-                        continue
-
-                    center = pts.mean(axis=0)
-                    well_centers.append(center)
-
-                if len(well_centers) >= 2:
-
-                    well_centers = np.array(well_centers)
-
-                    # 排序方式根据剖面方向区分：
-                    # I 剖面固定 i，看 Y-Z，所以按 Y 排序；
-                    # J 剖面固定 j，看 X-Z，所以按 X 排序；
-                    # K 层平面图看 X-Y，仍按 X 排序。
-                    if axis == "i":
-                        sorted_idx = np.argsort(well_centers[:, 1])
-                    else:
-                        sorted_idx = np.argsort(well_centers[:, 0])
-
-                    ordered_centers = well_centers[sorted_idx]
-
-                    segments = [
-                        (
-                            ordered_centers[i].tolist(),
-                            ordered_centers[i + 1].tolist()
-                        )
-                        for i in range(len(ordered_centers) - 1)
-                    ]
-
-                    well_line = self._polydata_from_line_segments(segments)
-
-                    if well_line is not None:
-                        wactor = self._add_result_well_actor(
-                            mesh=well_line.tube(radius=2.0),
-                            color=(0.31, 0.35, 0.40),
-                            lighting=True,
-                            ambient=0.9,
-                            diffuse=1.0,
-                        )
-
-                        if wactor is not None:
-                            self.cache["layer_phi_well_actors"].append(
-                                wactor
-                            )
-
-            self._render()
+            
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -8202,311 +10330,193 @@ class PyVistaRenderer:
             layer_index=k_layer
         )
 
-    # =====================================================================
-    # 阈值过滤
-    # =====================================================================
+    
+    
+    
+
     def render_threshold_property_field(
         self,
-        sim_data,
-        property_name="Pressure",
+        sim_data=None,
+        property_name=None,
         min_value=None,
         max_value=None,
         opacity=RESULT_PROPERTY_OPACITY,
         show_edges=False,
     ):
+        """
+        对当前显示属性执行阈值过滤。
 
-        if getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
-        ) is None:
-            print("No cell_geometry_with_pressure data")
-            return
-
-        # =========================================================
-        # 1. 属性列配置
-        # =========================================================
-        property_config = {
-            "Pressure": {
-                "column": 28,
-                "title": "Pressure (bar)",
-            },
-
-            "Kx": {
-                "column": 29,
-                "title": "Permeability X",
-            },
-
-            "Ky": {
-                "column": 30,
-                "title": "Permeability Y",
-            },
-
-            "Kz": {
-                "column": 31,
-                "title": "Permeability Z",
-            },
-
-            "Phi": {
-                "column": 32,
-                "title": "Phi",
-            },
-
-            "Sw": {
-                "column": 33,
-                "title": "Sw",
-            },
-        }
-
-        if property_name not in property_config:
-            print(
-                f"Unsupported property_name: {property_name}"
-            )
-            print(
-                f"Supported properties: "
-                f"{list(property_config.keys())}"
-            )
-            return
-
-        config = property_config[property_name]
-        col = int(config["column"])
-
-        cell_data = sim_data.cell_geometry_with_pressure
-
-        if cell_data is None or cell_data.shape[0] == 0:
-            print("Empty cell_geometry_with_pressure")
-            return
-
-        if cell_data.shape[1] <= col:
-            print(
-                f"Column index out of range: "
-                f"property={property_name}, "
-                f"column={col}, "
-                f"data columns={cell_data.shape[1]}"
-            )
-            return
-
-        # =========================================================
-        # 2. 记录筛选网格线当前显示状态
-        # =========================================================
-        threshold_grid_visible = bool(
-            self.cache.get(
-                "threshold_grid_visible",
-                True,
-            )
+        当前属性可以来自静态预览，也可以来自模拟结果；旧 UI 继续传
+        sim_data/property_name 也兼容，但只要画面已有属性场，就始终以
+        当前属性上下文为准。
+        """
+        current = self._resolve_property_operation_context(
+            sim_data=sim_data,
+            property_name=property_name,
         )
 
-        # =========================================================
-        # 3. 清理上一次阈值过滤结果
-        # =========================================================
-        self._remove_actor(
-            self.cache.get("threshold_actor")
+        
+        source_context = self.cache.get("threshold_source_context")
+        if not isinstance(source_context, dict):
+            source_context = current
+
+        if not isinstance(source_context, dict):
+            print("[Threshold] No active property field.")
+            return None
+
+        source_grid, scalar_name, values = self._context_cell_scalar_values(
+            source_context
         )
 
-        self._remove_actor(
-            self.cache.get("threshold_grid_actor")
-        )
+        if (
+            not self._dataset_has_cells(source_grid)
+            or scalar_name is None
+            or values is None
+        ):
+            print("[Threshold] Active property has no cell scalar data.")
+            return None
 
+        mask = np.isfinite(values)
+
+        if min_value is not None:
+            mask &= values >= float(min_value)
+
+        if max_value is not None:
+            mask &= values <= float(max_value)
+
+        selected_ids = np.flatnonzero(mask).astype(np.int64)
+
+        if selected_ids.size == 0:
+            print(
+                f"[Threshold] No cells found: "
+                f"property={source_context.get('property_name')}, "
+                f"min={min_value}, max={max_value}"
+            )
+            return None
+
+        
+        self._remove_actor(self.cache.get("threshold_actor"))
+        self._remove_actor(self.cache.get("threshold_grid_actor"))
         self.cache["threshold_actor"] = None
         self.cache["threshold_grid_actor"] = None
 
-        if self.cache.get("threshold_scalar_bar") is not None:
+        old_bar_title = self.cache.get("threshold_scalar_bar_title")
+        if old_bar_title:
             try:
                 self.plotter.remove_scalar_bar(
-                    render=False
+                    title=old_bar_title,
+                    render=False,
                 )
             except Exception:
                 pass
 
-            self.cache["threshold_scalar_bar"] = None
+        old_bar = self.cache.get("threshold_scalar_bar")
+        if old_bar is not None:
+            self._set_scene_actor_visibility(old_bar, False)
+
+        self.cache["threshold_scalar_bar"] = None
+        self.cache["threshold_scalar_bar_title"] = None
 
         try:
-            # =========================================================
-            # 4. 读取属性值并生成阈值 mask
-            # =========================================================
-            values = cell_data[
-                :,
-                col,
-            ].astype(
-                np.float32
-            )
+            filtered_grid = source_grid.extract_cells(selected_ids)
+        except Exception as exc:
+            print("[Threshold] extract_cells failed:", exc)
+            return None
 
-            # NaN / Inf 不参与筛选和渲染。
-            mask = np.isfinite(values)
+        if not self._dataset_has_cells(filtered_grid):
+            return None
 
-            if min_value is not None:
-                mask &= values >= float(min_value)
+        
+        try:
+            if scalar_name not in filtered_grid.cell_data:
+                filtered_grid.cell_data[scalar_name] = values[selected_ids]
+        except Exception:
+            pass
 
-            if max_value is not None:
-                mask &= values <= float(max_value)
+        try:
+            surface = self._build_result_property_shell_surface(filtered_grid)
+        except Exception:
+            surface = filtered_grid.extract_surface()
 
-            selected_rows = cell_data[mask]
-            selected_values = values[mask]
-
-            if selected_rows.shape[0] == 0:
-                print(
-                    f"No cells found for {property_name} threshold: "
-                    f"min={min_value}, max={max_value}"
+        if scalar_name == "Pressure":
+            try:
+                surface = self._prepare_exact_cell_scalar_surface(
+                    surface,
+                    scalar_name,
                 )
-                self._render()
-                return
+            except Exception:
+                pass
 
-            print(
-                f"Threshold render: {property_name}, "
-                f"selected {selected_rows.shape[0]} / "
-                f"{cell_data.shape[0]} cells"
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            return None
+
+        value_min = float(np.min(finite_values))
+        value_max = float(np.max(finite_values))
+
+        if np.isclose(value_min, value_max, rtol=1e-6, atol=1e-8):
+            center = float(np.mean(finite_values))
+            delta = max(abs(center) * 0.01, 0.001)
+            value_min = center - delta
+            value_max = center + delta
+
+        
+        if self.cache.get("threshold_source_context") is None:
+            source_actors = [source_context.get("actor")]
+            source_actors.extend(
+                self._active_property_scalar_bar_actors(source_context)
             )
-
-            # =========================================================
-            # 5. 只用筛选后的单元构建 UnstructuredGrid
-            # =========================================================
-            all_points = []
-            vtk_cells = []
-            offset = 0
-
-            for row in selected_rows:
-
-                pts = row[
-                    4:28
-                ].reshape(
-                    8,
-                    3,
-                ).astype(
-                    np.float32
-                )
-
-                all_points.append(pts)
-
-                vtk_cells.append([
-                    8,
-                    offset + 0,
-                    offset + 1,
-                    offset + 2,
-                    offset + 3,
-                    offset + 4,
-                    offset + 5,
-                    offset + 6,
-                    offset + 7,
-                ])
-
-                offset += 8
-
-            points = np.vstack(
-                all_points
-            ).astype(
-                np.float32
+            self.cache["threshold_source_actor_states"] = (
+                self._capture_actor_visibility_states(source_actors)
             )
+            self.cache["threshold_source_context"] = source_context
 
-            cells = np.hstack(
-                vtk_cells
-            ).astype(
-                np.int64
+        for state in self.cache.get("threshold_source_actor_states", []) or []:
+            self._set_scene_actor_visibility(state.get("actor"), False)
+
+        title = str(
+            source_context.get(
+                "title",
+                source_context.get("property_name", scalar_name),
             )
+        )
+        unit = str(source_context.get("unit", "") or "")
+        bar_title = f"Threshold: {title}"
+        if unit and unit not in bar_title:
+            bar_title += f" ({unit})"
 
-            cell_types = np.full(
-                selected_rows.shape[0],
-                pv.CellType.HEXAHEDRON,
-                dtype=np.uint8,
-            )
+        threshold_actor = self.plotter.add_mesh(
+            surface,
+            scalars=scalar_name,
+            preference="cell",
+            cmap=get_bright_jet_cmap(),
+            clim=[value_min, value_max],
+            opacity=float(opacity),
+            show_edges=bool(show_edges),
+            edge_color=(0.18, 0.18, 0.18),
+            line_width=0.3,
+            show_scalar_bar=False,
+            lighting=False,
+            smooth_shading=False,
+            ambient=1.0,
+            diffuse=0.0,
+            specular=0.0,
+            interpolate_before_map=False,
+            reset_camera=False,
+            render=False,
+        )
 
-            grid = pv.UnstructuredGrid(
-                cells,
-                cell_types,
-                points,
-            )
+        if scalar_name == "Pressure":
+            try:
+                self._configure_exact_cell_scalar_actor(threshold_actor)
+            except Exception:
+                pass
 
-            grid.cell_data[property_name] = (
-                selected_values
-            )
-
-            # =========================================================
-            # 6. 提取筛选后属性表面
-            # =========================================================
-            surface = grid.extract_surface()
-
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True,
-            )
-
-            # =========================================================
-            # 7. 计算全场有效值的颜色范围
-            # =========================================================
-            valid_values = values[
-                np.isfinite(values)
-            ]
-
-            if valid_values.size == 0:
-                print(
-                    f"No valid values for {property_name}"
-                )
-                self._render()
-                return
-
-            value_min = float(
-                np.nanmin(valid_values)
-            )
-
-            value_max = float(
-                np.nanmax(valid_values)
-            )
-
-            # 全场数值相同或差异极小时，
-            # 防止 clim=[x, x] 或浮点误差导致颜色异常。
-            if np.isclose(
-                value_min,
-                value_max,
-                rtol=1e-6,
-                atol=1e-8,
-            ):
-                center_value = float(
-                    np.nanmean(valid_values)
-                )
-
-                delta = max(
-                    abs(center_value) * 0.01,
-                    0.001,
-                )
-
-                value_min = center_value - delta
-                value_max = center_value + delta
-
-            clim = [
-                value_min,
-                value_max,
-            ]
-
-            # =========================================================
-            # 8. 绘制阈值过滤属性场
-            # =========================================================
-            threshold_actor = self.plotter.add_mesh(
-                surface,
-                scalars=property_name,
-                cmap=get_bright_jet_cmap(),
-                clim=clim,
-                opacity=opacity,
-                show_edges=show_edges,
-                edge_color=(0.18, 0.18, 0.18),
-                line_width=0.3,
-
-                # 禁止默认横向颜色条
-                show_scalar_bar=False,
-
-                lighting=False,
-                smooth_shading=False,
-                ambient=1.0,
-                diffuse=0.0,
-                specular=0.0,
-                interpolate_before_map=False,
-                render=False,
-            )
-
-            # =========================================================
-            # 9. 创建颜色条
-            # =========================================================
-            scalar_bar = self._replace_scalar_bar(
-                "threshold_scalar_bar",
-                config["title"],
+        scalar_bar = None
+        try:
+            scalar_bar = self.plotter.add_scalar_bar(
+                title=bar_title,
+                mapper=getattr(threshold_actor, "mapper", None),
                 position_x=0.02,
                 position_y=0.55,
                 width=0.08,
@@ -8517,87 +10527,89 @@ class PyVistaRenderer:
                 vertical=True,
                 render=False,
             )
+        except TypeError:
+            scalar_bar = self.plotter.add_scalar_bar(
+                title=bar_title,
+                position_x=0.02,
+                position_y=0.55,
+                width=0.08,
+                height=0.40,
+                label_font_size=14,
+                title_font_size=16,
+                color="#2f3640",
+                vertical=True,
+                render=False,
+            )
+        except Exception:
+            scalar_bar = None
 
-            self.cache["threshold_actor"] = threshold_actor
-            self.cache["threshold_scalar_bar"] = scalar_bar
+        threshold_grid_visible = bool(
+            self.cache.get("threshold_grid_visible", True)
+        )
+        threshold_grid_actor = None
 
-            # =========================================================
-            # 10. 创建阈值筛选后的网格线
-            # =========================================================
-            threshold_edges = grid.extract_all_edges()
-
+        try:
+            threshold_edges = filtered_grid.extract_all_edges()
             if threshold_edges.n_points > 0:
-
                 threshold_grid_actor = self.plotter.add_mesh(
                     threshold_edges,
                     color=(0.5, 0.5, 0.5),
                     line_width=1.0,
                     opacity=1.0,
                     lighting=False,
-                    render_lines_as_tubes=True,
+                    render_lines_as_tubes=False,
                     show_scalar_bar=False,
+                    pickable=False,
+                    reset_camera=False,
                     render=False,
                 )
-
-                try:
-                    threshold_grid_actor.visibility = (
-                        threshold_grid_visible
-                    )
-                except Exception:
-                    try:
-                        threshold_grid_actor.SetVisibility(
-                            threshold_grid_visible
-                        )
-                    except Exception:
-                        pass
-
-                self.cache[
-                    "threshold_grid_actor"
-                ] = threshold_grid_actor
-
-            self.cache["threshold_grid_visible"] = (
-                threshold_grid_visible
-            )
-
-            # =========================================================
-            # 11. 可选叠加裂缝和井
-            # =========================================================
-            if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(
-                    sim_data
+                self._set_scene_actor_visibility(
+                    threshold_grid_actor,
+                    threshold_grid_visible,
                 )
+        except Exception:
+            threshold_grid_actor = None
 
-            if getattr(sim_data, "wells", None):
-                self.render_corner_wells(
-                    sim_data
-                )
+        self.cache["threshold_actor"] = threshold_actor
+        self.cache["threshold_scalar_bar"] = scalar_bar
+        self.cache["threshold_scalar_bar_title"] = bar_title
+        self.cache["threshold_grid_actor"] = threshold_grid_actor
+        self.cache["threshold_grid_visible"] = threshold_grid_visible
 
-            print(
-                f"[Threshold] "
-                f"property={property_name}, "
-                f"selected={selected_rows.shape[0]}, "
-                f"total={cell_data.shape[0]}, "
-                f"range=[{value_min:.6f}, "
-                f"{value_max:.6f}], "
-                f"grid_visible={threshold_grid_visible}"
-            )
+        metadata = dict(source_context.get("metadata", {}) or {})
+        metadata.update({
+            "operation": "threshold",
+            "threshold_min": min_value,
+            "threshold_max": max_value,
+            "source_context": source_context,
+        })
 
-            self._render()
+        self.set_active_property_context(
+            source_mode=source_context.get("source_mode", "preview"),
+            sim_data=source_context.get("sim_data", sim_data),
+            property_name=source_context.get("property_name", scalar_name),
+            scalar_name=scalar_name,
+            volume_grid=filtered_grid,
+            actor=threshold_actor,
+            axis=source_context.get("axis"),
+            layer_index=source_context.get("layer_index"),
+            title=title,
+            unit=unit,
+            metadata=metadata,
+        )
 
-        except Exception as exc:
-            print("\n")
-            print("=" * 60)
-            print(
-                "ERROR IN "
-                "render_threshold_property_field"
-            )
-            print(type(exc).__name__, exc)
-            print("=" * 60)
-            print("\n")
+        print(
+            f"[Threshold] source={source_context.get('source_mode')}, "
+            f"property={source_context.get('property_name')}, "
+            f"selected={selected_ids.size}/{values.size}"
+        )
 
-    # =====================================================================
-    # 阈值过滤网格线显示 / 隐藏
-    # =====================================================================
+        self._render()
+        return threshold_actor
+
+    
+    
+    
     def set_threshold_grid_visibility(
         self,
         visible: bool,
@@ -8637,42 +10649,68 @@ class PyVistaRenderer:
         self._render()
 
 
-    # =====================================================================
-    # 隐藏 / 清除阈值过滤结果
-    # =====================================================================
+    
+    
+    
+
 
     def hide_threshold_property_field(self):
-        """
-        删除当前阈值过滤属性场、竖直颜色条和筛选后的网格线。
-
-        清除后，下一次阈值过滤会默认显示网格线。
-        """
-
-        self._remove_actor(
-            self.cache.get("threshold_actor")
-        )
-
-        self._remove_actor(
-            self.cache.get("threshold_grid_actor")
-        )
-
+        """清除阈值结果并恢复进入阈值前的预览/模拟属性场。"""
+        self._remove_actor(self.cache.get("threshold_actor"))
+        self._remove_actor(self.cache.get("threshold_grid_actor"))
         self.cache["threshold_actor"] = None
         self.cache["threshold_grid_actor"] = None
-
-        # 下一次阈值筛选默认显示网格线。
         self.cache["threshold_grid_visible"] = True
 
-        if self.cache.get("threshold_scalar_bar") is not None:
+        title = self.cache.get("threshold_scalar_bar_title")
+        if title:
             try:
                 self.plotter.remove_scalar_bar(
-                    render=False
+                    title=title,
+                    render=False,
                 )
             except Exception:
                 pass
 
-            self.cache["threshold_scalar_bar"] = None
+        scalar_bar = self.cache.get("threshold_scalar_bar")
+        if scalar_bar is not None:
+            self._set_scene_actor_visibility(scalar_bar, False)
+
+        self.cache["threshold_scalar_bar"] = None
+        self.cache["threshold_scalar_bar_title"] = None
+
+        source_context = self.cache.get("threshold_source_context")
+        source_states = self.cache.get(
+            "threshold_source_actor_states",
+            [],
+        )
+
+        self._restore_actor_visibility_states(source_states)
+
+        self.cache["threshold_source_context"] = None
+        self.cache["threshold_source_actor_states"] = []
+
+        if isinstance(source_context, dict) and self._dataset_has_cells(
+            source_context.get("volume_grid")
+        ):
+            self.set_active_property_context(
+                source_mode=source_context.get("source_mode", "preview"),
+                sim_data=source_context.get("sim_data"),
+                property_name=source_context.get("property_name", "Property"),
+                scalar_name=source_context.get("scalar_name", "Property"),
+                volume_grid=source_context.get("volume_grid"),
+                actor=source_context.get("actor"),
+                axis=source_context.get("axis"),
+                layer_index=source_context.get("layer_index"),
+                title=source_context.get("title"),
+                unit=source_context.get("unit", ""),
+                metadata=source_context.get("metadata", {}),
+            )
+        else:
+            self.clear_active_property_context(refresh_picking=True)
 
         self._render()
+        return True
 
     def _get_current_model_bounds(self):
         """
@@ -8695,7 +10733,7 @@ class PyVistaRenderer:
         return None
 
 
-    #六视图
+    
     def _get_native_interactor(self):
         """获取底层 VTK RenderWindowInteractor。"""
         try:
@@ -8714,7 +10752,7 @@ class PyVistaRenderer:
         except Exception:
             pass
 
-        # 兼容某些版本：iren 本身就是底层交互器。
+        
         for owner in (self.plotter, self.vtk_widget):
             try:
                 candidate = getattr(owner, "iren", None)
@@ -8999,7 +11037,7 @@ class PyVistaRenderer:
             near_value = distance - radius - padding
             far_value = distance + radius + padding
 
-            # near 不能为 0，但也不能因为过小造成严重的深度精度损失。
+            
             minimum_near = max(
                 far_value * 1e-6,
                 1e-3,
@@ -9163,7 +11201,7 @@ class PyVistaRenderer:
         direction = str(direction).lower()
 
         if direction == "front":
-            # 从 -Y 方向看向模型
+            
             camera_position = (
                 (cx, cy - dist, cz),
                 (cx, cy, cz),
@@ -9171,7 +11209,7 @@ class PyVistaRenderer:
             )
 
         elif direction == "back":
-            # 从 +Y 方向看向模型
+            
             camera_position = (
                 (cx, cy + dist, cz),
                 (cx, cy, cz),
@@ -9179,7 +11217,7 @@ class PyVistaRenderer:
             )
 
         elif direction == "left":
-            # 从 -X 方向看向模型
+            
             camera_position = (
                 (cx - dist, cy, cz),
                 (cx, cy, cz),
@@ -9187,7 +11225,7 @@ class PyVistaRenderer:
             )
 
         elif direction == "right":
-            # 从 +X 方向看向模型
+            
             camera_position = (
                 (cx + dist, cy, cz),
                 (cx, cy, cz),
@@ -9195,7 +11233,7 @@ class PyVistaRenderer:
             )
 
         elif direction == "top":
-            # 俯视图：从 +Z 往下看
+            
             camera_position = (
                 (cx, cy, cz + dist),
                 (cx, cy, cz),
@@ -9203,7 +11241,7 @@ class PyVistaRenderer:
             )
 
         elif direction == "bottom":
-            # 仰视图：从 -Z 往上看
+            
             camera_position = (
                 (cx, cy, cz - dist),
                 (cx, cy, cz),
@@ -9320,9 +11358,9 @@ class PyVistaRenderer:
         prop_name = config["name"]
         title = config["title"]
 
-        # =========================================================
-        # 2. 清除上一次渗透率 actor 和颜色条
-        # =========================================================
+        
+        
+        
         self._remove_actor(self.cache.get("perm_field_actor"))
         self.cache["perm_field_actor"] = None
 
@@ -9347,9 +11385,9 @@ class PyVistaRenderer:
                 )
                 return
 
-            # =========================================================
-            # 3. 读取 Kx / Ky / Kz
-            # =========================================================
+            
+            
+            
             perm_values = cell_data[:, col].astype(np.float32)
 
             valid_values = perm_values[np.isfinite(perm_values)]
@@ -9365,9 +11403,9 @@ class PyVistaRenderer:
                 kmin -= delta
                 kmax += delta
 
-            # =========================================================
-            # 4. 构建 UnstructuredGrid
-            # =========================================================
+            
+            
+            
             all_points = []
             cells = []
             offset = 0
@@ -9396,16 +11434,12 @@ class PyVistaRenderer:
             grid = pv.UnstructuredGrid(cells, cell_types, points)
             grid.cell_data[prop_name] = perm_values
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
-            )
 
-            # =========================================================
-            # 5. 渲染渗透率场
-            # =========================================================
+            
+            
+            
             actor = self.plotter.add_mesh(
                 surface,
                 scalars=prop_name,
@@ -9420,6 +11454,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -9440,16 +11475,19 @@ class PyVistaRenderer:
             self.cache["perm_field_actor"] = actor
             self.cache["perm_scalar_bar"] = scalar_bar
 
-            # =========================================================
-            # 6. 叠加裂缝和井
-            # =========================================================
-            if getattr(sim_data, "fractures", None):
-                self.render_corner_fractures(sim_data)
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name=prop_name,
+                volume_grid=grid,
+                actor=actor,
+                title=title,
+            )
 
-            if getattr(sim_data, "wells", None):
-                self.render_corner_wells(sim_data)
+            
+            
+            
 
-            self._render()
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -9510,9 +11548,9 @@ class PyVistaRenderer:
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
             return
 
-        # =========================================================
-        # 1. 渗透率方向配置
-        # =========================================================
+        
+        
+        
         perm_direction = str(perm_direction).lower()
 
         perm_config = {
@@ -9560,19 +11598,15 @@ class PyVistaRenderer:
             )
             return
 
-        # =========================================================
-        # 2. 清除上一帧渗透率分层渲染
-        # =========================================================
+        
+        
+        
         self._remove_actor(self.cache.get("layer_perm_actor"))
         self._remove_actor(self.cache.get("layer_perm_coarse_grid_actor"))
 
-        self._remove_actor_list(self.cache.get("layer_perm_frac_actors", []))
-        self._remove_actor_list(self.cache.get("layer_perm_well_actors", []))
 
         self.cache["layer_perm_actor"] = None
         self.cache["layer_perm_coarse_grid_actor"] = None
-        self.cache["layer_perm_frac_actors"] = []
-        self.cache["layer_perm_well_actors"] = []
 
         if self.cache.get("layer_perm_scalar_bar") is not None:
             try:
@@ -9582,9 +11616,9 @@ class PyVistaRenderer:
             self.cache["layer_perm_scalar_bar"] = None
 
         try:
-            # =========================================================
-            # 3. 根据 I/J/K 方向选 coarse cells
-            # =========================================================
+            
+            
+            
             cpg = sim_data.corner_point_grid
 
             nx = int(sim_data.grid_info["nx"])
@@ -9629,9 +11663,9 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            # =========================================================
-            # 4. 构建 coarse boxes，并渲染当前层 coarse grid 边线
-            # =========================================================
+            
+            
+            
             coarse_boxes = []
 
             coarse_points = []
@@ -9681,30 +11715,12 @@ class PyVistaRenderer:
                 self._render()
                 return
 
-            if show_grid and coarse_points:
-                coarse_grid = pv.UnstructuredGrid(
-                    np.array(coarse_cell_array, dtype=np.int64),
-                    np.array(coarse_cell_types, dtype=np.uint8),
-                    np.array(coarse_points, dtype=np.float32)
-                )
+            
+            
 
-                if coarse_grid.n_points > 0:
-                    coarse_edges = coarse_grid.extract_all_edges()
-
-                    if coarse_edges.n_points > 0:
-                        coarse_actor = self.plotter.add_mesh(
-                            coarse_edges,
-                            color=(0.78, 0.82, 0.87),
-                            line_width=1,
-                            opacity=1.0,
-                            render=False,
-                        )
-
-                        self.cache["layer_perm_coarse_grid_actor"] = coarse_actor
-
-            # =========================================================
-            # 5. 从 cell_geometry_with_pressure 里筛当前层 refined cells
-            # =========================================================
+            
+            
+            
             selected_indices = self._get_layer_row_indices_by_parent_id(
                 sim_data=sim_data,
                 axis=axis,
@@ -9722,9 +11738,9 @@ class PyVistaRenderer:
 
             selected_rows = cell_data[selected_indices]
 
-            # =========================================================
-            # 6. 构建当前层渗透率 UnstructuredGrid
-            # =========================================================
+            
+            
+            
             all_points = []
             cell_corner_ids = []
 
@@ -9767,12 +11783,8 @@ class PyVistaRenderer:
 
             grid.cell_data[scalar_name] = selected_perm
 
-            surface = grid.extract_surface()
+            surface = self._build_result_property_shell_surface(grid)
 
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True
-            )
 
             valid_values = all_perm[np.isfinite(all_perm)]
 
@@ -9789,10 +11801,10 @@ class PyVistaRenderer:
                 kmin -= delta
                 kmax += delta
 
-            # =========================================================
-            # 7. 渲染当前层渗透率
-            # 颜色条范围：当前渗透率方向全场 min/max
-            # =========================================================
+            
+            
+            
+            
             actor = self.plotter.add_mesh(
                 surface,
                 scalars=scalar_name,
@@ -9809,6 +11821,7 @@ class PyVistaRenderer:
                 diffuse=0.0,
                 specular=0.0,
                 interpolate_before_map=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -9829,142 +11842,24 @@ class PyVistaRenderer:
             self.cache["layer_perm_actor"] = actor
             self.cache["layer_perm_scalar_bar"] = scalar_bar
 
-            # =========================================================
-            # 8. 当前层裂缝显示
-            # 天然裂缝：中心在当前层/剖面内才显示
-            # 人工裂缝：只要一个人工裂缝中心在当前层/剖面内，就显示所有人工裂缝
-            # =========================================================
-            show_all_hydraulic = False
+            self._replace_layer_grid_with_refined_grid(
+                selected_rows=selected_rows,
+                cache_key="layer_perm_coarse_grid_actor",
+                show_grid=show_grid,
+            )
+            self._register_result_property_context(
+                sim_data=sim_data,
+                property_name=scalar_name,
+                volume_grid=grid,
+                actor=actor,
+                axis=axis,
+                layer_index=layer_index,
+                title=scalar_title,
+                source_indices=selected_indices,
+            )
 
-            if show_fractures and getattr(sim_data, "fractures", None):
-
-                # 8.1 天然裂缝
-                for frac in sim_data.fractures:
-
-                    is_hydraulic = (
-                        int(frac.get("is_hydraulic", 0)) == 1
-                        or frac.get("type") == "hydraulic"
-                    )
-
-                    pts = np.array(frac["points"], dtype=np.float64)
-
-                    if len(pts) < 3:
-                        continue
-
-                    cx, cy, cz = pts.mean(axis=0)
-
-                    inside = any(
-                        box["xmin"] <= cx <= box["xmax"] and
-                        box["ymin"] <= cy <= box["ymax"] and
-                        box["zmin"] <= cz <= box["zmax"]
-                        for box in coarse_boxes
-                    )
-
-                    if is_hydraulic:
-                        if inside:
-                            show_all_hydraulic = True
-                        continue
-
-                    if not inside:
-                        continue
-
-                    fac = self._add_result_fracture_actor(
-                        points=pts,
-                        color=(0.0, 0.25, 0.4),
-                        edge_color=(0.0, 0.15, 0.25),
-                    )
-
-                    if fac is not None:
-                        self.cache["layer_perm_frac_actors"].append(
-                            fac
-                        )
-
-                # 8.2 人工裂缝：只要一个在层内，就显示所有人工裂缝
-                if show_all_hydraulic:
-                    for frac in sim_data.fractures:
-
-                        is_hydraulic = (
-                            int(frac.get("is_hydraulic", 0)) == 1
-                            or frac.get("type") == "hydraulic"
-                        )
-
-                        if not is_hydraulic:
-                            continue
-
-                        pts = np.array(frac["points"], dtype=np.float64)
-
-                        if len(pts) < 3:
-                            continue
-
-                        fac = self._add_result_fracture_actor(
-                            points=pts,
-                            color=(0.72, 0.38, 0.38),
-                            edge_color=(0.54, 0.29, 0.29),
-                        )
-
-                        if fac is not None:
-                            self.cache["layer_perm_frac_actors"].append(
-                                fac
-                            )
-
-            # =========================================================
-            # 9. 当前层井显示
-            # 沿用你现有逻辑：人工裂缝中心连线作为井线
-            # =========================================================
-            if show_wells and show_all_hydraulic and getattr(sim_data, "fractures", None):
-
-                well_centers = []
-
-                for frac in sim_data.fractures:
-
-                    is_hydraulic = (
-                        int(frac.get("is_hydraulic", 0)) == 1
-                        or frac.get("type") == "hydraulic"
-                    )
-
-                    if not is_hydraulic:
-                        continue
-
-                    pts = np.array(frac["points"], dtype=np.float64)
-
-                    if len(pts) < 3:
-                        continue
-
-                    center = pts.mean(axis=0)
-                    well_centers.append(center)
-
-                if len(well_centers) >= 2:
-
-                    well_centers = np.array(well_centers)
-
-                    sorted_idx = np.argsort(well_centers[:, 0])
-                    ordered_centers = well_centers[sorted_idx]
-
-                    segments = [
-                        (
-                            ordered_centers[i].tolist(),
-                            ordered_centers[i + 1].tolist()
-                        )
-                        for i in range(len(ordered_centers) - 1)
-                    ]
-
-                    well_line = self._polydata_from_line_segments(segments)
-
-                    if well_line is not None:
-                        wactor = self._add_result_well_actor(
-                            mesh=well_line.tube(radius=2.0),
-                            color=(0.31, 0.35, 0.40),
-                            lighting=True,
-                            ambient=0.9,
-                            diffuse=1.0,
-                        )
-
-                        if wactor is not None:
-                            self.cache["layer_perm_well_actors"].append(
-                                wactor
-                            )
-
-            self._render()
+            
+            self._finish_property_switch_render()
 
         except Exception as exc:
             print("\n")
@@ -9974,9 +11869,9 @@ class PyVistaRenderer:
             print("=" * 60)
             print("\n")
 
-    # =========================================================
+    
     # Kx 分层
-    # =========================================================
+    
     def render_corner_kx_by_layer_i(self, sim_data, i_layer: int):
         self.render_corner_perm_by_layer(
             sim_data,
@@ -10004,9 +11899,9 @@ class PyVistaRenderer:
         )
 
 
-    # =========================================================
+    
     # Ky 分层
-    # =========================================================
+    
     def render_corner_ky_by_layer_i(self, sim_data, i_layer: int):
         self.render_corner_perm_by_layer(
             sim_data,
@@ -10034,9 +11929,9 @@ class PyVistaRenderer:
         )
 
 
-    # =========================================================
+    
     # Kz 分层
-    # =========================================================
+    
     def render_corner_kz_by_layer_i(self, sim_data, i_layer: int):
         self.render_corner_perm_by_layer(
             sim_data,
@@ -10088,73 +11983,117 @@ class PyVistaRenderer:
         self._render()
 
 
-    # =========================================================
-    # Cell Picking：单元拾取信息显示
-    # =========================================================
+    
+    
+    
 
-    def _get_pick_property_config(self, property_name):
+    def _get_pick_property_config(
+        self,
+        property_name,
+        quiet=False,
+    ):
         """
-        根据属性名返回属性列号和显示标题。
-        数据结构：
-            28 P
-            29 Kx
-            30 Ky
-            31 Kz
-            32 Phi
-            33 Sw
+        返回统一拾取属性配置。
+
+        同时支持模拟结果 Pressure/Sw/Phi/Kx/Ky/Kz，
+        以及静态预览 MATRIX_* / DFN_* / SIGMA。
         """
+        name = str(
+            property_name
+            if property_name is not None
+            else ""
+        ).strip()
 
-        name = str(property_name).strip()
+        canonical = self._normalize_scene_property_name(
+            name
+        )
 
-        config = {
+        result_config = {
             "Pressure": {
                 "column": 28,
                 "title": "Pressure",
                 "unit": "bar",
-            },
-            "P": {
-                "column": 28,
-                "title": "Pressure",
-                "unit": "bar",
+                "scalar_name": "Pressure",
             },
             "Kx": {
                 "column": 29,
-                "title": "PermeabilityX",
+                "title": "Permeability X",
                 "unit": "",
+                "scalar_name": "Kx",
             },
             "Ky": {
                 "column": 30,
-                "title": "PermeabilityY",
+                "title": "Permeability Y",
                 "unit": "",
+                "scalar_name": "Ky",
             },
             "Kz": {
                 "column": 31,
-                "title": "PermeabilityZ",
+                "title": "Permeability Z",
                 "unit": "",
+                "scalar_name": "Kz",
             },
             "Phi": {
                 "column": 32,
-                "title": "Phi",
-                "unit": "",
-            },
-            "Porosity": {
-                "column": 32,
                 "title": "Porosity",
                 "unit": "",
+                "scalar_name": "Phi",
             },
             "Sw": {
                 "column": 33,
-                "title": "Sw",
+                "title": "Water Saturation",
                 "unit": "",
+                "scalar_name": "Sw",
             },
         }
 
-        if name not in config:
-            print(f"Unsupported pick property: {property_name}")
-            print(f"Supported properties: {list(config.keys())}")
+        if canonical in result_config:
+            return dict(
+                result_config[canonical]
+            )
+
+        try:
+            from .pyvista_static_property_preview import (
+                STATIC_PROPERTY_SPECS,
+                normalize_static_property_key,
+            )
+
+            static_key = normalize_static_property_key(
+                name
+            )
+            spec = STATIC_PROPERTY_SPECS[
+                static_key
+            ]
+
+            return {
+                "column": None,
+                "title": spec.get(
+                    "label",
+                    static_key,
+                ),
+                "unit": spec.get(
+                    "unit",
+                    "",
+                ),
+                "scalar_name": (
+                    f"Static_{static_key}"
+                ),
+                "static_property_key": static_key,
+            }
+
+        except Exception:
+            if not quiet:
+                print(
+                    f"Unsupported pick property: "
+                    f"{property_name}"
+                )
+                print(
+                    "Supported result properties: "
+                    f"{list(result_config.keys())}"
+                )
+
             return None
 
-        return config[name]
 
 
     def set_cell_pick_property(self, property_name):
@@ -10172,15 +12111,370 @@ class PyVistaRenderer:
         self.cache["cell_pick_property"] = str(property_name).strip()
 
 
+    @staticmethod
+    def _grid_cell_array(
+        grid,
+        key,
+        *,
+        dtype=None,
+    ):
+        if grid is None:
+            return None
+
+        try:
+            if key not in grid.cell_data:
+                return None
+
+            array = np.asarray(
+                grid.cell_data[key],
+                dtype=dtype,
+            )
+        except Exception:
+            return None
+
+        try:
+            if len(array) != int(grid.n_cells):
+                return None
+        except Exception:
+            return None
+
+        return array
+
+
+    def _prepare_pick_grid_from_context(
+        self,
+        context,
+    ):
+        if not isinstance(context, dict):
+            return None
+
+        source_grid = context.get(
+            "volume_grid"
+        )
+
+        if not self._dataset_has_cells(
+            source_grid
+        ):
+            return None
+
+        try:
+            grid = source_grid.copy(
+                deep=True
+            )
+        except Exception:
+            grid = source_grid
+
+        n_cells = int(
+            grid.n_cells
+        )
+
+        if self._grid_cell_array(
+            grid,
+            "PickCellId",
+        ) is None:
+            grid.cell_data["PickCellId"] = np.arange(
+                n_cells,
+                dtype=np.int32,
+            )
+
+        source_ids = self._grid_cell_array(
+            grid,
+            "SourceCellId",
+            dtype=np.int64,
+        )
+
+        if source_ids is None:
+            source_ids = self._grid_cell_array(
+                grid,
+                "OriginalRowIndex",
+                dtype=np.int64,
+            )
+
+        if source_ids is None:
+            source_ids = np.arange(
+                n_cells,
+                dtype=np.int64,
+            )
+
+        grid.cell_data["SourceCellId"] = source_ids
+        grid.cell_data["OriginalRowIndex"] = source_ids
+
+        i_values = self._grid_cell_array(
+            grid,
+            "I",
+            dtype=np.int64,
+        )
+        j_values = self._grid_cell_array(
+            grid,
+            "J",
+            dtype=np.int64,
+        )
+        k_values = self._grid_cell_array(
+            grid,
+            "K",
+            dtype=np.int64,
+        )
+
+        if i_values is None:
+            i_values = self._grid_cell_array(
+                grid,
+                "CellInfo1",
+                dtype=np.int64,
+            )
+        if j_values is None:
+            j_values = self._grid_cell_array(
+                grid,
+                "CellInfo2",
+                dtype=np.int64,
+            )
+        if k_values is None:
+            k_values = self._grid_cell_array(
+                grid,
+                "CellInfo3",
+                dtype=np.int64,
+            )
+
+        if i_values is None:
+            i_values = np.zeros(
+                n_cells,
+                dtype=np.int64,
+            )
+        if j_values is None:
+            j_values = np.zeros(
+                n_cells,
+                dtype=np.int64,
+            )
+        if k_values is None:
+            k_values = np.zeros(
+                n_cells,
+                dtype=np.int64,
+            )
+
+        grid.cell_data["I"] = i_values
+        grid.cell_data["J"] = j_values
+        grid.cell_data["K"] = k_values
+
+        if self._grid_cell_array(
+            grid,
+            "CellInfo0",
+        ) is None:
+            grid.cell_data["CellInfo0"] = (
+                source_ids.astype(np.float64)
+            )
+        if self._grid_cell_array(
+            grid,
+            "CellInfo1",
+        ) is None:
+            grid.cell_data["CellInfo1"] = (
+                i_values.astype(np.float64)
+            )
+        if self._grid_cell_array(
+            grid,
+            "CellInfo2",
+        ) is None:
+            grid.cell_data["CellInfo2"] = (
+                j_values.astype(np.float64)
+            )
+        if self._grid_cell_array(
+            grid,
+            "CellInfo3",
+        ) is None:
+            grid.cell_data["CellInfo3"] = (
+                k_values.astype(np.float64)
+            )
+
+        centers_ready = all(
+            self._grid_cell_array(
+                grid,
+                key,
+            ) is not None
+            for key in (
+                "CenterX",
+                "CenterY",
+                "CenterZ",
+            )
+        )
+
+        if not centers_ready:
+            try:
+                centers = np.asarray(
+                    grid.cell_centers().points,
+                    dtype=np.float64,
+                )
+            except Exception:
+                centers = None
+
+            if (
+                centers is not None
+                and centers.shape == (
+                    n_cells,
+                    3,
+                )
+            ):
+                grid.cell_data["CenterX"] = (
+                    centers[:, 0]
+                )
+                grid.cell_data["CenterY"] = (
+                    centers[:, 1]
+                )
+                grid.cell_data["CenterZ"] = (
+                    centers[:, 2]
+                )
+
+        if self._grid_cell_array(
+            grid,
+            "Volume",
+        ) is None:
+            try:
+                sized = grid.compute_cell_sizes(
+                    length=False,
+                    area=False,
+                    volume=True,
+                )
+                grid.cell_data["Volume"] = np.asarray(
+                    sized.cell_data["Volume"],
+                    dtype=np.float64,
+                )
+            except Exception:
+                grid.cell_data["Volume"] = np.zeros(
+                    n_cells,
+                    dtype=np.float64,
+                )
+
+        scalar_name = str(
+            context.get(
+                "scalar_name",
+                "",
+            )
+        ).strip()
+
+        if (
+            scalar_name
+            and self._grid_cell_array(
+                grid,
+                scalar_name,
+            ) is None
+        ):
+            property_name = context.get(
+                "property_name"
+            )
+            config = self._get_pick_property_config(
+                property_name,
+                quiet=True,
+            ) or {}
+            fallback_name = config.get(
+                "scalar_name"
+            )
+
+            if (
+                fallback_name
+                and self._grid_cell_array(
+                    grid,
+                    fallback_name,
+                ) is not None
+            ):
+                scalar_name = fallback_name
+
+        return grid
+
+
+    def _refresh_cell_pick_target(
+        self,
+        *,
+        render_now=False,
+    ):
+        cache = self.cache
+
+        self._remove_actor(
+            cache.get("cell_pick_actor")
+        )
+        self._remove_actor(
+            cache.get(
+                "cell_pick_highlight_actor"
+            )
+        )
+        cache["cell_pick_actor"] = None
+        cache["cell_pick_grid"] = None
+        cache["cell_pick_highlight_actor"] = None
+        cache["cell_pick_last_info"] = None
+
+        context = self.get_active_property_context()
+
+        if not isinstance(context, dict):
+            if render_now:
+                self._render()
+            return False
+
+        grid = self._prepare_pick_grid_from_context(
+            context
+        )
+
+        if grid is None:
+            if render_now:
+                self._render()
+            return False
+
+        actor = self.plotter.add_mesh(
+            grid,
+            color=(1.0, 1.0, 1.0),
+            opacity=0.001,
+            show_edges=False,
+            lighting=False,
+            pickable=True,
+            reset_camera=False,
+            render=False,
+        )
+
+        try:
+            actor.SetPickable(True)
+        except Exception:
+            pass
+
+        cache["cell_pick_grid"] = grid
+        cache["cell_pick_actor"] = actor
+        cache["cell_pick_property"] = context.get(
+            "property_name",
+            "Pressure",
+        )
+        cache["cell_pick_scalar_name"] = context.get(
+            "scalar_name",
+            "",
+        )
+        cache["cell_pick_source_mode"] = context.get(
+            "source_mode",
+        )
+
+        if render_now:
+            self._render()
+
+        return True
+
+
     def _build_cell_pick_grid(
         self,
-        sim_data,
+        sim_data=None,
         axis=None,
         layer_index=None,
+        use_active_context=True,
     ):
         """
         构建用于 cell picking 的 UnstructuredGrid。
+
+        优先复用当前属性场上下文中的 volume_grid；
+        没有上下文时才回退到模拟结果 cell_geometry_with_pressure。
         """
+        if use_active_context:
+            context = self.get_active_property_context()
+
+            if isinstance(context, dict):
+                grid = self._prepare_pick_grid_from_context(
+                    context
+                )
+                if grid is not None:
+                    return grid
+
+        if sim_data is None:
+            return None
 
         if getattr(sim_data, "cell_geometry_with_pressure", None) is None:
             return None
@@ -10197,9 +12491,9 @@ class PyVistaRenderer:
             )
             return None
 
-        # =========================================================
-        # 1. 整体场：直接使用全部 leaf cell
-        # =========================================================
+        
+        
+        
         if axis is None or layer_index is None:
 
             selected_original_indices = np.arange(
@@ -10207,9 +12501,9 @@ class PyVistaRenderer:
                 dtype=np.int64,
             )
 
-        # =========================================================
-        # 2. 分层场：根据 parent_id 推导 I/J/K 后筛选 leaf cell
-        # =========================================================
+        
+        
+        
         else:
 
             axis = str(axis).lower().strip()
@@ -10251,9 +12545,9 @@ class PyVistaRenderer:
 
         n_cells = selected_rows.shape[0]
 
-        # =========================================================
-        # 3. 构建拾取网格
-        # =========================================================
+        
+        
+        
         all_points = []
         cells = []
         offset = 0
@@ -10307,18 +12601,21 @@ class PyVistaRenderer:
             dtype=np.float32,
         )
 
-        # =========================================================
-        # 4. 保存 cell 信息
-        # =========================================================
+        
+        
+        
 
-        # 当前 picking 网格中的本地编号
+        
         grid.cell_data["PickCellId"] = np.arange(
             n_cells,
             dtype=np.int32,
         )
 
-        # 对应 cell_geometry_with_pressure 中的原始行号
+        
         grid.cell_data["OriginalRowIndex"] = (
+            selected_original_indices.astype(np.int64)
+        )
+        grid.cell_data["SourceCellId"] = (
             selected_original_indices.astype(np.int64)
         )
 
@@ -10341,6 +12638,37 @@ class PyVistaRenderer:
             :,
             3,
         ].astype(np.float64)
+
+        
+        
+        try:
+            nx = int(sim_data.grid_info["nx"])
+            ny = int(sim_data.grid_info["ny"])
+            parent_ids = np.rint(
+                selected_rows[:, 1]
+            ).astype(np.int64)
+            grid.cell_data["I"] = (
+                parent_ids % nx
+            )
+            grid.cell_data["J"] = (
+                (parent_ids // nx) % ny
+            )
+            grid.cell_data["K"] = (
+                parent_ids // (nx * ny)
+            )
+        except Exception:
+            grid.cell_data["I"] = selected_rows[
+                :,
+                2,
+            ].astype(np.int64)
+            grid.cell_data["J"] = selected_rows[
+                :,
+                3,
+            ].astype(np.int64)
+            grid.cell_data["K"] = np.zeros(
+                n_cells,
+                dtype=np.int64,
+            )
 
         grid.cell_data["Pressure"] = selected_rows[
             :,
@@ -10376,9 +12704,9 @@ class PyVistaRenderer:
         grid.cell_data["CenterY"] = centers[:, 1]
         grid.cell_data["CenterZ"] = centers[:, 2]
 
-        # =========================================================
-        # 5. 计算单元体积
-        # =========================================================
+        
+        
+        
         try:
             size_grid = grid.compute_cell_sizes(
                 length=False,
@@ -10399,7 +12727,7 @@ class PyVistaRenderer:
 
         except Exception:
 
-            # 失败时使用 AABB 近似体积，作为兜底。
+            
             volumes = []
 
             for i in range(n_cells):
@@ -10438,115 +12766,193 @@ class PyVistaRenderer:
 
     def enable_cell_info_picking(
         self,
-        sim_data,
-        property_name="Pressure",
+        sim_data=None,
+        property_name=None,
         axis=None,
-        layer_index=None
+        layer_index=None,
     ):
         """
-        开启 cell picking。
+        开启统一 cell picking。
 
-        整体场：
-            axis=None, layer_index=None
-            拾取全场 cell
-
-        分层场：
-            axis="i"/"j"/"k", layer_index=层号
-            只拾取当前 I/J/K 层的 cell
+        当前显示的是预览属性场时，直接拾取 static preview 的 current_grid；
+        当前显示的是模拟结果时，拾取结果 volume_grid。
+        旧 UI 仍可继续传 sim_data/property_name/axis/layer_index。
         """
-
-        config = self._get_pick_property_config(property_name)
-
-        if config is None:
-            return
-
-        self.cache["cell_pick_property"] = str(property_name).strip()
-
-        # 先清除旧的 picking
-        self.disable_cell_info_picking(clear_highlight=True)
-
-        grid = self._build_cell_pick_grid(
-            sim_data,
-            axis=axis,
-            layer_index=layer_index
+        
+        self.disable_cell_info_picking(
+            clear_highlight=True,
+            render_now=False,
         )
 
-        if grid is None:
-            print("Failed to build cell pick grid.")
-            return
+        context = self.get_active_property_context()
 
-        self.cache["cell_pick_grid"] = grid
+        if isinstance(context, dict):
+            
+            property_name = context.get(
+                "property_name",
+                property_name,
+            )
+            sim_data = context.get(
+                "sim_data",
+                sim_data,
+            )
+            axis = context.get(
+                "axis",
+                axis,
+            )
+            layer_index = context.get(
+                "layer_index",
+                layer_index,
+            )
+        else:
+            if property_name is None:
+                property_name = self.cache.get(
+                    "cell_pick_property",
+                    "Pressure",
+                )
 
-        actor = self.plotter.add_mesh(
-            grid,
-            color=(1.0, 1.0, 1.0),
-            opacity=0.01,
-            show_edges=False,
-            pickable=True,
-            render=False,
-        )
+            config = self._get_pick_property_config(
+                property_name
+            )
+            if config is None:
+                return False
 
-        try:
-            actor.SetPickable(True)
-        except Exception:
-            pass
+            grid = self._build_cell_pick_grid(
+                sim_data,
+                axis=axis,
+                layer_index=layer_index,
+                use_active_context=False,
+            )
 
-        self.cache["cell_pick_actor"] = actor
+            if grid is None:
+                print(
+                    "Failed to build cell pick grid."
+                )
+                return False
+
+            scalar_name = config.get(
+                "scalar_name",
+                str(property_name),
+            )
+
+            self.set_active_property_context(
+                source_mode="result",
+                sim_data=sim_data,
+                property_name=property_name,
+                scalar_name=scalar_name,
+                volume_grid=grid,
+                actor=None,
+                axis=axis,
+                layer_index=layer_index,
+                title=config.get(
+                    "title",
+                    property_name,
+                ),
+                unit=config.get(
+                    "unit",
+                    "",
+                ),
+                refresh_picking=False,
+            )
+
         self.cache["cell_pick_enabled"] = True
 
         try:
             interactor = self.plotter.iren.interactor
-
             observer_id = interactor.AddObserver(
                 "LeftButtonPressEvent",
-                self._on_cell_info_pick
+                self._on_cell_info_pick,
             )
-
-            self.cache["cell_pick_observer_id"] = observer_id
-
+            self.cache[
+                "cell_pick_observer_id"
+            ] = observer_id
         except Exception as exc:
-            print("Failed to add cell picking observer")
+            self.cache["cell_pick_enabled"] = False
+            print(
+                "Failed to add cell picking observer"
+            )
             print(exc)
+            return False
+
+        ok = self._refresh_cell_pick_target(
+            render_now=False,
+        )
+
+        if not ok:
+            self.disable_cell_info_picking(
+                clear_highlight=True,
+                render_now=False,
+            )
+            print(
+                "No active property grid for picking."
+            )
+            return False
 
         self._render()
+        return True
 
 
-    def disable_cell_info_picking(self, clear_highlight=True):
-        """
-        关闭 cell picking。
-        """
 
-        observer_id = self.cache.get("cell_pick_observer_id")
+    def disable_cell_info_picking(
+        self,
+        clear_highlight=True,
+        render_now=True,
+    ):
+        """关闭统一 cell picking。"""
+        observer_id = self.cache.get(
+            "cell_pick_observer_id"
+        )
 
         if observer_id is not None:
             try:
                 interactor = self.plotter.iren.interactor
-                interactor.RemoveObserver(observer_id)
+                interactor.RemoveObserver(
+                    observer_id
+                )
             except Exception:
                 pass
 
         self.cache["cell_pick_observer_id"] = None
         self.cache["cell_pick_enabled"] = False
 
-        self._remove_actor(self.cache.get("cell_pick_actor"))
+        self._remove_actor(
+            self.cache.get("cell_pick_actor")
+        )
         self.cache["cell_pick_actor"] = None
         self.cache["cell_pick_grid"] = None
+        self.cache["cell_pick_source_mode"] = None
+        self.cache["cell_pick_scalar_name"] = None
 
         if clear_highlight:
-            self.clear_cell_pick_highlight()
+            self.clear_cell_pick_highlight(
+                render_now=False,
+            )
 
-        self._render()
+        if render_now:
+            self._render()
+
+        return True
 
 
-    def clear_cell_pick_highlight(self):
-        """
-        清除当前拾取高亮 cell。
-        """
 
-        self._remove_actor(self.cache.get("cell_pick_highlight_actor"))
-        self.cache["cell_pick_highlight_actor"] = None
+    def clear_cell_pick_highlight(
+        self,
+        render_now=True,
+    ):
+        """清除当前拾取高亮 cell。"""
+        self._remove_actor(
+            self.cache.get(
+                "cell_pick_highlight_actor"
+            )
+        )
+        self.cache[
+            "cell_pick_highlight_actor"
+        ] = None
         self.cache["cell_pick_last_info"] = None
-        self._render()
+
+        if render_now:
+            self._render()
+
 
 
     def _highlight_picked_cell(self, grid, cell_id):
@@ -10575,6 +12981,8 @@ class PyVistaRenderer:
                 edge_color=(1.0, 0.75, 0.0),
                 line_width=2.0,
                 lighting=False,
+                pickable=False,
+                reset_camera=False,
                 render=False,
             )
 
@@ -10585,78 +12993,203 @@ class PyVistaRenderer:
             print(exc)
 
 
-    def _format_picked_cell_info(self, grid, cell_id, property_name):
-        """
-        生成状态栏的拾取信息。
-        """
-
-        config = self._get_pick_property_config(property_name)
-
-        if config is None:
-            return None
-
+    def _format_picked_cell_info(
+        self,
+        grid,
+        cell_id,
+        property_name=None,
+    ):
+        """生成预览/模拟共用的拾取信息。"""
         if grid is None:
             return None
 
         if cell_id < 0 or cell_id >= grid.n_cells:
             return None
 
-        col_title = config["title"]
-        prop_key = None
+        context = self.get_active_property_context() or {}
 
-        if property_name in ("Pressure", "P"):
-            prop_key = "Pressure"
-        elif property_name == "Kx":
-            prop_key = "Kx"
-        elif property_name == "Ky":
-            prop_key = "Ky"
-        elif property_name == "Kz":
-            prop_key = "Kz"
-        elif property_name in ("Phi", "Porosity"):
-            prop_key = "Phi"
-        elif property_name == "Sw":
-            prop_key = "Sw"
+        if property_name is None:
+            property_name = context.get(
+                "property_name",
+                self.cache.get(
+                    "cell_pick_property",
+                    "Pressure",
+                ),
+            )
 
-        if prop_key is None or prop_key not in grid.cell_data:
-            return None
+        config = self._get_pick_property_config(
+            property_name,
+            quiet=True,
+        ) or {}
 
-        value = float(grid.cell_data[prop_key][cell_id])
+        scalar_name = str(
+            context.get(
+                "scalar_name",
+                self.cache.get(
+                    "cell_pick_scalar_name",
+                    config.get(
+                        "scalar_name",
+                        property_name,
+                    ),
+                ),
+            )
+        ).strip()
 
-        info0 = grid.cell_data["CellInfo0"][cell_id]
-        info1 = grid.cell_data["CellInfo1"][cell_id]
-        info2 = grid.cell_data["CellInfo2"][cell_id]
-        info3 = grid.cell_data["CellInfo3"][cell_id]
+        if (
+            not scalar_name
+            or scalar_name not in grid.cell_data
+        ):
+            preferred = config.get(
+                "scalar_name"
+            )
 
-        cx = float(grid.cell_data["CenterX"][cell_id])
-        cy = float(grid.cell_data["CenterY"][cell_id])
-        cz = float(grid.cell_data["CenterZ"][cell_id])
-        volume = float(grid.cell_data["Volume"][cell_id])
+            if (
+                preferred
+                and preferred in grid.cell_data
+            ):
+                scalar_name = preferred
+            else:
+                metadata_names = {
+                    "PickCellId",
+                    "SourceCellId",
+                    "OriginalRowIndex",
+                    "I",
+                    "J",
+                    "K",
+                    "CellInfo0",
+                    "CellInfo1",
+                    "CellInfo2",
+                    "CellInfo3",
+                    "CenterX",
+                    "CenterY",
+                    "CenterZ",
+                    "Volume",
+                }
+                candidates = [
+                    key
+                    for key in grid.cell_data.keys()
+                    if key not in metadata_names
+                ]
+
+                if not candidates:
+                    return None
+
+                scalar_name = candidates[0]
 
         try:
-            info0_i = int(info0)
-            info1_i = int(info1)
-            info2_i = int(info2)
-            info3_i = int(info3)
-
-            cell_index_text = (
-                f"id={info0_i}, "
-                f"index=({info1_i}, {info2_i}, {info3_i})"
+            value = float(
+                grid.cell_data[
+                    scalar_name
+                ][cell_id]
             )
+        except Exception:
+            return None
 
+        def _value(
+            *keys,
+            default=0.0,
+        ):
+            for key in keys:
+                try:
+                    if key in grid.cell_data:
+                        return grid.cell_data[
+                            key
+                        ][cell_id]
+                except Exception:
+                    continue
+            return default
+
+        source_id = _value(
+            "SourceCellId",
+            "OriginalRowIndex",
+            "CellInfo0",
+            default=cell_id,
+        )
+        i_value = _value(
+            "I",
+            "CellInfo1",
+            default=0,
+        )
+        j_value = _value(
+            "J",
+            "CellInfo2",
+            default=0,
+        )
+        k_value = _value(
+            "K",
+            "CellInfo3",
+            default=0,
+        )
+
+        cx = float(
+            _value(
+                "CenterX",
+                default=0.0,
+            )
+        )
+        cy = float(
+            _value(
+                "CenterY",
+                default=0.0,
+            )
+        )
+        cz = float(
+            _value(
+                "CenterZ",
+                default=0.0,
+            )
+        )
+        volume = float(
+            _value(
+                "Volume",
+                default=0.0,
+            )
+        )
+
+        try:
+            cell_index_text = (
+                f"id={int(source_id)}, "
+                f"index=({int(i_value)}, "
+                f"{int(j_value)}, "
+                f"{int(k_value)})"
+            )
         except Exception:
             cell_index_text = (
-                f"id/index=({info0}, {info1}, {info2}, {info3})"
+                f"id={source_id}, "
+                f"index=({i_value}, "
+                f"{j_value}, "
+                f"{k_value})"
             )
 
-        unit = config.get("unit", "")
+        title = context.get(
+            "title",
+            config.get(
+                "title",
+                property_name,
+            ),
+        )
+        unit = context.get(
+            "unit",
+            config.get(
+                "unit",
+                "",
+            ),
+        )
+        source_mode = context.get(
+            "source_mode",
+            self.cache.get(
+                "cell_pick_source_mode",
+                "result",
+            ),
+        )
 
+        value_text = f"{value:.6g}"
         if unit:
-            value_text = f"{value:.6g} {unit}"
-        else:
-            value_text = f"{value:.6g}"
+            value_text += f" {unit}"
 
-        info_text = (
-            f"Selected property: {col_title} | "
+        return (
+            f"Source: {source_mode} | "
+            f"Selected property: {title} | "
             f"Grid cell: {cell_index_text} | "
             f"Value: {value_text} | "
             f"Type: Continuous | "
@@ -10666,7 +13199,6 @@ class PyVistaRenderer:
             f"Depth: {cz:.3f} m"
         )
 
-        return info_text
 
 
     def _on_cell_info_pick(self, obj, event):
@@ -10749,11 +13281,11 @@ class PyVistaRenderer:
             print("ERROR IN _on_cell_info_pick")
             print(exc)
 
-    # =========================================================
+    
     # 动态尺子工具
     # 第一次点击确定起点，鼠标移动动态画白线并刷新测量信息；
     # 第二次点击确定终点，白线固定，测量信息固定。
-    # =========================================================
+    
     def enable_petrel_distance_measure(self):
 
         self.disable_petrel_distance_measure(clear_line=True)
@@ -10855,11 +13387,11 @@ class PyVistaRenderer:
 
             picked_actor = picker.GetActor()
 
-            # 没有真正拾取到 actor，说明点在模型外
+            
             if picked_actor is None:
                 return None
 
-            # 如果点到的是测距线本身，也不算有效模型点
+            
             measure_actor = self.cache.get("measure_line_actor")
             if measure_actor is not None and picked_actor is measure_actor:
                 return None
@@ -10939,7 +13471,7 @@ class PyVistaRenderer:
                 line_mesh.modified()
 
             except Exception:
-                # 如果原地更新失败，就重建
+                
                 self._remove_actor(line_actor)
 
                 line_mesh = pv.PolyData()
@@ -10988,10 +13520,10 @@ class PyVistaRenderer:
 
         distance_2d = float(np.sqrt(dx * dx + dy * dy))
 
-        # Petrel 这里显示 Depth 差值，沿用 dz。
+        
         depth = dz
 
-        # Heading：按北向顺时针角度，常用 atan2(dx, dy)
+        
         heading = float(np.degrees(np.arctan2(dx, dy)))
 
         if heading < 0:
@@ -11043,19 +13575,19 @@ class PyVistaRenderer:
 
         point = self._measure_pick_world_point()
 
-        # 点击在模型外：不设置起点、不设置终点、不更新结果
+        
         if point is None:
             return
 
         start_point = self.cache.get("measure_start_point")
         is_previewing = self.cache.get("measure_is_previewing", False)
 
-        # =========================================================
-        # 第一次点击，或者上一次已经测完后重新开始
-        # =========================================================
+        
+        
+        
         if start_point is None or not is_previewing:
 
-            # 开始新测量前清除旧线
+            
             self._remove_actor(self.cache.get("measure_line_actor"))
 
             self.cache["measure_line_actor"] = None
@@ -11069,9 +13601,9 @@ class PyVistaRenderer:
 
             return
 
-        # =========================================================
-        # 第二次点击：只有点在模型内部/表面，才固定终点
-        # =========================================================
+        
+        
+        
         end_point = point
 
         self.cache["measure_end_point"] = end_point
@@ -11114,7 +13646,7 @@ class PyVistaRenderer:
 
         current_point = self._measure_pick_world_point()
 
-        # 鼠标在模型外：不更新线、不更新数值
+        
         if current_point is None:
             return
 
@@ -11149,7 +13681,7 @@ class PyVistaRenderer:
 
             filepath = Path(filepath)
 
-            # 如果用户没写后缀，默认保存为 png
+            
             if filepath.suffix == "":
                 filepath = filepath.with_suffix(".png")
 
@@ -11186,11 +13718,11 @@ class PyVistaRenderer:
             self.camera_direction_locked = bool(locked)
 
             if self.camera_direction_locked:
-                # 只切换交互模式：禁止旋转
+                
                 self.plotter.enable_image_style()
                 print("Lock camera direction: ON")
             else:
-                # 恢复正常 3D 旋转
+                
                 self.plotter.enable_trackball_style()
                 print("Lock camera direction: OFF")
 
@@ -11206,7 +13738,7 @@ class PyVistaRenderer:
         self.lock_camera_direction(not current)
 
 
-    # 时间步播放
+    
     def _get_time_playback_property_config(
         self,
         property_name,
@@ -11574,7 +14106,7 @@ class PyVistaRenderer:
                 f"有效范围为 0 ~ {max_index}"
             )
 
-        # 第 1 列为 parent_id。
+        
         parent_ids = np.rint(
             cell_data[:, 1]
         ).astype(np.int64)
@@ -11642,12 +14174,12 @@ class PyVistaRenderer:
         point_offset = 0
 
         for row in selected_rows:
-            points = row[4:28].reshape(
+            points = np.asarray(
+                row[4:28],
+                dtype=np.float64,
+            ).reshape(
                 8,
                 3,
-            ).astype(
-                np.float32,
-                copy=False,
             )
 
             all_points.append(points)
@@ -11666,11 +14198,9 @@ class PyVistaRenderer:
 
             point_offset += 8
 
-        points_array = np.vstack(
-            all_points
-        ).astype(
-            np.float32,
-            copy=False,
+        points_array = np.asarray(
+            np.vstack(all_points),
+            dtype=np.float64,
         )
 
         cells_array = np.hstack(
@@ -11702,9 +14232,8 @@ class PyVistaRenderer:
             selected_cell_ids
         ]
 
-        surface = grid.extract_surface(
-            pass_pointid=False,
-            pass_cellid=False,
+        surface = self._build_result_property_shell_surface(
+            grid
         )
 
         if "SourceCellId" not in surface.cell_data:
@@ -11724,14 +14253,11 @@ class PyVistaRenderer:
             source_cell_ids
         ]
 
-        try:
-            surface = surface.compute_normals(
-                consistent_normals=True,
-                auto_orient_normals=True,
-                split_vertices=False,
+        if scalar_name == "Pressure":
+            surface = self._prepare_exact_cell_scalar_surface(
+                surface,
+                scalar_name,
             )
-        except Exception:
-            pass
 
         return surface, source_cell_ids
 
@@ -11958,12 +14484,21 @@ class PyVistaRenderer:
                 )
             )
 
+            pressure_exact_mode = (
+                config["property_name"] == "pressure"
+            )
+
             actor = self.plotter.add_mesh(
                 surface,
                 scalars=config["scalar_name"],
+                preference="cell",
                 cmap=config["cmap"],
                 clim=[value_min, value_max],
-                opacity=RESULT_PROPERTY_OPACITY,
+                opacity=(
+                    RESULT_PRESSURE_OPACITY
+                    if pressure_exact_mode
+                    else RESULT_PROPERTY_OPACITY
+                ),
                 show_edges=bool(show_edges),
                 show_scalar_bar=False,
                 lighting=False,
@@ -11974,6 +14509,11 @@ class PyVistaRenderer:
                 interpolate_before_map=False,
                 render=False,
             )
+
+            if pressure_exact_mode:
+                self._configure_exact_cell_scalar_actor(
+                    actor
+                )
 
             scalar_bar = self._replace_scalar_bar(
                 "time_playback_scalar_bar",
@@ -12068,9 +14608,9 @@ class PyVistaRenderer:
             return None
 
 
-    # =====================================================================
-    # 对外入口：整体模型播放
-    # =====================================================================
+    
+    
+    
 
     def prepare_corner_time_playback(
         self,
@@ -12100,9 +14640,9 @@ class PyVistaRenderer:
         )
 
 
-    # =====================================================================
-    # 对外入口：I / J / K 分层播放
-    # =====================================================================
+    
+    
+    
 
     def prepare_corner_time_playback_by_layer(
         self,
@@ -12182,9 +14722,9 @@ class PyVistaRenderer:
         )
 
 
-    # =====================================================================
-    # 切换时间步
-    # =====================================================================
+    
+    
+    
 
     def show_corner_time_step(
         self,
@@ -12412,9 +14952,9 @@ class PyVistaRenderer:
         )
 
 
-    # =====================================================================
-    # 播放状态信息
-    # =====================================================================
+    
+    
+    
 
     def get_time_playback_info(self):
         """
@@ -12497,9 +15037,9 @@ class PyVistaRenderer:
         }
 
 
-    # =====================================================================
-    # 停止播放
-    # =====================================================================
+    
+    
+    
 
     def clear_corner_time_playback(
         self,
@@ -12567,9 +15107,9 @@ class PyVistaRenderer:
             self._render()
 
 
-    # =====================================================================
-    # 2D Magnify
-    # =====================================================================
+    
+    
+    
     def _is_magnify_2d_view(self):
         """
         判断当前是否为 XY 平面正交俯视图。
@@ -13203,77 +15743,51 @@ class PyVistaRenderer:
 
 
 
-    # =========================================================
-    # K 层真实三维上表面等值线：基础依赖函数
-    # =========================================================
+    
+    
+    
+
 
     def _get_k_surface_contour_property_config(
         self,
-        property_name,
+        property_name=None,
+        context=None,
     ):
-        """
-        cell_geometry_with_pressure 属性列：
+        """返回当前预览/模拟属性的 K 层等值线配置。"""
+        if context is None:
+            context = self.get_active_property_context()
 
-        28: Pressure
-        29: Kx
-        30: Ky
-        31: Kz
-        32: Phi
-        33: Sw
-        """
+        if isinstance(context, dict):
+            requested = str(property_name or "").strip()
+            current_name = str(context.get("property_name", "")).strip()
 
-        name = str(property_name).strip()
+            if not requested or requested == current_name:
+                scalar_name = str(context.get("scalar_name", "")).strip()
+                if scalar_name:
+                    return {
+                        "column": None,
+                        "scalar_name": scalar_name,
+                        "title": context.get("title", current_name or scalar_name),
+                        "unit": context.get("unit", ""),
+                    }
 
-        config_map = {
-            "Pressure": {
-                "column": 28,
-                "scalar_name": "Pressure",
-            },
-            "P": {
-                "column": 28,
-                "scalar_name": "Pressure",
-            },
-            "Kx": {
-                "column": 29,
-                "scalar_name": "Kx",
-            },
-            "Ky": {
-                "column": 30,
-                "scalar_name": "Ky",
-            },
-            "Kz": {
-                "column": 31,
-                "scalar_name": "Kz",
-            },
-            "Phi": {
-                "column": 32,
-                "scalar_name": "Phi",
-            },
-            "Porosity": {
-                "column": 32,
-                "scalar_name": "Phi",
-            },
-            "Sw": {
-                "column": 33,
-                "scalar_name": "Sw",
-            },
-        }
+        config = self._get_pick_property_config(
+            property_name,
+            quiet=True,
+        )
 
-        if name not in config_map:
-            print("=" * 60)
+        if config is None:
             print(
-                "[K Surface Contour] 不支持属性：",
-                property_name,
+                "[K Surface Contour] 当前属性不存在或没有可用标量。"
             )
-            print(
-                "[K Surface Contour] 支持属性："
-                "Pressure / P / Kx / Ky / Kz / "
-                "Phi / Porosity / Sw"
-            )
-            print("=" * 60)
             return None
 
-        return config_map[name]
+        return {
+            "column": config.get("column"),
+            "scalar_name": config.get("scalar_name"),
+            "title": config.get("title", property_name),
+            "unit": config.get("unit", ""),
+        }
 
 
     def _get_hexahedron_top_face_ids(
@@ -13322,208 +15836,124 @@ class PyVistaRenderer:
         return best_face_ids
 
 
+
     def _build_k_layer_top_faces(
         self,
-        sim_data,
-        property_name,
-        k_layer,
+        sim_data=None,
+        property_name=None,
+        k_layer=None,
     ):
         """
-        提取当前 K 层所有 leaf cell 的真实上表面。
+        从当前属性体网格提取 K 层 leaf cell 的真实上表面。
+        适用于静态预览属性和模拟结果属性。
         """
-        cell_data = getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
+        context = self._resolve_property_operation_context(
+            sim_data=sim_data,
+            property_name=property_name,
         )
 
-        if cell_data is None:
-            print(
-                "[K Surface Contour] "
-                "cell_geometry_with_pressure 不存在。"
-            )
+        if not isinstance(context, dict):
+            print("[K Surface Contour] No active property field.")
             return None, None, None, None
 
-        cell_data = np.asarray(
-            cell_data,
-            dtype=np.float64,
-        )
-
+        grid, scalar_name, values = self._context_cell_scalar_values(context)
         if (
-            cell_data.ndim != 2
-            or cell_data.shape[0] == 0
+            not self._dataset_has_cells(grid)
+            or scalar_name is None
+            or values is None
         ):
-            print(
-                "[K Surface Contour] "
-                "cell_geometry_with_pressure 为空。"
-            )
             return None, None, None, None
 
-        config = self._get_k_surface_contour_property_config(
-            property_name
-        )
+        n_cells = int(grid.n_cells)
+        selected_ids = np.arange(n_cells, dtype=np.int64)
 
-        if config is None:
-            return None, None, None, None
+        context_axis = str(context.get("axis") or "").lower()
+        context_layer = context.get("layer_index")
 
-        property_column = int(
-            config["column"]
-        )
+        if k_layer is None:
+            if context_axis == "k" and context_layer is not None:
+                k_layer = int(context_layer)
+            else:
+                k_layer = 0
 
-        if cell_data.shape[1] <= property_column:
-            print(
-                "[K Surface Contour] "
-                f"属性列不存在：column={property_column}, "
-                f"当前列数={cell_data.shape[1]}"
-            )
-            return None, None, None, None
+        
+        if not (context_axis == "k" and context_layer is not None):
+            try:
+                k_values = np.asarray(grid.cell_data["K"], dtype=np.int64)
+            except Exception:
+                k_values = None
 
-        try:
-            row_indices = self._get_layer_row_indices_by_parent_id(
-                sim_data=sim_data,
-                axis="k",
-                layer_index=int(k_layer),
-                cell_data=cell_data,
-            )
-        except Exception as exc:
-            print("=" * 60)
-            print("[K Surface Contour] K 层 leaf cell 筛选失败：")
-            print(type(exc).__name__, exc)
-            print("=" * 60)
-            return None, None, None, None
+            if k_values is not None and k_values.size == n_cells:
+                target = int(k_layer)
+                selected_ids = np.flatnonzero(k_values == target).astype(np.int64)
 
-        row_indices = np.asarray(
-            row_indices,
-            dtype=np.int64,
-        )
+                
+                if selected_ids.size == 0 and target > 0:
+                    selected_ids = np.flatnonzero(
+                        k_values == (target - 1)
+                    ).astype(np.int64)
 
-        if row_indices.size == 0:
-            print(
-                f"[K Surface Contour] K={k_layer} 没有 leaf cell。"
-            )
-            return None, None, None, None
-
-        selected_rows = cell_data[
-            row_indices
-        ]
-
-        selected_values = selected_rows[
-            :,
-            property_column,
-        ].astype(
-            np.float64
-        )
-
-        valid_mask = np.isfinite(
-            selected_values
-        )
-
-        selected_rows = selected_rows[
-            valid_mask
-        ]
-
-        selected_values = selected_values[
-            valid_mask
-        ]
-
-        if selected_rows.shape[0] == 0:
-            print(
-                f"[K Surface Contour] K={k_layer} 没有有效属性值。"
-            )
+        if selected_ids.size == 0:
+            print(f"[K Surface Contour] K={k_layer} has no cells.")
             return None, None, None, None
 
         face_points = []
         face_values = []
-
         vertex_xy = []
         vertex_values = []
-
         skipped_count = 0
 
-        for row, value in zip(
-            selected_rows,
-            selected_values,
-        ):
+        for cell_id in selected_ids:
+            value = float(values[int(cell_id)])
+            if not np.isfinite(value):
+                skipped_count += 1
+                continue
+
             try:
-                pts8 = np.asarray(
-                    row[4:28],
-                    dtype=np.float64,
-                ).reshape(8, 3)
+                cell = grid.get_cell(int(cell_id))
+                pts = np.asarray(cell.points, dtype=np.float64)
             except Exception:
                 skipped_count += 1
                 continue
 
-            if not np.all(
-                np.isfinite(pts8)
-            ):
+            if pts.ndim != 2 or pts.shape[0] < 8 or pts.shape[1] != 3:
                 skipped_count += 1
                 continue
 
-            top_face_ids = self._get_hexahedron_top_face_ids(
-                pts8
-            )
+            pts8 = pts[:8]
+            if not np.isfinite(pts8).all():
+                skipped_count += 1
+                continue
 
+            top_face_ids = self._get_hexahedron_top_face_ids(pts8)
             if top_face_ids is None:
                 skipped_count += 1
                 continue
 
-            top4 = pts8[
-                top_face_ids
-            ].copy()
-
-            if top4.shape != (4, 3):
-                skipped_count += 1
-                continue
-
-            face_points.append(
-                top4
-            )
-
-            face_values.append(
-                float(value)
-            )
+            top4 = pts8[top_face_ids].copy()
+            face_points.append(top4)
+            face_values.append(value)
 
             for point in top4:
-                vertex_xy.append([
-                    float(point[0]),
-                    float(point[1]),
-                ])
-
-                vertex_values.append(
-                    float(value)
-                )
+                vertex_xy.append([float(point[0]), float(point[1])])
+                vertex_values.append(value)
 
         if len(face_points) < 2:
-            print(
-                "[K Surface Contour] "
-                "有效上表面 face 数量不足。"
-            )
+            print("[K Surface Contour] valid top faces are insufficient.")
             return None, None, None, None
 
         print(
-            "[K Surface Contour] "
-            f"K={k_layer}, "
-            f"top_faces={len(face_points)}, "
+            f"[K Surface Contour] source={context.get('source_mode')}, "
+            f"property={context.get('property_name')}, "
+            f"K={k_layer}, top_faces={len(face_points)}, "
             f"skipped={skipped_count}"
         )
 
         return (
-            np.asarray(
-                face_points,
-                dtype=np.float64,
-            ),
-            np.asarray(
-                face_values,
-                dtype=np.float64,
-            ),
-            np.asarray(
-                vertex_xy,
-                dtype=np.float64,
-            ),
-            np.asarray(
-                vertex_values,
-                dtype=np.float64,
-            ),
+            np.asarray(face_points, dtype=np.float64),
+            np.asarray(face_values, dtype=np.float64),
+            np.asarray(vertex_xy, dtype=np.float64),
+            np.asarray(vertex_values, dtype=np.float64),
         )
 
 
@@ -14004,8 +16434,8 @@ class PyVistaRenderer:
             value_grid
         )
 
-        # 只保留真实 top surface 覆盖范围内的格点。
-        # 这样 contour 不会跑到模型外部。
+        
+        
         for i in range(x_grid.shape[0]):
             for j in range(x_grid.shape[1]):
                 if not valid_mask[i, j]:
@@ -14294,9 +16724,9 @@ class PyVistaRenderer:
                 dtype=np.float64,
             )
 
-        # ---------------------------------------------------------
-        # 1. 用户手动指定具体 levels
-        # ---------------------------------------------------------
+        
+        
+        
         if manual_levels is not None:
             values = np.asarray(
                 manual_levels,
@@ -14316,9 +16746,9 @@ class PyVistaRenderer:
                 np.sort(values)
             )
 
-        # ---------------------------------------------------------
-        # 2. 用户指定固定等值距
-        # ---------------------------------------------------------
+        
+        
+        
         if contour_interval is not None:
             try:
                 step = abs(
@@ -14355,9 +16785,9 @@ class PyVistaRenderer:
                     )
                 )
 
-        # ---------------------------------------------------------
-        # 3. 根据 n_levels 自动生成整齐刻度
-        # ---------------------------------------------------------
+        
+        
+        
         step = self._get_nice_contour_step(
             scalar_min=scalar_min,
             scalar_max=scalar_max,
@@ -14453,9 +16883,9 @@ class PyVistaRenderer:
 
         return text
 
-    # =========================================================
-    # K 层真实三维上表面等值线
-    # =========================================================
+    
+    
+    
     def _iter_contour_polylines(
         self,
         line_mesh,
@@ -14693,7 +17123,7 @@ class PyVistaRenderer:
             float(gap_length),
         )
 
-        # 文字太长时，最多只占总线长的 45%
+        
         max_gap = total_length * 0.45
 
         gap_length = min(
@@ -14758,7 +17188,7 @@ class PyVistaRenderer:
             p0 = points[index]
             p1 = points[index + 1]
 
-            # 缺口前的线段
+            
             if accumulated < gap_start:
                 if len(first_part) == 0:
                     first_part.append(
@@ -14774,7 +17204,7 @@ class PyVistaRenderer:
                         start_point.copy()
                     )
 
-            # 缺口后的线段
+            
             if next_accumulated > gap_end:
                 if accumulated < gap_end:
                     second_part.append(
@@ -14989,7 +17419,7 @@ class PyVistaRenderer:
 
                 normal = normal / normal_length
 
-                # K 层上表面标签默认朝外、朝上
+                
                 if normal[2] < 0.0:
                     normal = -normal
 
@@ -15006,26 +17436,27 @@ class PyVistaRenderer:
         return None
 
 
-    def _get_model_reference_span(
-        self,
-        sim_data,
-    ):
-        """
-        获取模型最大尺寸，用于计算文字大小、偏移距离。
-        """
 
-        bounds = self.get_corner_model_bounds(
-            sim_data
-        )
+    def _get_model_reference_span(self, sim_data=None):
+        """获取当前预览/模拟模型最大尺寸。"""
+        bounds = self._active_property_bounds()
+
+        if bounds is None and sim_data is not None:
+            try:
+                bounds = self.get_corner_model_bounds(sim_data)
+            except Exception:
+                bounds = None
 
         if bounds is None:
+            try:
+                bounds = tuple(float(v) for v in self.plotter.bounds)
+            except Exception:
+                bounds = None
+
+        if bounds is None or len(bounds) != 6:
             return 1.0
 
-        xmin, xmax, ymin, ymax, zmin, zmax = [
-            float(value)
-            for value in bounds
-        ]
-
+        xmin, xmax, ymin, ymax, zmin, zmax = bounds
         return max(
             abs(xmax - xmin),
             abs(ymax - ymin),
@@ -15101,7 +17532,7 @@ class PyVistaRenderer:
 
         text_width = raw_width * scale
 
-        # 让文字在自身局部坐标中以中心为原点
+        
         local_center = np.array(
             [
                 (xmin + xmax) * 0.5,
@@ -15142,10 +17573,10 @@ class PyVistaRenderer:
         tangent = tangent / tangent_length
         normal = normal / normal_length
 
-        # 确保文字在模型局部 XY 上尽量保持统一阅读方向
-        #
-        # 这样从上方看时，文字不会因为 contour 切线方向反过来
-        # 而全部倒置。
+        
+        
+        
+        
         if (
             tangent[0] < 0.0
             or (
@@ -15172,7 +17603,7 @@ class PyVistaRenderer:
             / vertical_length
         )
 
-        # 将文字在当前曲面内旋转 180 度
+        
         tangent = -tangent
         in_plane_vertical = -in_plane_vertical
 
@@ -15321,7 +17752,7 @@ class PyVistaRenderer:
         if text_mesh is None:
             return surface_line, None
 
-        # 文字两侧额外留一点空隙
+        
         gap_length = text_width * (
             1.0
             + float(
@@ -15436,9 +17867,9 @@ class PyVistaRenderer:
 
     def render_k_layer_top_contours(
         self,
-        sim_data,
-        property_name="Pressure",
-        layer_index=0,
+        sim_data=None,
+        property_name=None,
+        layer_index=None,
         n_levels=6,
         levels=None,
         contour_interval=None,
@@ -15457,13 +17888,31 @@ class PyVistaRenderer:
         """
         在当前 K 层真实上表面绘制三维贴面等值线。
         """
+        context = self._resolve_property_operation_context(
+            sim_data=sim_data,
+            property_name=property_name,
+        )
+
+        if not isinstance(context, dict):
+            print("[K Surface Contour] No active property field.")
+            return None
+
+        sim_data = context.get("sim_data", sim_data)
+        property_name = context.get("property_name", property_name)
+
+        if layer_index is None:
+            if str(context.get("axis") or "").lower() == "k":
+                layer_index = context.get("layer_index")
+            if layer_index is None:
+                layer_index = 0
+
         self.clear_k_layer_top_contours(
             render=False
         )
 
-        # ---------------------------------------------------------
-        # 1. 提取当前 K 层真实 top face 与属性值
-        # ---------------------------------------------------------
+        
+        
+        
         (
             face_points,
             face_values,
@@ -15478,9 +17927,9 @@ class PyVistaRenderer:
         if face_points is None:
             return None
 
-        # ---------------------------------------------------------
-        # 2. 构建真实上表面投影器
-        # ---------------------------------------------------------
+        
+        
+        
         projection_data = self._build_k_surface_projection_data(
             face_points=face_points
         )
@@ -15488,9 +17937,9 @@ class PyVistaRenderer:
         if projection_data is None:
             return None
 
-        # ---------------------------------------------------------
-        # 3. 合并共享顶点属性
-        # ---------------------------------------------------------
+        
+        
+        
         xy_samples, value_samples = (
             self._merge_k_surface_duplicate_xy_samples(
                 xy_samples=vertex_xy,
@@ -15509,7 +17958,8 @@ class PyVistaRenderer:
             return None
 
         config = self._get_k_surface_contour_property_config(
-            property_name
+            property_name=property_name,
+            context=context,
         )
 
         if config is None:
@@ -15519,9 +17969,9 @@ class PyVistaRenderer:
             "scalar_name"
         ]
 
-        # ---------------------------------------------------------
-        # 4. 构建连续 contour 计算面
-        # ---------------------------------------------------------
+        
+        
+        
         compute_mesh = self._build_k_surface_contour_compute_mesh(
             xy_samples=xy_samples,
             value_samples=value_samples,
@@ -15573,9 +18023,9 @@ class PyVistaRenderer:
             )
             return None
 
-        # ---------------------------------------------------------
-        # 5. 构建较疏、规整的 contour levels
-        # ---------------------------------------------------------
+        
+        
+        
         contour_levels = self._build_k_surface_contour_levels(
             scalar_min=contour_min,
             scalar_max=contour_max,
@@ -15591,9 +18041,9 @@ class PyVistaRenderer:
             )
             return None
 
-        # ---------------------------------------------------------
-        # 6. 每个等值等级单独生成 contour
-        # ---------------------------------------------------------
+        
+        
+        
         output_line_meshes = []
         output_text_meshes = []
         rendered_levels = []
@@ -15647,9 +18097,9 @@ class PyVistaRenderer:
             except Exception:
                 pass
 
-            # -----------------------------------------------------
-            # 不显示标签：直接保留整条线
-            # -----------------------------------------------------
+            
+            
+            
             if not show_labels:
                 output_line_meshes.append(
                     surface_line
@@ -15661,10 +18111,10 @@ class PyVistaRenderer:
 
                 continue
 
-            # -----------------------------------------------------
-            # 显示标签：
-            # 切开 contour 中部 + 嵌入真实 3D Text3D
-            # -----------------------------------------------------
+            
+            
+            
+            
             line_with_gap, text_mesh = (
                 self._prepare_one_level_contour_with_embedded_label(
                     surface_line=surface_line,
@@ -15703,9 +18153,9 @@ class PyVistaRenderer:
             )
             return None
 
-        # ---------------------------------------------------------
-        # 7. 合并所有等值线
-        # ---------------------------------------------------------
+        
+        
+        
         try:
             contour_mesh = pv.merge(
                 output_line_meshes,
@@ -15720,9 +18170,9 @@ class PyVistaRenderer:
                     merge_points=False,
                 )
 
-        # ---------------------------------------------------------
-        # 8. 合并所有 3D 数值文字
-        # ---------------------------------------------------------
+        
+        
+        
         text_mesh = None
 
         if len(output_text_meshes) > 0:
@@ -15740,9 +18190,9 @@ class PyVistaRenderer:
                         merge_points=False,
                     )
 
-        # ---------------------------------------------------------
-        # 9. 绘制 contour actor
-        # ---------------------------------------------------------
+        
+        
+        
         try:
             contour_actor = self.plotter.add_mesh(
                 contour_mesh,
@@ -15774,9 +18224,9 @@ class PyVistaRenderer:
             )
             return None
 
-        # ---------------------------------------------------------
-        # 10. 绘制贴面 3D 数值文字 actor
-        # ---------------------------------------------------------
+        
+        
+        
         text_actor = None
 
         if (
@@ -15806,9 +18256,9 @@ class PyVistaRenderer:
                     exc,
                 )
 
-        # ---------------------------------------------------------
-        # 11. 缓存
-        # ---------------------------------------------------------
+        
+        
+        
         self.cache[
             "k_surface_contour_actor"
         ] = contour_actor
@@ -15824,9 +18274,9 @@ class PyVistaRenderer:
         self.cache[
             "k_surface_contour_info"
         ] = {
-            "property_name": str(
-                property_name
-            ),
+            "property_name": str(property_name),
+            "source_mode": context.get("source_mode"),
+            "scalar_name": context.get("scalar_name"),
             "layer_index": int(
                 layer_index
             ),
@@ -15863,17 +18313,17 @@ class PyVistaRenderer:
 
 
 
-    # =====================================================================
-    # View All / Fit To View
-    #
-    # 功能：
-    # 1. 保持当前 2D / 3D 观察方向；
-    # 2. 不旋转模型；
-    # 3. 自动移动相机焦点到模型中心；
-    # 4. 自动调整缩放或相机距离；
-    # 5. 让整个模型显示在当前窗口内；
-    # 6. 模型与窗口边缘留白由 VIEW_ALL_PADDING 固定控制；
-    # =====================================================================
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
     def _is_valid_bounds(self, bounds):
         """
@@ -16011,7 +18461,7 @@ class PyVistaRenderer:
             ):
                 continue
 
-            # actor 列表，例如 fracture_actors、well_actors
+            
             if isinstance(value, (list, tuple)):
                 for actor in value:
                     actor_bounds = self._get_actor_bounds(actor)
@@ -16021,7 +18471,7 @@ class PyVistaRenderer:
 
                 continue
 
-            # 单 actor
+            
             actor_bounds = self._get_actor_bounds(value)
 
             if actor_bounds is not None:
@@ -16540,23 +18990,23 @@ class PyVistaRenderer:
 
 
 
-    # =========================================================
-    # 折线垂向剖面 / Vertical Fence Section
-    #
-    # 操作方式：
-    #
-    # 1. enable_vertical_fence_section(sim_data, "Pressure")
-    #
-    # 2. 自动切到俯视图；
-    #
+    
+    
+    
+    
+    
+    
+    
+    
+    
     # 3. 左键单击：
     #    依次加入路径点
-    #
+    
     # 4. 双击左键：
     #    当前路径结束；
     #    最后一个点自动作为 End；
     #    生成沿路径、沿 Z 方向贯穿模型的竖向折线剖面。
-    # =========================================================
+    
 
     def _get_fence_section_interactor(self):
 
@@ -16690,111 +19140,113 @@ class PyVistaRenderer:
             pass
 
 
+
     def _iter_fence_section_context_actors(self):
-        """
-        遍历进入剖面前需要保存、剖面显示时需要临时隐藏的对象。
-
-        包括：
-        1. 原属性场及其颜色条；
-        2. 井和裂缝；
-        3. 所有模型网格，包括粗网格和加密网格。
-
-        这些对象只修改 visibility，不会删除，因此用户仍可通过
-        原有按钮在剖面显示期间重新打开。
-        """
+        """遍历剖面模式需要暂时隐藏并随后恢复的全部场景对象。"""
         property_actor_keys = (
-            "pressure_actor",
-            "pressure_field_actor",
-            "sw_field_actor",
-            "phi_field_actor",
-            "perm_field_actor",
-            "threshold_actor",
-            "time_playback_actor",
-
-            "layer_pressure_actor",
-            "layer_sw_actor",
-            "layer_phi_actor",
-            "layer_perm_actor",
+            "pressure_actor", "pressure_field_actor", "sw_field_actor",
+            "phi_field_actor", "perm_field_actor", "threshold_actor",
+            "time_playback_actor", "layer_pressure_actor", "layer_sw_actor",
+            "layer_phi_actor", "layer_perm_actor",
         )
-
-        property_scalar_bar_keys = (
-            "scalar_bar",
-            "pressure_scalar_bar",
-            "sw_scalar_bar",
-            "phi_scalar_bar",
-            "perm_scalar_bar",
-            "threshold_scalar_bar",
-            "time_playback_scalar_bar",
-
-            "layer_pressure_scalar_bar",
-            "layer_sw_scalar_bar",
-            "layer_phi_scalar_bar",
+        scalar_bar_keys = (
+            "scalar_bar", "pressure_scalar_bar", "sw_scalar_bar",
+            "phi_scalar_bar", "perm_scalar_bar", "threshold_scalar_bar",
+            "time_playback_scalar_bar", "layer_pressure_scalar_bar",
+            "layer_sw_scalar_bar", "layer_phi_scalar_bar",
             "layer_perm_scalar_bar",
         )
-
-        fracture_and_well_keys = (
-            "fracture_actors",
-            "well_actors",
-            "layer_frac_actors",
-            "layer_well_actors",
-            "layer_sw_frac_actors",
-            "layer_sw_well_actors",
-            "layer_phi_frac_actors",
-            "layer_phi_well_actors",
-            "layer_perm_frac_actors",
-            "layer_perm_well_actors",
-        )
-
-        all_grid_keys = (
-            # 普通角点网格及其边线/表面。
-            "grid_lines_actor",
-            "corner_actor",
-            "corner_surface_actor",
-
-            # LGR 粗网格和加密网格全部隐藏。
-            "corner_lgr_parent_grid_actor",
-            "corner_lgr_refined_grid_actor",
-
-            # 各属性分层/阈值结果中的网格。
-            "layer_coarse_grid_actor",
-            "layer_sw_coarse_grid_actor",
-            "threshold_grid_actor",
-            "layer_phi_coarse_grid_actor",
+        grid_keys = (
+            "grid_lines_actor", "corner_actor", "corner_surface_actor",
+            "corner_lgr_parent_grid_actor", "corner_lgr_refined_grid_actor",
+            "layer_coarse_grid_actor", "layer_sw_coarse_grid_actor",
+            "threshold_grid_actor", "layer_phi_coarse_grid_actor",
             "layer_perm_coarse_grid_actor",
         )
 
         seen = set()
 
-        for key in (
-            *property_actor_keys,
-            *property_scalar_bar_keys,
-            *fracture_and_well_keys,
-            *all_grid_keys,
-        ):
-            cached_value = self.cache.get(key)
+        def emit(actor):
+            if actor is None or id(actor) in seen:
+                return None
+            seen.add(id(actor))
+            return actor
 
-            if isinstance(cached_value, (list, tuple, set)):
-                actors = cached_value
-            else:
-                actors = (cached_value,)
-
+        for key in (*property_actor_keys, *scalar_bar_keys, *grid_keys):
+            value = self.cache.get(key)
+            actors = value if isinstance(value, (list, tuple, set)) else (value,)
             for actor in actors:
-                if actor is None:
-                    continue
+                actor = emit(actor)
+                if actor is not None:
+                    yield actor
 
-                actor_id = id(actor)
+        static_preview = getattr(self, "static_property_preview", None)
+        if static_preview is not None:
+            for actor in (
+                getattr(static_preview, "actor", None),
+                getattr(static_preview, "edge_actor", None),
+                getattr(static_preview, "scalar_bar_actor", None),
+            ):
+                actor = emit(actor)
+                if actor is not None:
+                    yield actor
 
-                if actor_id in seen:
-                    continue
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
 
-                seen.add(actor_id)
-                yield actor
+        if geometry is not None:
+            for actor in (
+                getattr(geometry, "grid_actor", None),
+                getattr(geometry, "grid_edge_actor", None),
+                getattr(geometry, "grid_internal_edge_actor", None),
+                *(getattr(geometry, "well_actors", None) or []),
+                *(getattr(geometry, "perforation_actors", None) or []),
+                *(getattr(geometry, "well_label_actors", None) or []),
+                *(getattr(geometry, "natural_fracture_actors", None) or []),
+                *(getattr(geometry, "hydraulic_fracture_actors", None) or []),
+            ):
+                actor = emit(actor)
+                if actor is not None:
+                    yield actor
 
+
+    def _set_fence_section_well_labels_hidden(self, hidden):
+        """设置剖面期间井名的强制隐藏状态。"""
+        geometry = getattr(self, "geometry_layers", None)
+        if geometry is None:
+            geometry = getattr(self, "geometry_preview", None)
+
+        if geometry is None:
+            return False
+
+        setter = getattr(
+            geometry,
+            "set_well_labels_forced_hidden",
+            None,
+        )
+
+        if setter is not None:
+            try:
+                return bool(
+                    setter(
+                        hidden,
+                        render_now=False,
+                    )
+                )
+            except Exception:
+                pass
+
+        for actor in getattr(geometry, "well_label_actors", None) or []:
+            self._fence_set_actor_visible(
+                actor,
+                not bool(hidden),
+            )
+
+        return True
 
     def _capture_fence_section_context(self):
-        """
-        在切换俯视图和进入选点模式之前，保存原模型显示状态。
-        """
+        """保存进入剖面前全部相关 actor 的显示状态。"""
         self._restore_fence_section_context()
 
         states = []
@@ -16808,23 +19260,12 @@ class PyVistaRenderer:
                 }
             )
 
-        self.cache[
-            "fence_section_context_actor_states"
-        ] = states
-
-        self.cache[
-            "fence_section_context_captured"
-        ] = True
-
-        self.cache[
-            "fence_section_context_hidden_once"
-        ] = False
-
+        self.cache["fence_section_context_actor_states"] = states
+        self.cache["fence_section_context_captured"] = True
+        self.cache["fence_section_context_hidden_once"] = False
 
     def _restore_fence_section_context(self):
-        """
-        恢复点击剖面按钮之前的模型显示状态。
-        """
+        """恢复进入剖面前以及属性切换后记录的 actor 显示状态。"""
         states = self.cache.get(
             "fence_section_context_actor_states",
             [],
@@ -16832,60 +19273,225 @@ class PyVistaRenderer:
 
         for state in states:
             actor = state.get("actor")
-
             self._fence_set_actor_opacity(
                 actor,
                 state.get("opacity"),
             )
-
             self._fence_set_actor_visible(
                 actor,
                 state.get("visible"),
             )
 
-        self.cache[
-            "fence_section_context_actor_states"
-        ] = []
-
-        self.cache[
-            "fence_section_context_captured"
-        ] = False
-
-        self.cache[
-            "fence_section_context_hidden_once"
-        ] = False
-
+        self.cache["fence_section_context_actor_states"] = []
+        self.cache["fence_section_context_captured"] = False
+        self.cache["fence_section_context_hidden_once"] = False
+        self._set_fence_section_well_labels_hidden(False)
 
     def _hide_fence_section_context(self):
-        """
-        第一次生成剖面结果时，临时隐藏原属性场、颜色条、井、裂缝和所有网格。
-
-        这里只修改 visibility，不删除 actor。剖面首次显示时只保留剖面
-        结果及其专用颜色条；之后用户仍可通过原有按钮重新显示井、裂缝
-        或任意网格。
-        """
-        if self.cache.get(
-            "fence_section_context_hidden_once",
-            False,
-        ):
-            return
-
+        """隐藏完整属性场及几何，并动态记录属性切换后新创建的 actor。"""
         if not self.cache.get(
             "fence_section_context_captured",
             False,
         ):
             self._capture_fence_section_context()
 
+        states = self.cache.get(
+            "fence_section_context_actor_states",
+            [],
+        ) or []
+        known_ids = {
+            id(state.get("actor"))
+            for state in states
+            if state.get("actor") is not None
+        }
+
+        self._set_fence_section_well_labels_hidden(True)
+
         for actor in self._iter_fence_section_context_actors():
+            if id(actor) not in known_ids:
+                states.append(
+                    {
+                        "actor": actor,
+                        "opacity": self._fence_get_actor_opacity(actor),
+                        "visible": self._fence_get_actor_visible(actor),
+                    }
+                )
+                known_ids.add(id(actor))
+
             self._fence_set_actor_visible(
                 actor,
                 False,
             )
 
-        self.cache[
-            "fence_section_context_hidden_once"
-        ] = True
+        self.cache["fence_section_context_actor_states"] = states
+        self.cache["fence_section_context_hidden_once"] = True
 
+    def _vertical_fence_section_is_active(self):
+        """返回由显示模式锁定的持久任意剖面状态。"""
+        points = self.cache.get("fence_section_points", []) or []
+        return bool(
+            self.is_fence_property_display_mode()
+            and len(points) >= 2
+        )
+
+    def _ensure_vertical_fence_section_before_render(self):
+        """在最终 render 前用当前属性刷新剖面并隐藏完整模型。"""
+        if not self._vertical_fence_section_is_active():
+            return False
+
+        if self.cache.get("fence_section_render_guard", False):
+            return False
+
+        self.cache["fence_section_render_guard"] = True
+
+        try:
+            self._set_fence_section_well_labels_hidden(True)
+
+            context = self._active_property_context
+            if not (
+                isinstance(context, dict)
+                and self._dataset_has_cells(context.get("volume_grid"))
+            ):
+                context = self.get_active_property_context()
+
+            pending = bool(
+                self.cache.get("fence_section_pending_property_refresh", False)
+            )
+            current_token = self.cache.get("fence_section_context_token")
+            applied_token = self.cache.get("fence_section_applied_context_token")
+
+            if isinstance(context, dict):
+                resolved_token = (
+                    id(context.get("volume_grid")),
+                    id(context.get("actor")),
+                    str(context.get("source_mode", "")),
+                    str(context.get("property_name", "")),
+                    str(context.get("scalar_name", "")),
+                    context.get("axis"),
+                    context.get("layer_index"),
+                )
+
+                if current_token is None:
+                    current_token = resolved_token
+                    self.cache["fence_section_context_token"] = current_token
+
+                if pending or applied_token != current_token:
+                    refreshed = self._refresh_vertical_fence_section_for_context(
+                        context,
+                        render_now=False,
+                    )
+                    if refreshed:
+                        self.cache["fence_section_applied_context_token"] = (
+                            current_token
+                        )
+                        self.cache["fence_section_pending_property_refresh"] = False
+
+            self._hide_fence_section_context()
+            self._set_fence_section_well_labels_hidden(True)
+            return True
+        finally:
+            self.cache["fence_section_render_guard"] = False
+
+    def _refresh_vertical_fence_section_for_context(
+        self,
+        context,
+        render_now=False,
+    ):
+        """属性切换后沿原路径用新属性重建剖面，并保持当前剖面视角。"""
+        if not self._vertical_fence_section_is_active():
+            return False
+
+        if not isinstance(context, dict):
+            return False
+
+        if self.cache.get("fence_section_refreshing_property", False):
+            return False
+
+        grid = context.get("volume_grid")
+        if not self._dataset_has_cells(grid):
+            return False
+
+        property_config = self._get_fence_section_property_config(
+            context=context,
+        )
+        if property_config is None:
+            return False
+
+        _, scalar_name, values = self._context_cell_scalar_values(
+            context,
+            grid=grid,
+        )
+        if scalar_name is None or values is None:
+            return False
+
+        property_config = dict(property_config)
+        property_config["scalar_name"] = scalar_name
+
+        self.cache["fence_section_refreshing_property"] = True
+
+        try:
+            self.cache["fence_section_sim_data"] = context.get("sim_data")
+            self.cache["fence_section_property"] = str(
+                context.get("property_name", scalar_name)
+            )
+            self.cache["fence_section_scalar_name"] = scalar_name
+            self.cache["fence_section_property_context"] = context
+            self.cache["fence_section_property_config"] = property_config
+            self.cache["fence_section_grid"] = grid
+
+            bounds = self._get_fence_section_grid_bounds(
+                sim_data=context.get("sim_data"),
+                context=context,
+            )
+            if bounds is not None:
+                self.cache["fence_section_bounds"] = tuple(
+                    float(value)
+                    for value in bounds
+                )
+
+            self._hide_fence_section_context()
+
+            refreshed = self._render_vertical_fence_section(
+                reset_camera=False,
+                render_now=render_now,
+            )
+
+            if refreshed:
+                token = self.cache.get("fence_section_context_token")
+                if token is None:
+                    token = (
+                        id(context.get("volume_grid")),
+                        id(context.get("actor")),
+                        str(context.get("source_mode", "")),
+                        str(context.get("property_name", "")),
+                        str(context.get("scalar_name", "")),
+                        context.get("axis"),
+                        context.get("layer_index"),
+                    )
+                    self.cache["fence_section_context_token"] = token
+                self.cache["fence_section_applied_context_token"] = token
+                self.cache["fence_section_pending_property_refresh"] = False
+
+            return refreshed
+        finally:
+            self.cache["fence_section_refreshing_property"] = False
+
+    def refresh_vertical_fence_section_for_current_property(
+        self,
+        render_now=True,
+    ):
+        """公开入口：使用当前属性刷新已保留的任意剖面。"""
+        context = self._active_property_context
+        if not (
+            isinstance(context, dict)
+            and self._dataset_has_cells(context.get("volume_grid"))
+        ):
+            context = self.get_active_property_context()
+
+        return self._refresh_vertical_fence_section_for_context(
+            context,
+            render_now=render_now,
+        )
 
     def _capture_fence_section_camera_state(self):
         """
@@ -16958,144 +19564,88 @@ class PyVistaRenderer:
             pass
 
 
+
     def _get_fence_section_property_config(
         self,
-        property_name,
+        property_name=None,
+        context=None,
     ):
-        config = self._get_pick_property_config(
-            property_name
-        )
+        """返回当前预览/模拟属性的任意垂向剖面配置。"""
+        if context is None:
+            context = self.get_active_property_context()
 
+        if isinstance(context, dict):
+            requested = str(property_name or "").strip()
+            current_name = str(context.get("property_name", "")).strip()
+
+            if not requested or requested == current_name:
+                scalar_name = str(context.get("scalar_name", "")).strip()
+                if scalar_name:
+                    return {
+                        "column": None,
+                        "title": str(
+                            context.get("title", current_name or scalar_name)
+                        ),
+                        "unit": str(context.get("unit", "") or ""),
+                        "scalar_name": scalar_name,
+                    }
+
+        config = self._get_pick_property_config(
+            property_name,
+            quiet=True,
+        )
         if config is None:
             return None
 
-        name = str(property_name).strip()
-
-        scalar_name_map = {
-            "Pressure": "Pressure",
-            "P": "Pressure",
-
-            "Kx": "Kx",
-            "Ky": "Ky",
-            "Kz": "Kz",
-
-            "Phi": "Phi",
-            "Porosity": "Phi",
-
-            "Sw": "Sw",
-        }
-
-        scalar_name = scalar_name_map.get(name)
-
-        if scalar_name is None:
-            return None
-
         return {
-            "column": int(config["column"]),
-            "title": str(
-                config.get(
-                    "title",
-                    scalar_name,
-                )
-            ),
-            "unit": str(
-                config.get(
-                    "unit",
-                    "",
-                )
-            ),
-            "scalar_name": scalar_name,
+            "column": config.get("column"),
+            "title": str(config.get("title", property_name)),
+            "unit": str(config.get("unit", "") or ""),
+            "scalar_name": str(config.get("scalar_name", property_name)),
         }
+
 
 
     def _get_fence_section_grid_bounds(
         self,
-        sim_data,
+        sim_data=None,
+        context=None,
     ):
+        """返回当前预览/模拟属性体网格范围。"""
+        if context is None:
+            context = self._resolve_property_operation_context(
+                sim_data=sim_data,
+                property_name=None,
+            )
 
-        cell_data = getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
-        )
+        bounds = self._active_property_bounds(context)
+        if bounds is not None:
+            return bounds
 
+        
+        cell_data = getattr(sim_data, "cell_geometry_with_pressure", None)
         if cell_data is None:
             return None
 
         try:
-            cell_data = np.asarray(
+            points = np.asarray(
                 cell_data,
                 dtype=np.float64,
-            )
+            )[:, 4:28].reshape(-1, 3)
         except Exception:
             return None
 
-        if (
-            cell_data.ndim != 2
-            or cell_data.shape[0] == 0
-            or cell_data.shape[1] < 28
-        ):
-            return None
-
-        try:
-            points = cell_data[
-                :,
-                4:28,
-            ].reshape(
-                -1,
-                3,
-            )
-        except Exception:
-            return None
-
-        valid_mask = np.isfinite(
-            points
-        ).all(
-            axis=1
-        )
-
-        points = points[
-            valid_mask
-        ]
-
+        points = points[np.isfinite(points).all(axis=1)]
         if points.shape[0] == 0:
             return None
 
-        xmin = float(
-            np.min(points[:, 0])
-        )
-        xmax = float(
-            np.max(points[:, 0])
-        )
-
-        ymin = float(
-            np.min(points[:, 1])
-        )
-        ymax = float(
-            np.max(points[:, 1])
-        )
-
-        zmin = float(
-            np.min(points[:, 2])
-        )
-        zmax = float(
-            np.max(points[:, 2])
-        )
-
-        if (
-            xmax <= xmin
-            or ymax <= ymin
-            or zmax < zmin
-        ):
-            return None
-
         return (
-            xmin,
-            xmax,
-            ymin,
-            ymax,
-            zmin,
-            zmax,
+            float(np.min(points[:, 0])),
+            float(np.max(points[:, 0])),
+            float(np.min(points[:, 1])),
+            float(np.max(points[:, 1])),
+            float(np.min(points[:, 2])),
+            float(np.max(points[:, 2])),
         )
 
 
@@ -17916,7 +20466,7 @@ class PyVistaRenderer:
             dtype=np.float64,
         ).copy()
 
-        # 路径只看 XY。
+        
         start[2] = 0.0
         end[2] = 0.0
 
@@ -17940,8 +20490,8 @@ class PyVistaRenderer:
             dtype=np.float64,
         )
 
-        # 平面法向与路径段垂直，
-        # 且位于 XY 平面中。
+        
+        
         plane_normal = np.asarray(
             [
                 -tangent[1],
@@ -17994,8 +20544,8 @@ class PyVistaRenderer:
         except Exception:
             return None
 
-        # 保留：
-        # dot(P - start, tangent) >= 0
+        
+        
         start_origin = np.asarray(
             [
                 start[0],
@@ -18015,8 +20565,8 @@ class PyVistaRenderer:
         if section is None:
             return None
 
-        # 保留：
-        # dot(P - end, tangent) <= 0
+        
+        
         end_origin = np.asarray(
             [
                 end[0],
@@ -18098,19 +20648,18 @@ class PyVistaRenderer:
         return merged
 
 
+
     def _get_fence_section_scalar_preference(
         self,
         dataset,
         property_config,
-        sim_data,
+        sim_data=None,
+        source_grid=None,
     ):
-
         if dataset is None or property_config is None:
             return None
 
-        scalar_name = property_config[
-            "scalar_name"
-        ]
+        scalar_name = str(property_config.get("scalar_name", ""))
 
         try:
             if scalar_name in dataset.cell_data:
@@ -18124,19 +20673,21 @@ class PyVistaRenderer:
         except Exception:
             pass
 
-        cell_data = getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
-        )
+        if not self._dataset_has_cells(source_grid):
+            return None
 
-        if cell_data is None:
+        try:
+            source_values = np.asarray(
+                source_grid.cell_data[scalar_name],
+                dtype=np.float32,
+            )
+        except Exception:
             return None
 
         original_ids = None
-
         for id_name in (
             "OriginalRowIndex",
+            "SourceCellId",
             "vtkOriginalCellIds",
             "vtkOriginalCellIds_",
         ):
@@ -18145,36 +20696,22 @@ class PyVistaRenderer:
                     original_ids = np.asarray(
                         dataset.cell_data[id_name],
                         dtype=np.int64,
-                    )
+                    ).reshape(-1)
                     break
             except Exception:
-                pass
+                continue
 
-        if original_ids is None:
+        if original_ids is None or original_ids.size != int(dataset.n_cells):
             return None
 
-        if len(original_ids) != dataset.n_cells:
-            return None
-
-        column = int(
-            property_config["column"]
+        valid = (
+            (original_ids >= 0)
+            & (original_ids < source_values.size)
         )
-
-        try:
-            source_values = np.asarray(
-                cell_data[
-                    original_ids,
-                    column,
-                ],
-                dtype=np.float32,
-            )
-        except Exception:
+        if not np.all(valid):
             return None
 
-        dataset.cell_data[
-            scalar_name
-        ] = source_values
-
+        dataset.cell_data[scalar_name] = source_values[original_ids]
         return "cell"
 
 
@@ -18249,7 +20786,7 @@ class PyVistaRenderer:
         kwargs = {
             "title": bar_title,
 
-            # 与 Pressure / Sw / Phi / Permeability
+            
             "position_x": 0.02,
             "position_y": 0.55,
             "width": 0.08,
@@ -18346,8 +20883,8 @@ class PyVistaRenderer:
         if not valid_segments:
             return
 
-        # 使用最长路径段作为主方向，
-        # 比取首尾点方向更稳定。
+        
+        
         _, main_vector = max(
             valid_segments,
             key=lambda item: item[0],
@@ -18442,216 +20979,130 @@ class PyVistaRenderer:
             pass
 
 
-    def _render_vertical_fence_section(self):
 
-        sim_data = self.cache.get(
-            "fence_section_sim_data"
-        )
+    def _render_vertical_fence_section(
+        self,
+        reset_camera=True,
+        render_now=True,
+    ):
+        self._set_fence_section_well_labels_hidden(True)
+        context = self.cache.get("fence_section_property_context")
+        points = self.cache.get("fence_section_points", []) or []
 
-        points = self.cache.get(
-            "fence_section_points",
-            [],
-        ) or []
-
-        property_name = self.cache.get(
-            "fence_section_property",
-            "Pressure",
-        )
-
-        if sim_data is None:
+        if not isinstance(context, dict):
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "no simulation data."
+                "[Vertical Fence Section] no active property context."
             )
             return False
 
         if len(points) < 2:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "at least two points are required."
+                "[Vertical Fence Section] at least two points are required."
             )
             return False
 
-        property_config = self._get_fence_section_property_config(
-            property_name
-        )
+        property_config = self.cache.get("fence_section_property_config")
+        if not isinstance(property_config, dict):
+            property_config = self._get_fence_section_property_config(
+                context=context
+            )
 
         if property_config is None:
             return False
 
-        cell_data = getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
-        )
+        grid = self.cache.get("fence_section_grid")
+        if not self._dataset_has_cells(grid):
+            grid = context.get("volume_grid")
+            self.cache["fence_section_grid"] = grid
 
-        if cell_data is None:
+        if not self._dataset_has_cells(grid):
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "cell_geometry_with_pressure is missing."
+                "[Vertical Fence Section] active property grid is unavailable."
             )
             return False
 
-        try:
-            cell_data = np.asarray(
-                cell_data,
-                dtype=np.float64,
-            )
-        except Exception:
-            return False
-
-        column = int(
-            property_config["column"]
+        source_grid, scalar_name, source_values = self._context_cell_scalar_values(
+            context,
+            grid=grid,
         )
-
-        if (
-            cell_data.ndim != 2
-            or cell_data.shape[1] <= column
-        ):
+        if scalar_name is None or source_values is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "requested property column is unavailable."
-            )
-            return False
-
-        grid = self.cache.get(
-            "fence_section_grid"
-        )
-
-        if grid is None:
-            grid = self._build_cell_pick_grid(
-                sim_data=sim_data,
-                axis=None,
-                layer_index=None,
-            )
-
-            self.cache[
-                "fence_section_grid"
-            ] = grid
-
-        if grid is None:
-            self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "failed to build corner-point grid."
+                "[Vertical Fence Section] active scalar is unavailable."
             )
             return False
 
         section_blocks = []
-
-        for start_point, end_point in zip(
-            points[:-1],
-            points[1:],
-        ):
+        for start_point, end_point in zip(points[:-1], points[1:]):
             section = self._slice_grid_on_fence_segment(
-                grid=grid,
+                grid=source_grid,
                 start_point=start_point,
                 end_point=end_point,
             )
-
             if section is not None:
-                section_blocks.append(
-                    section
-                )
+                section_blocks.append(section)
 
-        merged_section = self._merge_fence_section_blocks(
-            section_blocks
-        )
-
+        merged_section = self._merge_fence_section_blocks(section_blocks)
         if merged_section is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "the selected path does not intersect any grid cell."
+                "[Vertical Fence Section] the selected path does not intersect any grid cell."
             )
             return False
+
+        property_config = dict(property_config)
+        property_config["scalar_name"] = scalar_name
 
         scalar_preference = self._get_fence_section_scalar_preference(
             dataset=merged_section,
             property_config=property_config,
-            sim_data=sim_data,
+            sim_data=context.get("sim_data"),
+            source_grid=source_grid,
         )
-
         if scalar_preference is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "property data was not preserved by the slice."
+                "[Vertical Fence Section] property data was not preserved by the slice."
             )
             return False
 
-        scalar_name = property_config[
-            "scalar_name"
-        ]
-
-        clim = self._fence_safe_clim(
-            cell_data[
-                :,
-                column,
-            ]
-        )
-
+        clim = self._fence_safe_clim(source_values)
         if clim is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "all property values are invalid."
+                "[Vertical Fence Section] all property values are invalid."
             )
             return False
 
-        self._remove_actor(
-            self.cache.get(
-                "fence_section_actor"
-            )
-        )
-
-        self.cache[
-            "fence_section_actor"
-        ] = None
-
-        self.cache[
-            "fence_section_data"
-        ] = None
-
+        self._remove_actor(self.cache.get("fence_section_actor"))
+        self.cache["fence_section_actor"] = None
+        self.cache["fence_section_data"] = None
         self._clear_fence_section_scalar_bar()
 
+        kwargs = dict(
+            scalars=scalar_name,
+            preference=scalar_preference,
+            cmap=get_bright_jet_cmap(),
+            clim=clim,
+            opacity=1.0,
+            show_edges=True,
+            edge_color=(0.10, 0.10, 0.10),
+            line_width=0.7,
+            show_scalar_bar=False,
+            lighting=False,
+            smooth_shading=False,
+            interpolate_before_map=False,
+            reset_camera=False,
+            render=False,
+            pickable=False,
+        )
+
         try:
-            actor = self.plotter.add_mesh(
-                merged_section,
-                scalars=scalar_name,
-                preference=scalar_preference,
-                cmap=get_bright_jet_cmap(),
-                clim=clim,
-                opacity=1.0,
-                show_edges=True,
-                edge_color=(0.10, 0.10, 0.10),
-                line_width=0.7,
-                show_scalar_bar=False,
-                lighting=False,
-                smooth_shading=False,
-                interpolate_before_map=False,
-                render=False,
-                pickable=False,
-            )
-
+            actor = self.plotter.add_mesh(merged_section, **kwargs)
         except TypeError:
-            # 兼容旧版 PyVista。
-            actor = self.plotter.add_mesh(
-                merged_section,
-                scalars=scalar_name,
-                cmap=get_bright_jet_cmap(),
-                clim=clim,
-                opacity=1.0,
-                show_edges=True,
-                edge_color=(0.10, 0.10, 0.10),
-                line_width=0.7,
-                show_scalar_bar=False,
-                lighting=False,
-                smooth_shading=False,
-                interpolate_before_map=False,
-                render=False,
-            )
-
+            kwargs.pop("preference", None)
+            kwargs.pop("pickable", None)
+            kwargs.pop("reset_camera", None)
+            actor = self.plotter.add_mesh(merged_section, **kwargs)
         except Exception as exc:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                f"render failed: {type(exc).__name__}: {exc}"
+                f"[Vertical Fence Section] render failed: {type(exc).__name__}: {exc}"
             )
             return False
 
@@ -18660,279 +21111,189 @@ class PyVistaRenderer:
         except Exception:
             pass
 
-        self.cache[
-            "fence_section_actor"
-        ] = actor
-
-        self.cache[
-            "fence_section_data"
-        ] = merged_section
-
-        self.cache[
-            "fence_section_scalar_name"
-        ] = scalar_name
+        self.cache["fence_section_actor"] = actor
+        self.cache["fence_section_data"] = merged_section
+        self.cache["fence_section_scalar_name"] = scalar_name
 
         self._add_fence_section_scalar_bar(
             mesh_actor=actor,
             property_config=property_config,
         )
 
-        # 只显示剖面结果和剖面专用颜色条；
-        # 原属性场及其颜色条暂时隐藏，清除剖面时恢复。
         self._hide_fence_section_context()
 
-        # 自动切换到便于观察剖面的角度。
-        self._set_fence_section_result_camera()
+        if reset_camera:
+            self._set_fence_section_result_camera()
+
+        self._set_fence_section_well_labels_hidden(True)
+        self._hide_fence_section_context()
+
+        context_token = (
+            id(context.get("volume_grid")),
+            id(context.get("actor")),
+            str(context.get("source_mode", "")),
+            str(context.get("property_name", "")),
+            str(context.get("scalar_name", "")),
+            context.get("axis"),
+            context.get("layer_index"),
+        )
+        self.cache["fence_section_context_token"] = context_token
+        self.cache["fence_section_applied_context_token"] = context_token
+        self.cache["fence_section_pending_property_refresh"] = False
 
         self._emit_fence_section_info(
             "[Vertical Fence Section] "
             f"completed: points={len(points)}, "
             f"segments={len(section_blocks)}, "
+            f"source={context.get('source_mode')}, "
             f"property={property_config['title']}."
         )
-
-        self._render()
-
+        if render_now:
+            self._render()
         return True
+
 
 
     def enable_vertical_fence_section(
         self,
-        sim_data,
-        property_name="Pressure",
+        sim_data=None,
+        property_name=None,
     ):
-
-        property_config = self._get_fence_section_property_config(
-            property_name
+        """对当前预览/模拟属性开启折线垂向剖面。"""
+        context = self._resolve_property_operation_context(
+            sim_data=sim_data,
+            property_name=property_name,
         )
 
+        if not isinstance(context, dict):
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] no active property field."
+            )
+            return False
+
+        property_config = self._get_fence_section_property_config(
+            property_name=property_name,
+            context=context,
+        )
         if property_config is None:
             return False
 
-        cell_data = getattr(
-            sim_data,
-            "cell_geometry_with_pressure",
-            None,
+        grid = context.get("volume_grid")
+        if not self._dataset_has_cells(grid):
+            self._emit_fence_section_info(
+                "[Vertical Fence Section] active property grid is unavailable."
+            )
+            return False
+
+        _, scalar_name, values = self._context_cell_scalar_values(
+            context,
+            grid=grid,
         )
-
-        if cell_data is None:
+        if scalar_name is None or values is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "cell_geometry_with_pressure is missing."
+                "[Vertical Fence Section] active property scalar is unavailable."
             )
             return False
 
-        try:
-            cell_data = np.asarray(
-                cell_data,
-                dtype=np.float64,
-            )
-        except Exception:
-            self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "invalid cell_geometry_with_pressure."
-            )
-            return False
+        property_config = dict(property_config)
+        property_config["scalar_name"] = scalar_name
 
-        if (
-            cell_data.ndim != 2
-            or cell_data.shape[0] == 0
-            or cell_data.shape[1] < 34
-        ):
-            self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "at least 34 columns are required."
-            )
-            return False
-
-        # 避免测距、Cell Picking、框选放大和剖面抢同一个左键事件。
+        
         self.disable_cell_info_picking(
             clear_highlight=False,
+            render_now=False,
         )
+        self.disable_petrel_distance_measure(clear_line=False)
+        self.deactivate_2d_magnify(render=False)
 
-        self.disable_petrel_distance_measure(
-            clear_line=False,
-        )
-
-        self.deactivate_2d_magnify(
-            render=False,
-        )
-
-        # 如果上一次已经有剖面，先完整清理。
         self.disable_vertical_fence_section(
             clear_result=True,
             render=False,
+            force_clear=True,
         )
 
         bounds = self._get_fence_section_grid_bounds(
-            sim_data
+            sim_data=context.get("sim_data", sim_data),
+            context=context,
         )
-
         if bounds is None:
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "grid bounds are unavailable."
+                "[Vertical Fence Section] grid bounds are unavailable."
             )
             return False
 
-        # 必须在 view_top() 之前保存，确保清除或关闭剖面时
-        # 能回到点击剖面按钮前的模型和视角。
         self._capture_fence_section_context()
         self._capture_fence_section_camera_state()
 
-        self.cache[
-            "fence_section_sim_data"
-        ] = sim_data
-
-        self.cache[
-            "fence_section_property"
-        ] = str(property_name).strip()
-
-        self.cache[
-            "fence_section_scalar_name"
-        ] = property_config[
-            "scalar_name"
-        ]
-
-        self.cache[
-            "fence_section_bounds"
-        ] = tuple(
-            float(value)
-            for value in bounds
+        self.cache["fence_section_sim_data"] = context.get("sim_data", sim_data)
+        self.cache["fence_section_property"] = str(
+            context.get("property_name", property_name or scalar_name)
+        )
+        self.cache["fence_section_scalar_name"] = scalar_name
+        self.cache["fence_section_property_context"] = context
+        self.cache["fence_section_property_config"] = property_config
+        self.cache["fence_section_bounds"] = tuple(float(v) for v in bounds)
+        self.cache["fence_section_grid"] = grid
+        self.cache["fence_section_points"] = []
+        self.cache["fence_section_drawing"] = True
+        self.cache["fence_section_finished"] = False
+        self.cache["fence_section_last_info"] = None
+        self.cache["fence_section_last_click_time"] = None
+        self.cache["fence_section_last_click_display"] = None
+        self.cache["fence_section_previous_camera_locked"] = bool(
+            getattr(self, "camera_direction_locked", False)
         )
 
-        self.cache[
-            "fence_section_grid"
-        ] = None
-
-        self.cache[
-            "fence_section_points"
-        ] = []
-
-        self.cache[
-            "fence_section_drawing"
-        ] = True
-
-        self.cache[
-            "fence_section_finished"
-        ] = False
-
-        self.cache[
-            "fence_section_last_info"
-        ] = None
-
-        self.cache[
-            "fence_section_last_click_time"
-        ] = None
-
-        self.cache[
-            "fence_section_last_click_display"
-        ] = None
-
-        self.cache[
-            "fence_section_previous_camera_locked"
-        ] = bool(
-            getattr(
-                self,
-                "camera_direction_locked",
-                False,
-            )
-        )
-
-        # 自动转到俯视图。
         self.view_top()
-
-        # 选点阶段禁止旋转，保证点击一定落在 XY 平面。
-        self.lock_camera_direction(
-            True
-        )
+        self.lock_camera_direction(True)
 
         interactor = self._get_fence_section_interactor()
-
         if interactor is None:
-            self.cache[
-                "fence_section_drawing"
-            ] = False
-
+            self.cache["fence_section_drawing"] = False
             self.lock_camera_direction(
-                self.cache.get(
-                    "fence_section_previous_camera_locked",
-                    False,
-                )
+                self.cache.get("fence_section_previous_camera_locked", False)
             )
-
             self._restore_fence_section_context()
             self._restore_fence_section_camera_state()
             self._render()
-
             self._emit_fence_section_info(
-                "[Vertical Fence Section] "
-                "interactor is unavailable."
+                "[Vertical Fence Section] interactor is unavailable."
             )
-
             return False
 
         observer_ids = []
-
         try:
             left_click_id = interactor.AddObserver(
                 "LeftButtonPressEvent",
                 self._on_fence_section_left_button_press,
             )
-
             mouse_move_id = interactor.AddObserver(
                 "MouseMoveEvent",
                 self._on_fence_section_mouse_move,
             )
-
-            observer_ids = [
-                left_click_id,
-                mouse_move_id,
-            ]
-
+            observer_ids = [left_click_id, mouse_move_id]
         except Exception as exc:
-            self.cache[
-                "fence_section_observer_ids"
-            ] = observer_ids
-
+            self.cache["fence_section_observer_ids"] = observer_ids
             self._remove_fence_section_observers()
-
-            self.cache[
-                "fence_section_drawing"
-            ] = False
-
+            self.cache["fence_section_drawing"] = False
             self.lock_camera_direction(
-                self.cache.get(
-                    "fence_section_previous_camera_locked",
-                    False,
-                )
+                self.cache.get("fence_section_previous_camera_locked", False)
             )
-
             self._restore_fence_section_context()
             self._restore_fence_section_camera_state()
             self._render()
-
             self._emit_fence_section_info(
                 "[Vertical Fence Section] "
-                f"observer registration failed: "
-                f"{type(exc).__name__}: {exc}"
+                f"observer registration failed: {type(exc).__name__}: {exc}"
             )
-
             return False
 
-        self.cache[
-            "fence_section_observer_ids"
-        ] = observer_ids
-
+        self.cache["fence_section_observer_ids"] = observer_ids
         self._emit_fence_section_info(
-            "[Vertical Fence Section] "
-            "drawing started. "
-            "Left-click to add points; "
-            "double-click to finish."
+            "[Vertical Fence Section] drawing started. "
+            "Left-click to add points; double-click to finish."
         )
-
         self._render()
-
         return True
 
 
@@ -18969,6 +21330,12 @@ class PyVistaRenderer:
         self.cache[
             "fence_section_finished"
         ] = True
+        self._set_property_display_mode("fence")
+        self.cache["fence_section_persistent_active"] = True
+        self.cache["fence_section_pending_property_refresh"] = False
+        self.cache["fence_section_context_token"] = None
+        self.cache["fence_section_applied_context_token"] = None
+        self._set_fence_section_well_labels_hidden(True)
 
         previous_locked = self.cache.get(
             "fence_section_previous_camera_locked",
@@ -19015,6 +21382,11 @@ class PyVistaRenderer:
         self.cache[
             "fence_section_drawing"
         ] = False
+        self._set_property_display_mode("full")
+        self.cache["fence_section_persistent_active"] = False
+        self.cache["fence_section_pending_property_refresh"] = False
+        self.cache["fence_section_context_token"] = None
+        self.cache["fence_section_applied_context_token"] = None
 
         self.cache[
             "fence_section_points"
@@ -19044,10 +21416,275 @@ class PyVistaRenderer:
             self._render()
 
 
+    def _restore_full_property_after_fence(self, context=None):
+        """清除剖面后恢复当前完整属性场、颜色条和预览网格。"""
+        if not isinstance(context, dict):
+            context = self._active_property_context
+
+        if not isinstance(context, dict):
+            context = self.cache.get(
+                "fence_section_property_context"
+            )
+
+        if not isinstance(context, dict):
+            return False
+
+        source_mode = str(
+            context.get("source_mode", "")
+        ).strip().lower()
+
+        if source_mode != "preview":
+            actor = context.get("actor")
+            self._set_scene_actor_visibility(
+                actor,
+                True,
+            )
+
+            for scalar_bar_actor in self._active_property_scalar_bar_actors(
+                context
+            ):
+                self._set_scene_actor_visibility(
+                    scalar_bar_actor,
+                    True,
+                )
+
+            return actor is not None
+
+        preview = getattr(
+            self,
+            "static_property_preview",
+            None,
+        )
+
+        if preview is None:
+            return False
+
+        sim_data = context.get("sim_data")
+        if sim_data is None:
+            sim_data = getattr(
+                preview,
+                "current_sim_data",
+                None,
+            )
+
+        property_name = str(
+            context.get(
+                "property_name",
+                getattr(
+                    preview,
+                    "current_property_key",
+                    "",
+                ),
+            )
+            or ""
+        ).strip()
+
+        axis = context.get("axis")
+        if axis is not None:
+            axis = str(axis).strip().lower()
+
+        layer_index = context.get("layer_index")
+
+        current_actor = getattr(
+            preview,
+            "actor",
+            None,
+        )
+        current_property = str(
+            getattr(
+                preview,
+                "current_property_key",
+                "",
+            )
+            or ""
+        ).strip()
+        current_axis = getattr(
+            preview,
+            "current_axis",
+            None,
+        )
+        current_layer = getattr(
+            preview,
+            "current_layer_index",
+            None,
+        )
+
+        needs_rebuild = (
+            current_actor is None
+            or current_property != property_name
+            or current_axis != axis
+            or current_layer != layer_index
+        )
+
+        if (
+            needs_rebuild
+            and sim_data is not None
+            and property_name
+        ):
+            try:
+                if (
+                    axis in ("i", "j", "k")
+                    and layer_index is not None
+                ):
+                    preview.render_property_layer(
+                        sim_data,
+                        property_name,
+                        axis=axis,
+                        layer_index=int(layer_index),
+                        index_base=0,
+                        render_now=False,
+                    )
+                else:
+                    preview.render_property(
+                        sim_data,
+                        property_name,
+                        render_now=False,
+                    )
+            except Exception as exc:
+                print(
+                    "[Vertical Fence Section] "
+                    "failed to rebuild preview property: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        current_actor = getattr(
+            preview,
+            "actor",
+            None,
+        )
+
+        self._set_scene_actor_visibility(
+            current_actor,
+            True,
+        )
+        self._set_scene_actor_visibility(
+            getattr(preview, "edge_actor", None),
+            True,
+        )
+        self._set_scene_actor_visibility(
+            getattr(preview, "scalar_bar_actor", None),
+            True,
+        )
+
+        current_grid = getattr(
+            preview,
+            "current_grid",
+            None,
+        )
+        current_scalar_name = str(
+            context.get("scalar_name", "")
+            or ""
+        ).strip()
+
+        if (
+            current_actor is not None
+            and self._dataset_has_cells(current_grid)
+            and current_scalar_name
+        ):
+            self.set_active_property_context(
+                source_mode="preview",
+                sim_data=sim_data,
+                property_name=(
+                    getattr(
+                        preview,
+                        "current_property_key",
+                        property_name,
+                    )
+                    or property_name
+                ),
+                scalar_name=current_scalar_name,
+                volume_grid=current_grid,
+                actor=current_actor,
+                axis=getattr(
+                    preview,
+                    "current_axis",
+                    axis,
+                ),
+                layer_index=getattr(
+                    preview,
+                    "current_layer_index",
+                    layer_index,
+                ),
+                title=(
+                    getattr(
+                        preview,
+                        "scalar_bar_title",
+                        None,
+                    )
+                    or context.get("title")
+                    or property_name
+                ),
+                unit=context.get("unit", ""),
+                metadata=context.get("metadata", {}),
+                refresh_picking=True,
+            )
+
+        geometry = getattr(
+            self,
+            "geometry_layers",
+            getattr(
+                self,
+                "geometry_preview",
+                None,
+            ),
+        )
+
+        if geometry is not None and sim_data is not None:
+            ensure_grid = getattr(
+                geometry,
+                "ensure_grid_visible",
+                None,
+            )
+            if ensure_grid is not None:
+                try:
+                    ensure_grid(
+                        sim_data,
+                        render_now=False,
+                    )
+                except Exception:
+                    pass
+
+            refresh_stack = getattr(
+                geometry,
+                "refresh_preview_stack",
+                None,
+            )
+            if refresh_stack is not None:
+                try:
+                    refresh_stack(
+                        render_now=False,
+                    )
+                except Exception:
+                    pass
+
+        refresh_order = getattr(
+            preview,
+            "refresh_render_order",
+            None,
+        )
+        if refresh_order is not None:
+            try:
+                refresh_order(
+                    render_now=False,
+                )
+            except Exception:
+                pass
+
+        return current_actor is not None
+
+
     def clear_vertical_fence_section(
         self,
         render=True,
     ):
+        """删除持久剖面，并把属性按钮恢复为完整属性场模式。"""
+        restore_context = self._active_property_context
+        if not isinstance(restore_context, dict):
+            restore_context = self.cache.get(
+                "fence_section_property_context"
+            )
+
+        self._set_property_display_mode("full")
 
         self._remove_actor(
             self.cache.get(
@@ -19070,7 +21707,14 @@ class PyVistaRenderer:
         )
 
         self._restore_fence_section_context()
+        self._set_fence_section_well_labels_hidden(False)
         self._restore_fence_section_camera_state()
+
+        self.cache["fence_section_refreshing_property"] = False
+        self.cache["fence_section_persistent_active"] = False
+        self.cache["fence_section_pending_property_refresh"] = False
+        self.cache["fence_section_context_token"] = None
+        self.cache["fence_section_applied_context_token"] = None
 
         self.cache[
             "fence_section_points"
@@ -19088,72 +21732,63 @@ class PyVistaRenderer:
             "fence_section_last_info"
         ] = None
 
+        self._restore_full_property_after_fence(
+            restore_context
+        )
+
+        self.cache[
+            "fence_section_property_context"
+        ] = self._active_property_context
+
         if render:
             self._render()
+
 
 
     def disable_vertical_fence_section(
         self,
         clear_result=True,
         render=True,
+        force_clear=False,
     ):
+        """停止绘制交互；已完成剖面只有显式清除或 force_clear 才会删除。"""
+        if (
+            clear_result
+            and not force_clear
+            and self.is_fence_property_display_mode()
+            and self._vertical_fence_section_is_active()
+        ):
+            clear_result = False
 
         was_drawing = bool(
-            self.cache.get(
-                "fence_section_drawing",
-                False,
-            )
+            self.cache.get("fence_section_drawing", False)
         )
 
         self._remove_fence_section_observers()
-
-        self._clear_fence_section_preview(
-            render=False,
-        )
+        self._clear_fence_section_preview(render=False)
 
         if was_drawing:
-            previous_locked = self.cache.get(
-                "fence_section_previous_camera_locked",
-                False,
-            )
-
             self.lock_camera_direction(
-                bool(previous_locked)
+                bool(
+                    self.cache.get(
+                        "fence_section_previous_camera_locked",
+                        False,
+                    )
+                )
             )
 
-        self.cache[
-            "fence_section_drawing"
-        ] = False
-
-        self.cache[
-            "fence_section_last_click_time"
-        ] = None
-
-        self.cache[
-            "fence_section_last_click_display"
-        ] = None
+        self.cache["fence_section_drawing"] = False
+        self.cache["fence_section_last_click_time"] = None
+        self.cache["fence_section_last_click_display"] = None
 
         if clear_result:
-            self.clear_vertical_fence_section(
-                render=False,
-            )
-
-            self.cache[
-                "fence_section_sim_data"
-            ] = None
-
-            self.cache[
-                "fence_section_bounds"
-            ] = None
-
-            self.cache[
-                "fence_section_grid"
-            ] = None
-
-            self.cache[
-                "fence_section_property"
-            ] = "Pressure"
-
+            self.clear_vertical_fence_section(render=False)
+            self.cache["fence_section_sim_data"] = None
+            self.cache["fence_section_bounds"] = None
+            self.cache["fence_section_grid"] = None
+            self.cache["fence_section_property"] = "Pressure"
+            self.cache["fence_section_property_context"] = None
+            self.cache["fence_section_property_config"] = None
         elif was_drawing:
             self._restore_fence_section_context()
             self._restore_fence_section_camera_state()
@@ -19161,33 +21796,44 @@ class PyVistaRenderer:
         if render:
             self._render()
 
+        return True
 
-    def set_vertical_fence_section_property(
-        self,
-        property_name,
-    ):
+
+
+    def set_vertical_fence_section_property(self, property_name=None):
+        """
+        兼容旧 UI。剖面始终使用当前显示属性；若传入名称与当前属性不同，
+        需先在 UI 中切换属性场，再重新开启剖面。
+        """
+        context = self.get_active_property_context()
+        if not isinstance(context, dict):
+            return False
+
+        current_name = str(context.get("property_name", "")).strip()
+        requested = str(property_name or current_name).strip()
+
+        if requested and requested != current_name:
+            requested_normalized = self._normalize_scene_property_name(requested)
+            current_normalized = self._normalize_scene_property_name(current_name)
+            if requested_normalized != current_normalized:
+                print(
+                    "[Vertical Fence Section] Please render the requested "
+                    "property first; the section follows the active field."
+                )
+                return False
 
         config = self._get_fence_section_property_config(
-            property_name
+            context=context
         )
-
         if config is None:
             return False
 
-        self.cache[
-            "fence_section_property"
-        ] = str(property_name).strip()
+        self.cache["fence_section_property"] = current_name
+        self.cache["fence_section_scalar_name"] = config["scalar_name"]
+        self.cache["fence_section_property_context"] = context
+        self.cache["fence_section_property_config"] = config
 
-        self.cache[
-            "fence_section_scalar_name"
-        ] = config[
-            "scalar_name"
-        ]
-
-        if self.cache.get(
-            "fence_section_finished",
-            False,
-        ):
+        if self.cache.get("fence_section_finished", False):
             return self._render_vertical_fence_section()
 
         return True
@@ -19203,7 +21849,7 @@ class PyVistaRenderer:
         )
 
 
-    # 给 UI 调用的简短别名。
+    
     enable_fence_section = enable_vertical_fence_section
     disable_fence_section = disable_vertical_fence_section
     clear_fence_section = clear_vertical_fence_section

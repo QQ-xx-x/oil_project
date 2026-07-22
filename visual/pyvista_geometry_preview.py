@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 """
-几何预览渲染器。
+统一几何渲染器。
 
-负责模拟前几何类数据预览：
+负责模拟前预览和模拟后结果共用的几何渲染：
 1. 角点网格预览；
 2. 真实井轨迹预览；
 3. 天然裂缝预览；
@@ -11,6 +10,7 @@
 
 from __future__ import annotations
 
+import importlib
 import numpy as np
 import pyvista as pv
 
@@ -34,8 +34,8 @@ GRID_EDGE_COLOR = (0.5, 0.5, 0.5)
 GRID_EDGE_LINE_WIDTH = 1.0
 GRID_RENDER_LINES_AS_TUBES = False
 
-# 静态属性场显示时，白色网格表面不再额外叠加 0.7 透明度；
-# 网格线仅作为弱参考线保留，避免把井和裂缝淹没。
+GRID_INTERNAL_EDGES_VISIBLE_DEFAULT = True
+
 GRID_PROPERTY_FOCUS_MODE = True
 GRID_PROPERTY_SURFACE_OPACITY = 0.0
 GRID_PROPERTY_EDGE_OPACITY = 0.3
@@ -44,8 +44,8 @@ GRID_PROPERTY_RENDER_LINES_AS_TUBES = False
 GRID_POINT_MERGE_TOLERANCE_RATIO = 1e-9
 GRID_POINT_MERGE_ABSOLUTE_TOLERANCE = 1e-8
 
-GRID_LINE_OFFSET_FACTOR = -1.0
-GRID_LINE_OFFSET_UNITS = -1.0
+GRID_LINE_OFFSET_FACTOR = -2.0
+GRID_LINE_OFFSET_UNITS = -2.0
 GRID_SURFACE_OFFSET_FACTOR = 1.0
 GRID_SURFACE_OFFSET_UNITS = 1.0
 
@@ -59,21 +59,28 @@ PERFORATION_COLOR = (1.0, 0.82, 0.0)
 PERFORATION_OPACITY = 1.0
 PERFORATION_VISIBLE = True
 
-WELL_LABEL_FONT_SIZE = 12
-WELL_LABEL_MIN_FONT_SIZE = 8
-WELL_LABEL_MAX_FONT_SIZE = 36
-WELL_LABEL_ZOOM_EXPONENT = 0.80
+WELL_LABEL_FONT_SIZE = 10
+WELL_LABEL_MIN_FONT_SIZE = 6
+WELL_LABEL_MAX_FONT_SIZE = 26
+WELL_LABEL_ZOOM_EXPONENT = 0.75
 WELL_LABEL_TEXT_COLOR = (0.05, 0.05, 0.05)
-WELL_LABEL_OFFSET_SCENE_RATIO = 0.012
+
+WELL_LABEL_BACKGROUND_OPACITY = 0.0
+WELL_LABEL_SHAPE_OPACITY = 0.0
+WELL_LABEL_MARGIN = 0
+
+WELL_LABEL_PIXEL_OFFSET_X = 0
+WELL_LABEL_PIXEL_OFFSET_Y = 0
+WELL_LABEL_OFFSET_SCENE_RATIO = 0.008
 WELL_LABEL_OFFSET_RADIUS_MULTIPLIER = 4.0
                                    
 WELL_THIN_RADIUS_SCENE_RATIO = 2.0e-4
 WELL_THIN_LINE_MIN_WIDTH = 1.6
 WELL_THIN_LINE_MAX_WIDTH = 8.0
                                                 
-GEOMETRY_CLIPPING_MARGIN_RATIO = 0.12
-GEOMETRY_CLIPPING_MIN_NEAR = 1.0e-6
-GEOMETRY_CLIPPING_NEAR_FAR_RATIO = 1.0e-8
+GEOMETRY_CLIPPING_MARGIN_RATIO = 0.01
+GEOMETRY_CLIPPING_MIN_NEAR = 1.0e-3
+GEOMETRY_CLIPPING_NEAR_FAR_RATIO = 1.0e-5
 GEOMETRY_CLIPPING_WELL_RADIUS_MARGIN = 8.0
 
 NATURAL_FRACTURE_COLOR = (0.0, 0.25, 0.4)
@@ -105,7 +112,15 @@ class GeometryPreviewRenderer:
         self._grid_helper = StaticPropertyPreviewRenderer(host)
 
         self.grid_actor = None
+
+        
+        
         self.grid_edge_actor = None
+        self.grid_internal_edge_actor = None
+        self.show_internal_grid_edges = bool(
+            GRID_INTERNAL_EDGES_VISIBLE_DEFAULT
+        )
+
         self.well_actors = []
         self.perforation_actors = []
         self.well_label_actors = []
@@ -113,6 +128,13 @@ class GeometryPreviewRenderer:
         self.hydraulic_fracture_actors = []
 
         self._last_sim_data = None
+
+        
+        self._scene_geometry_data = {
+            "well_data": None,
+            "natural_fractures": [],
+            "hydraulic_fractures": [],
+        }
 
         self.well_color = tuple(WELL_COLOR)
         self.well_radius = float(WELL_RADIUS)
@@ -133,6 +155,10 @@ class GeometryPreviewRenderer:
         self._corner_grid_bounds_cache = {}
         self._well_label_reference_view_scale = None
         self._well_label_current_font_size = None
+        self._well_label_points = []
+        self._well_label_texts = []
+        self._well_label_use_billboard = False
+        self._well_labels_forced_hidden = False
         self._install_geometry_render_observers()
 
     @staticmethod
@@ -193,9 +219,463 @@ class GeometryPreviewRenderer:
 
         return tuple(float(value) for value in values)
 
+    def set_well_labels_forced_hidden(
+        self,
+        hidden,
+        render_now=False,
+    ):
+        """剖面期间移除井名 actor；退出剖面后按保存的锚点重新创建。"""
+        hidden = bool(hidden)
+        was_hidden = bool(self._well_labels_forced_hidden)
+        self._well_labels_forced_hidden = hidden
+
+        if hidden:
+            self._remove_actor_list(self.well_label_actors)
+            self.well_label_actors = []
+            self._well_label_use_billboard = False
+            self._well_label_current_font_size = None
+        elif (
+            was_hidden
+            and self.is_wells_visible()
+            and self._well_label_points
+            and self._well_label_texts
+            and not self.well_label_actors
+        ):
+            self._rebuild_well_name_labels(
+                font_size=self._current_well_label_font_size(),
+            )
+
+        if render_now:
+            self._render()
+
+        return True
+
+    def are_well_labels_forced_hidden(self):
+        """返回井名是否被剖面模式强制隐藏。"""
+        return bool(self._well_labels_forced_hidden)
+
     def _remember_sim_data(self, sim_data):
-        if sim_data is not None:
-            self._last_sim_data = sim_data
+        if sim_data is None:
+            return
+
+        self._last_sim_data = sim_data
+        self._scene_geometry_data = {
+            "well_data": self._resolved_well_data(
+                sim_data
+            ),
+            "natural_fractures": self._resolved_natural_fractures(
+                sim_data
+            ),
+            "hydraulic_fractures": self._resolved_hydraulic_fractures(
+                sim_data
+            ),
+        }
+
+
+    def _resolved_well_data(self, sim_data):
+        """
+        返回唯一井数据源。
+
+        预览和模拟后都只使用预览阶段解析得到的 parsed_well_data。
+        禁止回退到 sim_data.wells，避免模拟结果再次创建另一套井 actor。
+        """
+        if sim_data is None:
+            sim_data = self._last_sim_data
+
+        well_data = getattr(
+            sim_data,
+            "parsed_well_data",
+            None,
+        )
+
+        if isinstance(well_data, dict):
+            return well_data
+
+        well_data = getattr(
+            self.host,
+            "_parsed_well_data",
+            None,
+        )
+
+        return (
+            well_data
+            if isinstance(well_data, dict)
+            else None
+        )
+
+
+    @staticmethod
+    def _fracture_record_points(fracture):
+        if not isinstance(fracture, dict):
+            return None
+
+        raw = fracture.get(
+            "vertices",
+            fracture.get(
+                "points",
+                fracture.get(
+                    "corners",
+                    [],
+                ),
+            ),
+        )
+
+        if not isinstance(raw, (list, tuple)):
+            return None
+
+        points = []
+
+        for item in raw:
+            if isinstance(item, dict):
+                try:
+                    point = (
+                        float(
+                            item.get(
+                                "x_m",
+                                item.get("x"),
+                            )
+                        ),
+                        float(
+                            item.get(
+                                "y_m",
+                                item.get("y"),
+                            )
+                        ),
+                        float(
+                            item.get(
+                                "z_m",
+                                item.get("z"),
+                            )
+                        ),
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
+            else:
+                try:
+                    values = np.asarray(
+                        item,
+                        dtype=np.float64,
+                    ).reshape(-1)
+                except Exception:
+                    continue
+
+                if values.size < 3:
+                    continue
+
+                point = (
+                    float(values[0]),
+                    float(values[1]),
+                    float(values[2]),
+                )
+
+            if np.isfinite(point).all():
+                points.append(point)
+
+        if len(points) < 3:
+            return None
+
+        return points
+
+
+    @staticmethod
+    def _fracture_record_is_hydraulic(fracture):
+        if not isinstance(fracture, dict):
+            return False
+
+        try:
+            flag = int(
+                fracture.get(
+                    "is_hydraulic",
+                    0,
+                )
+            ) == 1
+        except Exception:
+            flag = False
+
+        kind = str(
+            fracture.get(
+                "type",
+                fracture.get(
+                    "fracture_type",
+                    "",
+                ),
+            )
+        ).strip().lower()
+
+        return bool(
+            flag
+            or kind in (
+                "hydraulic",
+                "artificial",
+                "人工",
+                "人工裂缝",
+            )
+        )
+
+
+    @staticmethod
+    def _fracture_record_signature(points):
+        try:
+            array = np.asarray(
+                points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return None
+
+        if array.shape[0] < 3:
+            return None
+
+        rounded = np.round(
+            array,
+            decimals=6,
+        )
+        order = np.lexsort(
+            (
+                rounded[:, 2],
+                rounded[:, 1],
+                rounded[:, 0],
+            )
+        )
+
+        return tuple(
+            tuple(float(value) for value in row)
+            for row in rounded[order]
+        )
+
+
+    def _normalized_fracture_records(
+        self,
+        records,
+        *,
+        hydraulic,
+    ):
+        result = []
+        seen = set()
+
+        for fracture in records or []:
+            if not isinstance(fracture, dict):
+                continue
+
+            if (
+                self._fracture_record_is_hydraulic(
+                    fracture
+                )
+                != bool(hydraulic)
+            ):
+                continue
+
+            points = self._fracture_record_points(
+                fracture
+            )
+
+            if points is None:
+                continue
+
+            signature = self._fracture_record_signature(
+                points
+            )
+
+            if signature is None or signature in seen:
+                continue
+
+            seen.add(signature)
+            result.append(
+                {
+                    **fracture,
+                    "vertices": points,
+                    "points": points,
+                    "is_hydraulic": (
+                        1 if hydraulic else 0
+                    ),
+                    "type": (
+                        "hydraulic"
+                        if hydraulic
+                        else "natural"
+                    ),
+                }
+            )
+
+        return result
+
+
+    def _completion_hydraulic_fractures(
+        self,
+        sim_data,
+    ):
+        well_data = self._resolved_well_data(
+            sim_data
+        )
+
+        if not isinstance(well_data, dict):
+            return []
+
+        records = []
+
+        for well in well_data.get("wells", []) or []:
+            if not isinstance(well, dict):
+                continue
+
+            for completion in (
+                well.get(
+                    "completion_definitions",
+                    [],
+                )
+                or []
+            ):
+                if not isinstance(completion, dict):
+                    continue
+
+                if not completion.get(
+                    "is_fractured",
+                    False,
+                ):
+                    continue
+
+                fracture_data = completion.get(
+                    "fracture",
+                    None,
+                )
+
+                if not isinstance(
+                    fracture_data,
+                    dict,
+                ):
+                    continue
+
+                if not fracture_data.get(
+                    "geometry_available",
+                    False,
+                ):
+                    continue
+
+                points = self._fracture_record_points(
+                    {
+                        "corners": fracture_data.get(
+                            "corners",
+                            [],
+                        )
+                    }
+                )
+
+                if points is None:
+                    continue
+
+                records.append(
+                    {
+                        "vertices": points,
+                        "points": points,
+                        "is_hydraulic": 1,
+                        "type": "hydraulic",
+                        "well_name": well.get(
+                            "well_name",
+                            well.get("name", ""),
+                        ),
+                        "completion_id": completion.get(
+                            "comp_id",
+                            completion.get("id"),
+                        ),
+                    }
+                )
+
+        return records
+
+
+    def _resolved_natural_fractures(self, sim_data):
+        """
+        返回唯一的天然裂缝数据源。
+
+        预览和模拟后都只使用 static_dfn_data 中由原始 DFN 文件解析的裂缝。
+        禁止合并 sim_data.fractures，避免同一裂缝因坐标细微差异重复渲染。
+        """
+        if sim_data is None:
+            sim_data = self._last_sim_data
+
+        dfn_data = getattr(
+            sim_data,
+            "static_dfn_data",
+            None,
+        )
+
+        candidates = []
+
+        if isinstance(dfn_data, dict):
+            static_fractures = dfn_data.get(
+                "fractures",
+                [],
+            )
+
+            if isinstance(static_fractures, list):
+                candidates.extend(
+                    static_fractures
+                )
+
+        return self._normalized_fracture_records(
+            candidates,
+            hydraulic=False,
+        )
+
+
+    def _resolved_hydraulic_fractures(
+        self,
+        sim_data,
+    ):
+        """
+        返回唯一的人工裂缝数据源。
+
+        预览和模拟后都只使用 parsed_well_data 中完井文件解析出的人工裂缝。
+        禁止读取 sim_data.fractures 中的模拟结果裂缝，避免创建第二套 actor。
+        """
+        if sim_data is None:
+            sim_data = self._last_sim_data
+
+        candidates = self._completion_hydraulic_fractures(
+            sim_data
+        )
+
+        return self._normalized_fracture_records(
+            candidates,
+            hydraulic=True,
+        )
+
+
+    def set_scene_data(
+        self,
+        sim_data,
+        *,
+        render_now=False,
+    ):
+        """
+        设置预览/模拟共用的几何数据源，但不自动切换显隐状态。
+        """
+        self._remember_sim_data(
+            sim_data
+        )
+
+        if render_now:
+            self.refresh_preview_stack(
+                render_now=True,
+            )
+
+        return dict(
+            self._scene_geometry_data
+        )
+
+
+    def get_scene_geometry_data(self):
+        return dict(
+            self._scene_geometry_data
+        )
+
+
+    @staticmethod
+    def uses_preview_geometry_only() -> bool:
+        """井和裂缝是否严格只使用预览解析数据。"""
+        return True
+
 
     def get_geometry_style(self):
         return {
@@ -588,41 +1068,14 @@ class GeometryPreviewRenderer:
             pass
 
     def _install_geometry_render_observers(self):
-
-        render_window = getattr(
-            self.plotter,
-            "ren_win",
-            None,
-        )
-
-        if (
-            render_window is not None
-            and hasattr(render_window, "AddObserver")
-            and not getattr(
-                self.host,
-                "_geometry_preview_clipping_observer_installed",
-                False,
-            )
-        ):
-            try:
-                observer_id = render_window.AddObserver(
-                    "StartEvent",
-                    self._on_geometry_render_start,
-                )
-                self._geometry_render_observer_ids.append(
-                    (
-                        render_window,
-                        observer_id,
-                    )
-                )
-                setattr(
-                    self.host,
-                    "_geometry_preview_clipping_observer_installed",
-                    True,
-                )
-            except Exception:
-                pass
-
+        # 不再监听 RenderWindow 的 StartEvent。
+        # StartEvent 会在每一帧渲染前触发；若在这里持续修改相机
+        # clipping range，放大模型时 near/far 会反复变化，导致
+        # 深度缓冲精度抖动和共面网格线闪烁。
+        
+        # 相机裁剪范围只在场景内容发生变化、主动调用 _render()
+        # 之前更新一次。相机交互过程继续使用 VTK/PyVista 自带的
+        # 自动裁剪行为。
         camera = getattr(
             self.plotter,
             "camera",
@@ -661,20 +1114,38 @@ class GeometryPreviewRenderer:
         if not self.well_label_actors:
             return
 
-        self._update_well_label_font_size()
+        if self._well_labels_forced_hidden:
+            self.set_well_labels_forced_hidden(
+                True,
+                render_now=False,
+            )
+            return
+
+        self._sync_well_name_labels_with_camera()
 
     def _on_geometry_render_start(self, *_args):
+        # 兼容旧实例可能残留的 StartEvent observer。
+        # 此处只维护井名标签，不再修改 clipping range。
         if self._geometry_clipping_guard:
             return
 
         if not (
             self._geometry_top_actors()
+            or self.well_label_actors
             or self._has_visible_preview_background()
         ):
             return
 
-        self._update_well_label_font_size()
-        self._apply_stable_scene_clipping_range()
+        self._ensure_well_name_labels_attached()
+
+        if self._well_labels_forced_hidden:
+            self.set_well_labels_forced_hidden(
+                True,
+                render_now=False,
+            )
+            return
+
+        self._sync_well_name_labels_with_camera()
 
     def _camera_view_scale(self):
         camera = getattr(
@@ -806,6 +1277,39 @@ class GeometryPreviewRenderer:
                 text_property.SetFontSize(
                     font_size
                 )
+
+                
+                
+                modified = getattr(
+                    text_property,
+                    "Modified",
+                    None,
+                )
+                if callable(modified):
+                    modified()
+
+                try:
+                    mapper = actor.GetMapper()
+                except Exception:
+                    mapper = None
+
+                if mapper is not None:
+                    modified = getattr(
+                        mapper,
+                        "Modified",
+                        None,
+                    )
+                    if callable(modified):
+                        modified()
+
+                modified = getattr(
+                    actor,
+                    "Modified",
+                    None,
+                )
+                if callable(modified):
+                    modified()
+
                 changed = True
             except Exception:
                 pass
@@ -828,10 +1332,15 @@ class GeometryPreviewRenderer:
         if not self.well_label_actors:
             return False
 
+        return self._set_well_label_font_size(
+            self._current_well_label_font_size()
+        )
+
+    def _current_well_label_font_size(self):
         current_scale = self._camera_view_scale()
 
         if current_scale is None:
-            return False
+            return int(WELL_LABEL_FONT_SIZE)
 
         reference_scale = self._well_label_reference_view_scale
 
@@ -844,17 +1353,47 @@ class GeometryPreviewRenderer:
             reference_scale = current_scale
 
         zoom_ratio = reference_scale / current_scale
-        zoom_ratio = max(
-            float(zoom_ratio),
-            1.0e-6,
+        zoom_ratio = float(
+            np.clip(
+                zoom_ratio,
+                1.0e-3,
+                1.0e3,
+            )
         )
 
         font_size = WELL_LABEL_FONT_SIZE * (
             zoom_ratio ** WELL_LABEL_ZOOM_EXPONENT
         )
 
-        return self._set_well_label_font_size(
-            font_size
+        return int(
+            np.clip(
+                np.round(font_size),
+                WELL_LABEL_MIN_FONT_SIZE,
+                WELL_LABEL_MAX_FONT_SIZE,
+            )
+        )
+
+    def _sync_well_name_labels_with_camera(self):
+        if not self.well_label_actors:
+            return False
+
+        if self._well_labels_forced_hidden:
+            self._remove_actor_list(self.well_label_actors)
+            self.well_label_actors = []
+            return False
+
+        font_size = self._current_well_label_font_size()
+
+        
+        
+        if self._well_label_use_billboard:
+            return self._set_well_label_font_size(font_size)
+
+        if self._well_label_current_font_size == font_size:
+            return False
+
+        return self._rebuild_well_name_labels(
+            font_size=font_size,
         )
 
     def _well_name_label_point(
@@ -862,6 +1401,12 @@ class GeometryPreviewRenderer:
         sim_data,
         ordered_points,
     ):
+        """返回沿井头朝向偏移后的井名锚点。
+
+        ordered_points 已按 MD 从小到大排序，因此第一个点是井头，
+        第二个点定义井头朝向。井名沿着“井头外侧方向”偏移，
+        不同井的偏移方向会随各自井头朝向变化。
+        """
         try:
             points = np.asarray(
                 ordered_points,
@@ -870,17 +1415,26 @@ class GeometryPreviewRenderer:
         except Exception:
             return None
 
-        if points.shape[0] < 2:
+        if points.shape[0] < 1:
             return None
 
-        head = points[0]
-        first_segment = points[1] - head
-        segment_length = float(
-            np.linalg.norm(first_segment)
-        )
+        head = points[0].copy()
+
+        if not np.isfinite(head).all():
+            return None
+
+        if points.shape[0] >= 2:
+            first_segment = points[1] - head
+            segment_length = float(
+                np.linalg.norm(first_segment)
+            )
+        else:
+            first_segment = None
+            segment_length = 0.0
 
         if (
-            not np.isfinite(segment_length)
+            first_segment is None
+            or not np.isfinite(segment_length)
             or segment_length <= 1.0e-12
         ):
             direction = np.asarray(
@@ -888,20 +1442,9 @@ class GeometryPreviewRenderer:
                 dtype=np.float64,
             )
         else:
+            
+            
             direction = -first_segment / segment_length
-
-
-            if abs(float(direction[2])) < 0.25:
-                direction = direction + np.asarray(
-                    [0.0, 0.0, 0.35],
-                    dtype=np.float64,
-                )
-                direction_length = float(
-                    np.linalg.norm(direction)
-                )
-
-                if direction_length > 1.0e-12:
-                    direction = direction / direction_length
 
         reference_length = self._scene_reference_length(
             sim_data,
@@ -925,6 +1468,11 @@ class GeometryPreviewRenderer:
             return True
 
         if self._actor_is_visible(self.grid_edge_actor):
+            return True
+
+        if self._actor_is_visible(
+            self.grid_internal_edge_actor
+        ):
             return True
 
         static_preview = getattr(
@@ -1027,6 +1575,7 @@ class GeometryPreviewRenderer:
         for actor in (
             self.grid_actor,
             self.grid_edge_actor,
+            self.grid_internal_edge_actor,
         ):
             if self._actor_is_visible(actor):
                 bounds = self._actor_bounds(actor)
@@ -1135,123 +1684,122 @@ class GeometryPreviewRenderer:
         bounds = self._expanded_clipping_bounds(
             bounds
         )
-        corners = self._bounds_corners(bounds)
 
-        if corners is None:
+        if bounds is None or len(bounds) != 6:
             return False
 
-        camera = getattr(
-            self.plotter,
-            "camera",
-            None,
-        )
+        try:
+            bounds_array = np.asarray(
+                bounds,
+                dtype=np.float64,
+            ).reshape(6)
+        except Exception:
+            return False
+
+        if not np.isfinite(bounds_array).all():
+            return False
+
+        renderer = self._main_renderer()
+
+        if renderer is None:
+            return False
+
+        try:
+            camera = renderer.GetActiveCamera()
+        except Exception:
+            camera = getattr(
+                self.plotter,
+                "camera",
+                None,
+            )
 
         if camera is None:
             return False
 
         try:
-            position = np.asarray(
-                camera.GetPosition(),
-                dtype=np.float64,
-            )
-            focal_point = np.asarray(
-                camera.GetFocalPoint(),
-                dtype=np.float64,
-            )
-        except Exception:
-            return False
-
-        view_direction = focal_point - position
-        direction_length = float(
-            np.linalg.norm(view_direction)
-        )
-
-        if (
-            not np.isfinite(direction_length)
-            or direction_length <= 1.0e-12
-        ):
-            return False
-
-        view_direction /= direction_length
-
-        depths = np.dot(
-            corners - position,
-            view_direction,
-        )
-        depths = depths[
-            np.isfinite(depths)
-        ]
-
-        if depths.size == 0:
-            return False
-
-        positive_depths = depths[
-            depths > 0.0
-        ]
-
-        if positive_depths.size == 0:
-            return False
-
-        far_depth = float(
-            np.max(positive_depths)
-        )
-
-        span_vector = np.asarray(
-            [
-                float(bounds[1]) - float(bounds[0]),
-                float(bounds[3]) - float(bounds[2]),
-                float(bounds[5]) - float(bounds[4]),
-            ],
-            dtype=np.float64,
-        )
-        scene_diagonal = max(
-            float(np.linalg.norm(span_vector)),
-            float(self.well_radius) * 2.0,
-            GEOMETRY_CLIPPING_MIN_NEAR,
-        )
-
-        margin = max(
-            scene_diagonal
-            * GEOMETRY_CLIPPING_MARGIN_RATIO,
-            float(self.well_radius)
-            * GEOMETRY_CLIPPING_WELL_RADIUS_MARGIN,
-            GEOMETRY_CLIPPING_MIN_NEAR,
-        )
-
-        minimum_depth = float(
-            np.min(depths)
-        )
-
-        if minimum_depth <= margin:
-
-                                        
-            near_value = max(
-                GEOMETRY_CLIPPING_MIN_NEAR,
-                far_depth
-                * GEOMETRY_CLIPPING_NEAR_FAR_RATIO,
-            )
-        else:
-            near_value = max(
-                minimum_depth - margin,
-                GEOMETRY_CLIPPING_MIN_NEAR,
-                far_depth
-                * GEOMETRY_CLIPPING_NEAR_FAR_RATIO,
-            )
-
-        far_value = max(
-            far_depth + margin,
-            near_value * 1.01,
-        )
-
-        if (
-            not np.isfinite(near_value)
-            or not np.isfinite(far_value)
-            or far_value <= near_value
-        ):
-            return False
-
-        try:
             self._geometry_clipping_guard = True
+
+            reset_ok = False
+
+            try:
+                renderer.ResetCameraClippingRange(
+                    float(bounds_array[0]),
+                    float(bounds_array[1]),
+                    float(bounds_array[2]),
+                    float(bounds_array[3]),
+                    float(bounds_array[4]),
+                    float(bounds_array[5]),
+                )
+                reset_ok = True
+            except Exception:
+                pass
+
+            if not reset_ok:
+                try:
+                    renderer.ResetCameraClippingRange(
+                        tuple(
+                            float(value)
+                            for value in bounds_array
+                        )
+                    )
+                    reset_ok = True
+                except Exception:
+                    pass
+
+            if not reset_ok:
+                try:
+                    self.plotter.reset_camera_clipping_range()
+                    reset_ok = True
+                except Exception:
+                    return False
+
+            try:
+                near_value, far_value = (
+                    camera.GetClippingRange()
+                )
+                near_value = float(near_value)
+                far_value = float(far_value)
+            except Exception:
+                return False
+
+            if (
+                not np.isfinite(near_value)
+                or not np.isfinite(far_value)
+                or far_value <= 0.0
+            ):
+                return False
+
+            spans = np.asarray(
+                [
+                    bounds_array[1] - bounds_array[0],
+                    bounds_array[3] - bounds_array[2],
+                    bounds_array[5] - bounds_array[4],
+                ],
+                dtype=np.float64,
+            )
+
+            scene_diagonal = max(
+                float(np.linalg.norm(spans)),
+                float(self.well_radius) * 2.0,
+                GEOMETRY_CLIPPING_MIN_NEAR,
+            )
+
+            minimum_near = max(
+                GEOMETRY_CLIPPING_MIN_NEAR,
+                scene_diagonal * 1.0e-7,
+                far_value
+                * GEOMETRY_CLIPPING_NEAR_FAR_RATIO,
+            )
+
+            near_value = max(
+                near_value,
+                minimum_near,
+            )
+            far_value = max(
+                far_value,
+                near_value * 1.01,
+            )
+
             camera.SetClippingRange(
                 float(near_value),
                 float(far_value),
@@ -2116,15 +2664,18 @@ class GeometryPreviewRenderer:
     def clear_grid(self, render_now=True):
         self._remove_actor(self.grid_actor)
         self._remove_actor(self.grid_edge_actor)
+        self._remove_actor(
+            self.grid_internal_edge_actor
+        )
 
         self.grid_actor = None
         self.grid_edge_actor = None
+        self.grid_internal_edge_actor = None
 
         if self._geometry_top_actors():
             self.refresh_preview_stack(
                 render_now=False,
             )
-            self._apply_stable_scene_clipping_range()
 
         if render_now:
             self._render()
@@ -2140,6 +2691,9 @@ class GeometryPreviewRenderer:
         self.well_label_actors = []
         self._well_label_reference_view_scale = None
         self._well_label_current_font_size = None
+        self._well_label_points = []
+        self._well_label_texts = []
+        self._well_label_use_billboard = False
 
         self._sync_geometry_overlay_attachment()
 
@@ -2191,7 +2745,11 @@ class GeometryPreviewRenderer:
             self._render()
 
     def is_grid_visible(self) -> bool:
-        return self.grid_actor is not None or self.grid_edge_actor is not None
+        return bool(
+            self.grid_actor is not None
+            or self.grid_edge_actor is not None
+            or self.grid_internal_edge_actor is not None
+        )
 
     def is_wells_visible(self) -> bool:
         return bool(
@@ -2354,14 +2912,10 @@ class GeometryPreviewRenderer:
         ]
 
     def _geometry_top_actors(self):
-        return [
-            actor
-            for actor in [
-                *self._geometry_mesh_actors(),
-                *(self.well_label_actors or []),
-            ]
-            if actor is not None
-        ]
+        # add_point_labels() 返回的是二维标签 Actor。
+        # 井名不能进入普通三维网格 Actor 的 renderer 重排链路，
+        # 否则 RemoveActor/AddActor 后标签会在部分 PyVista 版本中消失。
+        return self._geometry_mesh_actors()
 
     @staticmethod
     def _actor_is_visible(actor) -> bool:
@@ -2668,6 +3222,11 @@ class GeometryPreviewRenderer:
 
         if overlay_renderer is not None:
             try:
+                overlay_renderer.RemoveActor2D(actor)
+            except Exception:
+                pass
+
+            try:
                 overlay_renderer.RemoveActor(actor)
             except Exception:
                 try:
@@ -2704,6 +3263,11 @@ class GeometryPreviewRenderer:
         main_renderer = self._main_renderer()
 
         if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor2D(actor)
+            except Exception:
+                pass
+
             try:
                 main_renderer.RemoveActor(actor)
             except Exception:
@@ -2750,6 +3314,46 @@ class GeometryPreviewRenderer:
 
         return self._actor_is_visible(actor)
 
+    def _is_fence_section_display_active(self) -> bool:
+        """返回当前是否正在显示已经生成的持久任意剖面。"""
+        checker = getattr(
+            self.host,
+            "_vertical_fence_section_is_active",
+            None,
+        )
+
+        if checker is not None:
+            try:
+                return bool(checker())
+            except Exception:
+                pass
+
+        checker = getattr(
+            self.host,
+            "is_fence_property_display_mode",
+            None,
+        )
+
+        if checker is not None:
+            try:
+                return bool(checker())
+            except Exception:
+                pass
+
+        return False
+
+    def _hide_grid_for_fence_section(self) -> None:
+        """剖面显示期间隐藏预览整体网格面及全部网格线。"""
+        for actor in (
+            self.grid_actor,
+            self.grid_edge_actor,
+            self.grid_internal_edge_actor,
+        ):
+            self._set_actor_visibility(
+                actor,
+                False,
+            )
+
     @staticmethod
     def _set_actor_opacity(actor, opacity) -> None:
         if actor is None:
@@ -2769,6 +3373,10 @@ class GeometryPreviewRenderer:
             pass
 
     def _apply_property_focus_grid_style(self) -> None:
+        if self._is_fence_section_display_active():
+            self._hide_grid_for_fence_section()
+            return
+
         property_visible = (
             GRID_PROPERTY_FOCUS_MODE
             and self._is_static_property_visible()
@@ -2801,31 +3409,37 @@ class GeometryPreviewRenderer:
                     self.grid_actor
                 )
 
-        if self.grid_edge_actor is not None:
+        for edge_actor in (
+            self.grid_edge_actor,
+            self.grid_internal_edge_actor,
+        ):
+            if edge_actor is None:
+                continue
+
             if property_visible:
                 try:
-                    self.grid_edge_actor.ForceOpaqueOff()
+                    edge_actor.ForceOpaqueOff()
                 except Exception:
                     try:
-                        self.grid_edge_actor.SetForceOpaque(False)
+                        edge_actor.SetForceOpaque(False)
                     except Exception:
                         pass
 
                 try:
-                    self.grid_edge_actor.ForceTranslucentOn()
+                    edge_actor.ForceTranslucentOn()
                 except Exception:
                     try:
-                        self.grid_edge_actor.SetForceTranslucent(True)
+                        edge_actor.SetForceTranslucent(True)
                     except Exception:
                         pass
 
                 self._set_actor_opacity(
-                    self.grid_edge_actor,
+                    edge_actor,
                     GRID_PROPERTY_EDGE_OPACITY,
                 )
 
                 try:
-                    prop = self.grid_edge_actor.GetProperty()
+                    prop = edge_actor.GetProperty()
 
                     if prop is not None:
                         if GRID_PROPERTY_RENDER_LINES_AS_TUBES:
@@ -2842,91 +3456,34 @@ class GeometryPreviewRenderer:
                     pass
             else:
                 self._configure_stable_grid_edge_actor(
-                    self.grid_edge_actor
+                    edge_actor
                 )
+
+        
+        self._set_actor_visibility(
+            self.grid_internal_edge_actor,
+            self.show_internal_grid_edges,
+        )
 
     def refresh_preview_stack(
         self,
         render_now=False,
     ) -> None:
+        """
+        同步预览样式，但不再移动、删除或重新添加井/裂缝 actor。
 
-        self._move_actor_to_renderer_end(
-            self.grid_actor,
-        )
-        self._move_actor_to_renderer_end(
-            self.grid_edge_actor,
-        )
-
-        static_preview = getattr(
-            self.host,
-            "static_property_preview",
-            None,
-        )
-
-        if static_preview is not None and hasattr(
-            static_preview,
-            "refresh_render_order",
-        ):
-            static_preview.refresh_render_order(
-                render_now=False,
-            )
-
+        井、射孔、井名和裂缝只在用户真正切换其显隐或修改几何样式时
+        创建/删除；属性切换、模拟分层切换仅更新网格聚焦样式。
+        """
         self._apply_property_focus_grid_style()
 
-        top_actors = self._geometry_top_actors()
-        has_background = self._has_visible_preview_background()
+        for actor in self._geometry_top_actors():
+            self._configure_depth_sorted_geometry_actor(actor)
 
-        if not PREVIEW_USE_GEOMETRY_OVERLAY:
-            # 属性场、裂缝、井和射孔段全部放回主 renderer。
-            # 它们共用同一个深度缓冲，由 VTK 的 opaque/translucent pass
-            # 和 depth peeling 决定真实的前后遮挡关系。
-            for actor in top_actors:
-                self._configure_depth_sorted_geometry_actor(actor)
-                self._move_actor_to_renderer_end(actor)
+        self._set_geometry_overlay_attached(False)
 
-            self._set_geometry_overlay_attached(False)
-
-            if top_actors or has_background:
-                self._apply_stable_scene_clipping_range()
-
-        elif top_actors and has_background:
-            overlay_renderer = self._ensure_geometry_overlay_renderer(
-                attach_to_window=True,
-            )
-
-            for actor in top_actors:
-                self._configure_depth_sorted_geometry_actor(actor)
-                self._move_actor_to_geometry_overlay(actor)
-
-            if overlay_renderer is not None:
-                main_renderer = self._main_renderer()
-
-                if main_renderer is not None:
-                    try:
-                        overlay_renderer.SetActiveCamera(
-                            main_renderer.GetActiveCamera()
-                        )
-                    except Exception:
-                        pass
-
-        elif top_actors:
-            for actor in top_actors:
-                self._configure_depth_sorted_geometry_actor(actor)
-                self._move_actor_to_renderer_end(actor)
-
-            self._set_geometry_overlay_attached(False)
-            self._apply_stable_scene_clipping_range()
-
-        else:
-            self._set_geometry_overlay_attached(False)
-
-        if static_preview is not None and hasattr(
-            static_preview,
-            "refresh_layer_clipping_range",
-        ):
-            static_preview.refresh_layer_clipping_range(
-                render_now=False,
-            )
+        if self.well_label_actors:
+            self._ensure_well_name_labels_attached()
 
         if render_now:
             self._render()
@@ -2969,13 +3526,265 @@ class GeometryPreviewRenderer:
         )
 
 
+    @staticmethod
+    def _set_actor_visibility(
+        actor,
+        visible,
+    ) -> None:
+        if actor is None:
+            return
+
+        try:
+            actor.SetVisibility(
+                bool(visible)
+            )
+        except Exception:
+            try:
+                actor.visibility = bool(visible)
+            except Exception:
+                pass
+
+    def get_internal_grid_edges_visible(self) -> bool:
+        return bool(self.show_internal_grid_edges)
+
+    def set_internal_grid_edges_visible(
+        self,
+        visible,
+        render_now=True,
+    ) -> bool:
+        """
+        控制角点网格体内部单元线的显示状态。
+
+        该接口只控制 grid_internal_edge_actor，不影响：
+        1. 网格面；
+        2. 模型外轮廓线；
+        3. 模型外表面上的单元网格线。
+        """
+        self.show_internal_grid_edges = bool(
+            visible
+        )
+
+        self._set_actor_visibility(
+            self.grid_internal_edge_actor,
+            self.show_internal_grid_edges,
+        )
+
+        if render_now:
+            self._render()
+
+        return self.show_internal_grid_edges
+
+    def toggle_internal_grid_edges(
+        self,
+        render_now=True,
+    ) -> bool:
+        return self.set_internal_grid_edges_visible(
+            not self.show_internal_grid_edges,
+            render_now=render_now,
+        )
+
+    @staticmethod
+    def _quantized_grid_point_key(
+        point,
+        tolerance,
+    ):
+        point = np.asarray(
+            point,
+            dtype=np.float64,
+        ).reshape(3)
+
+        tolerance = max(
+            float(tolerance),
+            1.0e-12,
+        )
+
+        quantized = np.rint(
+            point / tolerance
+        ).astype(np.int64)
+
+        return tuple(
+            int(value)
+            for value in quantized
+        )
+
+    @classmethod
+    def _grid_edge_segment_key(
+        cls,
+        point0,
+        point1,
+        tolerance,
+    ):
+        key0 = cls._quantized_grid_point_key(
+            point0,
+            tolerance,
+        )
+        key1 = cls._quantized_grid_point_key(
+            point1,
+            tolerance,
+        )
+
+        return (
+            (key0, key1)
+            if key0 <= key1
+            else (key1, key0)
+        )
+
+    @staticmethod
+    def _iter_polydata_line_segments(polydata):
+        if polydata is None:
+            return
+
+        try:
+            lines = np.asarray(
+                polydata.lines,
+                dtype=np.int64,
+            ).reshape(-1)
+        except Exception:
+            return
+
+        cursor = 0
+        line_count = int(lines.size)
+
+        while cursor < line_count:
+            point_count = int(lines[cursor])
+            cursor += 1
+
+            if point_count <= 0:
+                continue
+
+            end = cursor + point_count
+
+            if end > line_count:
+                break
+
+            point_ids = lines[cursor:end]
+            cursor = end
+
+            if point_count < 2:
+                continue
+
+            for index in range(point_count - 1):
+                yield (
+                    int(point_ids[index]),
+                    int(point_ids[index + 1]),
+                )
+
+    @classmethod
+    def _extract_internal_grid_edges(
+        cls,
+        all_edges,
+        surface_edges,
+        tolerance,
+    ):
+        """
+        从全部单元边中剔除外表面边，只保留模型体内部边。
+
+        surface_edges 包含模型外轮廓和外表面单元线；
+        all_edges - surface_edges 才是透过半透明网格面看到的内部线。
+        """
+        if all_edges is None:
+            return None
+
+        boundary_keys = set()
+
+        if surface_edges is not None:
+            surface_points = np.asarray(
+                surface_edges.points,
+                dtype=np.float64,
+            )
+
+            for point_id0, point_id1 in (
+                cls._iter_polydata_line_segments(
+                    surface_edges
+                )
+            ):
+                boundary_keys.add(
+                    cls._grid_edge_segment_key(
+                        surface_points[point_id0],
+                        surface_points[point_id1],
+                        tolerance,
+                    )
+                )
+
+        all_points = np.asarray(
+            all_edges.points,
+            dtype=np.float64,
+        )
+
+        internal_lines = []
+
+        for point_id0, point_id1 in (
+            cls._iter_polydata_line_segments(
+                all_edges
+            )
+        ):
+            edge_key = cls._grid_edge_segment_key(
+                all_points[point_id0],
+                all_points[point_id1],
+                tolerance,
+            )
+
+            if edge_key in boundary_keys:
+                continue
+
+            internal_lines.extend(
+                [
+                    2,
+                    int(point_id0),
+                    int(point_id1),
+                ]
+            )
+
+        if not internal_lines:
+            return None
+
+        
+        
+        internal_edges = pv.PolyData()
+        internal_edges.points = all_points.copy()
+
+        try:
+            internal_edges.verts = np.empty(
+                0,
+                dtype=np.int64,
+            )
+        except Exception:
+            pass
+
+        internal_edges.lines = np.asarray(
+            internal_lines,
+            dtype=np.int64,
+        )
+
+        try:
+            internal_edges = internal_edges.clean(
+                tolerance=max(
+                    float(tolerance),
+                    1.0e-12,
+                ),
+                remove_unused_points=True,
+            )
+        except TypeError:
+            try:
+                internal_edges = internal_edges.clean(
+                    tolerance=max(
+                        float(tolerance),
+                        1.0e-12,
+                    )
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return internal_edges
+
     def _build_stable_corner_grid_surface_and_edges(
         self,
         grid,
     ):
-
         if grid is None:
-            return None, None
+            return None, None, None
 
         tolerance = self._corner_grid_clean_tolerance(
             grid.bounds,
@@ -3005,7 +3814,8 @@ class GeometryPreviewRenderer:
             stable_grid = grid
 
         surface = None
-        edges = None
+        surface_edges = None
+        internal_edges = None
 
         try:
             surface = stable_grid.extract_surface()
@@ -3013,12 +3823,34 @@ class GeometryPreviewRenderer:
             surface = None
 
         if GRID_SHOW_EDGES:
-            try:
-                edges = stable_grid.extract_all_edges()
-            except Exception:
-                edges = None
+            all_edges = None
 
-        return surface, edges
+            try:
+                all_edges = stable_grid.extract_all_edges()
+            except Exception:
+                all_edges = None
+
+            if surface is not None:
+                try:
+                    surface_edges = (
+                        surface.extract_all_edges()
+                    )
+                except Exception:
+                    surface_edges = None
+
+            internal_edges = (
+                self._extract_internal_grid_edges(
+                    all_edges=all_edges,
+                    surface_edges=surface_edges,
+                    tolerance=tolerance,
+                )
+            )
+
+        return (
+            surface,
+            surface_edges,
+            internal_edges,
+        )
 
 
     @staticmethod
@@ -3086,6 +3918,24 @@ class GeometryPreviewRenderer:
                             prop.SetRenderLinesAsTubes(False)
                         except Exception:
                             pass
+
+                
+                
+                try:
+                    prop.VertexVisibilityOff()
+                except Exception:
+                    try:
+                        prop.SetVertexVisibility(False)
+                    except Exception:
+                        pass
+
+                try:
+                    prop.RenderPointsAsSpheresOff()
+                except Exception:
+                    try:
+                        prop.SetRenderPointsAsSpheres(False)
+                    except Exception:
+                        pass
 
         except Exception:
             pass
@@ -3195,6 +4045,67 @@ class GeometryPreviewRenderer:
             pass
 
 
+    def prepare_scene_for_render(self):
+        """渲染前只同步材质，不重新挂载任何几何 actor。"""
+        self._apply_property_focus_grid_style()
+
+        for actor in self._geometry_top_actors():
+            self._configure_depth_sorted_geometry_actor(actor)
+
+        if self.well_label_actors:
+            self._ensure_well_name_labels_attached()
+
+
+    def ensure_grid_visible(
+        self,
+        sim_data=None,
+        render_now=False,
+    ):
+        """确保预览网格存在且可见，不使用 render_grid() 的切换语义。"""
+        data = (
+            sim_data
+            if sim_data is not None
+            else self._last_sim_data
+        )
+
+        if data is None:
+            return None
+
+        self._remember_sim_data(data)
+        self.show_internal_grid_edges = True
+
+        if not self.is_grid_visible():
+            actor = self.render_grid(
+                data,
+                render_now=False,
+            )
+        else:
+            actor = self.grid_actor or self.grid_edge_actor
+
+        self._set_actor_visibility(
+            self.grid_actor,
+            True,
+        )
+        self._set_actor_visibility(
+            self.grid_edge_actor,
+            True,
+        )
+        self._set_actor_visibility(
+            self.grid_internal_edge_actor,
+            True,
+        )
+
+        if self._is_fence_section_display_active():
+            self._hide_grid_for_fence_section()
+        else:
+            self._apply_property_focus_grid_style()
+
+        if render_now:
+            self._render()
+
+        return actor
+
+
     def render_grid(
         self,
         sim_data,
@@ -3264,20 +4175,22 @@ class GeometryPreviewRenderer:
                 self._render()
             return None
 
-        surface, edges = (
-            self._build_stable_corner_grid_surface_and_edges(
-                grid
-            )
+        (
+            surface,
+            surface_edges,
+            internal_edges,
+        ) = self._build_stable_corner_grid_surface_and_edges(
+            grid
         )
 
         if (
             GRID_SHOW_EDGES
-            and edges is not None
-            and edges.n_points > 0
-            and edges.n_cells > 0
+            and surface_edges is not None
+            and surface_edges.n_points > 0
+            and surface_edges.n_cells > 0
         ):
             self.grid_edge_actor = self.plotter.add_mesh(
-                edges,
+                surface_edges,
                 color=GRID_EDGE_COLOR,
                 line_width=max(
                     float(GRID_EDGE_LINE_WIDTH),
@@ -3291,6 +4204,36 @@ class GeometryPreviewRenderer:
 
             self._configure_stable_grid_edge_actor(
                 self.grid_edge_actor
+            )
+
+        if (
+            GRID_SHOW_EDGES
+            and internal_edges is not None
+            and internal_edges.n_points > 0
+            and internal_edges.n_cells > 0
+        ):
+            self.grid_internal_edge_actor = (
+                self.plotter.add_mesh(
+                    internal_edges,
+                    color=GRID_EDGE_COLOR,
+                    line_width=max(
+                        float(GRID_EDGE_LINE_WIDTH),
+                        1.0,
+                    ),
+                    opacity=1.0,
+                    lighting=False,
+                    render_lines_as_tubes=False,
+                    render=False,
+                )
+            )
+
+            self._configure_stable_grid_edge_actor(
+                self.grid_internal_edge_actor
+            )
+
+            self._set_actor_visibility(
+                self.grid_internal_edge_actor,
+                self.show_internal_grid_edges,
             )
 
         if (
@@ -3322,141 +4265,448 @@ class GeometryPreviewRenderer:
             render_now=False,
         )
 
-        combined_bounds = self._merge_bounds(
-            grid.bounds,
-            self.get_visible_geometry_bounds(),
-        )
-        self._reset_clipping_range_for_bounds(
-            combined_bounds
-        )
-
         if render_now:
             self._render()
 
         return self.grid_actor or self.grid_edge_actor
 
-
     @staticmethod
-    def _new_billboard_text_actor():
-        vtk_namespace = getattr(
-            pv,
-            "_vtk",
-            None,
-        )
+    def _pyvista_billboard_text_actor_class():
+        """Return BillboardTextActor3D through PyVista's compatibility layer.
 
-        actor_class = getattr(
-            vtk_namespace,
-            "vtkBillboardTextActor3D",
-            None,
-        ) if vtk_namespace is not None else None
+        This deliberately does not import ``vtk`` or ``vtkmodules``.  Different
+        PyVista releases expose the compatibility namespace in different places,
+        so all supported PyVista locations are checked.
+        """
+        namespaces = []
+
+        namespace = getattr(pv, "_vtk", None)
+        if namespace is not None:
+            namespaces.append(namespace)
+
+        for module_name in (
+            "pyvista.plotting._vtk",
+            "pyvista._vtk",
+        ):
+            try:
+                namespace = importlib.import_module(module_name)
+            except Exception:
+                continue
+
+            if namespace not in namespaces:
+                namespaces.append(namespace)
+
+        for namespace in namespaces:
+            actor_class = getattr(
+                namespace,
+                "vtkBillboardTextActor3D",
+                None,
+            )
+
+            if actor_class is not None:
+                return actor_class
+
+        return None
+
+    @classmethod
+    def _new_billboard_text_actor(cls):
+        actor_class = cls._pyvista_billboard_text_actor_class()
 
         if actor_class is None:
-            try:
-                from vtkmodules.vtkRenderingCore import (
-                    vtkBillboardTextActor3D,
-                )
-                actor_class = vtkBillboardTextActor3D
-            except Exception:
-                return None
+            return None
 
         try:
             return actor_class()
         except Exception:
             return None
 
-    def _add_well_name_labels(
-        self,
-        well_head_points,
-        well_names,
+    @staticmethod
+    def _set_text_property_flag(
+        text_property,
+        method_name,
+        fallback_name,
+        value,
     ):
-        if not well_head_points or not well_names:
-            return []
+        method = getattr(text_property, method_name, None)
+
+        if callable(method):
+            try:
+                method()
+                return
+            except Exception:
+                pass
+
+        method = getattr(text_property, fallback_name, None)
+
+        if callable(method):
+            try:
+                method(bool(value))
+            except Exception:
+                pass
+
+    def _configure_well_name_billboard_actor(
+        self,
+        actor,
+        label,
+        point,
+        font_size=None,
+    ) -> bool:
+        if actor is None:
+            return False
 
         try:
-            points = np.asarray(
-                well_head_points,
+            point = np.asarray(
+                point,
                 dtype=np.float64,
-            ).reshape(-1, 3)
+            ).reshape(3)
         except Exception:
-            return []
+            return False
 
-        labels = [
-            str(name).strip()
-            for name in well_names
-        ]
+        if not np.isfinite(point).all():
+            return False
 
-        renderer = self._main_renderer()
+        try:
+            actor.SetInput(str(label))
+            actor.SetPosition(
+                float(point[0]),
+                float(point[1]),
+                float(point[2]),
+            )
+        except Exception:
+            return False
 
-        if renderer is None:
-            return []
+        try:
+            actor.SetDisplayOffset(
+                int(WELL_LABEL_PIXEL_OFFSET_X),
+                int(WELL_LABEL_PIXEL_OFFSET_Y),
+            )
+        except Exception:
+            pass
 
-        actors = []
+        try:
+            text_property = actor.GetTextProperty()
+        except Exception:
+            text_property = None
 
-        for point, label in zip(points, labels):
-            if not label or not np.isfinite(point).all():
-                continue
-
-            actor = self._new_billboard_text_actor()
-
-            if actor is None:
-                continue
+        if text_property is not None:
+            try:
+                text_property.SetFontSize(
+                    int(font_size if font_size is not None else WELL_LABEL_FONT_SIZE)
+                )
+            except Exception:
+                pass
 
             try:
-                actor.SetInput(label)
-                actor.SetPosition(
-                    float(point[0]),
-                    float(point[1]),
-                    float(point[2]),
-                )
-
-                text_property = actor.GetTextProperty()
-                text_property.SetFontSize(
-                    int(WELL_LABEL_FONT_SIZE)
-                )
                 text_property.SetColor(
                     *WELL_LABEL_TEXT_COLOR
                 )
+            except Exception:
+                pass
 
-                try:
-                    text_property.SetBackgroundOpacity(0.0)
-                except Exception:
-                    pass
+            
+            try:
+                text_property.SetBackgroundOpacity(
+                    0.0
+                )
+            except Exception:
+                pass
 
-                try:
-                    text_property.FrameOff()
-                except Exception:
-                    try:
-                        text_property.SetFrame(False)
-                    except Exception:
-                        pass
+            self._set_text_property_flag(
+                text_property,
+                "BoldOff",
+                "SetBold",
+                False,
+            )
+            self._set_text_property_flag(
+                text_property,
+                "ItalicOff",
+                "SetItalic",
+                False,
+            )
+            self._set_text_property_flag(
+                text_property,
+                "ShadowOff",
+                "SetShadow",
+                False,
+            )
 
-                try:
-                    text_property.BoldOff()
-                except Exception:
-                    pass
+            try:
+                text_property.SetJustificationToCentered()
+            except Exception:
+                pass
 
+            try:
+                text_property.SetVerticalJustificationToBottom()
+            except Exception:
                 try:
-                    text_property.ShadowOff()
-                except Exception:
-                    pass
-
-                try:
-                    text_property.SetJustificationToCentered()
                     text_property.SetVerticalJustificationToCentered()
                 except Exception:
                     pass
 
-                renderer.AddActor(actor)
+        try:
+            actor.SetVisibility(True)
+        except Exception:
+            pass
+
+        try:
+            actor.PickableOff()
+        except Exception:
+            try:
+                actor.SetPickable(False)
+            except Exception:
+                pass
+
+        return True
+
+    def _add_well_name_labels_with_point_labels(
+        self,
+        points,
+        labels,
+        font_size=None,
+    ):
+        """Fallback for PyVista builds without BillboardTextActor3D."""
+        if self._well_labels_forced_hidden:
+            return []
+
+        label_points = np.asarray(
+            points,
+            dtype=np.float64,
+        )
+        label_values = list(labels)
+
+        
+        
+        try:
+            actor = self.plotter.add_point_labels(
+                label_points,
+                label_values,
+                font_size=int(font_size if font_size is not None else WELL_LABEL_FONT_SIZE),
+                text_color=WELL_LABEL_TEXT_COLOR,
+                show_points=False,
+                always_visible=True,
+                shape=None,
+                margin=0,
+                reset_camera=False,
+                render=False,
+            )
+        except (TypeError, ValueError):
+            try:
+                actor = self.plotter.add_point_labels(
+                    label_points,
+                    label_values,
+                    font_size=int(font_size if font_size is not None else WELL_LABEL_FONT_SIZE),
+                    text_color=WELL_LABEL_TEXT_COLOR,
+                    show_points=False,
+                    always_visible=True,
+                    shape_opacity=0.0,
+                    margin=0,
+                    reset_camera=False,
+                    render=False,
+                )
+            except TypeError:
+                try:
+                    actor = self.plotter.add_point_labels(
+                        label_points,
+                        label_values,
+                        font_size=int(font_size if font_size is not None else WELL_LABEL_FONT_SIZE),
+                        text_color=WELL_LABEL_TEXT_COLOR,
+                        show_points=False,
+                        always_visible=True,
+                        reset_camera=False,
+                        render=False,
+                    )
+                except Exception:
+                    return []
+            except Exception:
+                return []
+        except Exception:
+            return []
+
+        if actor is None:
+            return []
+
+        renderer = self._main_renderer()
+        if renderer is not None:
+            try:
+                renderer.AddViewProp(actor)
+            except Exception:
+                pass
+
+        try:
+            actor.SetVisibility(True)
+        except Exception:
+            pass
+
+        try:
+            actor.PickableOff()
+        except Exception:
+            try:
+                actor.SetPickable(False)
+            except Exception:
+                pass
+
+        return [actor]
+
+    def _add_well_name_labels(
+        self,
+        well_head_points,
+        well_names,
+        font_size=None,
+    ):
+        """Create one persistent label at each real well-head coordinate."""
+        if self._well_labels_forced_hidden:
+            return []
+
+        if not well_head_points or not well_names:
+            return []
+
+        valid_points = []
+        valid_labels = []
+
+        for point, name in zip(
+            well_head_points,
+            well_names,
+        ):
+            try:
+                point = np.asarray(
+                    point,
+                    dtype=np.float64,
+                ).reshape(3)
+            except Exception:
+                continue
+
+            label = str(name or "").strip()
+
+            if not label or not np.isfinite(point).all():
+                continue
+
+            valid_points.append(point.copy())
+            valid_labels.append(label)
+
+        if not valid_points:
+            return []
+
+        renderer = self._main_renderer()
+        actor_class = self._pyvista_billboard_text_actor_class()
+
+        if renderer is not None and actor_class is not None:
+            actors = []
+
+            for point, label in zip(
+                valid_points,
+                valid_labels,
+            ):
+                actor = self._new_billboard_text_actor()
+
+                if not self._configure_well_name_billboard_actor(
+                    actor=actor,
+                    label=label,
+                    point=point,
+                    font_size=font_size,
+                ):
+                    continue
+
+                try:
+                    renderer.AddViewProp(actor)
+                except Exception:
+                    try:
+                        renderer.AddActor(actor)
+                    except Exception:
+                        continue
+
                 actors.append(actor)
 
+            if actors:
+                return actors
+
+        return self._add_well_name_labels_with_point_labels(
+            points=valid_points,
+            labels=valid_labels,
+            font_size=font_size,
+        )
+
+    def _rebuild_well_name_labels(
+        self,
+        font_size=None,
+    ):
+        if self._well_labels_forced_hidden:
+            self._remove_actor_list(self.well_label_actors)
+            self.well_label_actors = []
+            return False
+
+        if not self._well_label_points or not self._well_label_texts:
+            return False
+
+        self._remove_actor_list(self.well_label_actors)
+        self.well_label_actors = []
+
+        label_actors = self._add_well_name_labels(
+            well_head_points=self._well_label_points,
+            well_names=self._well_label_texts,
+            font_size=font_size,
+        )
+
+        if not label_actors:
+            return False
+
+        self.well_label_actors.extend(label_actors)
+        self._well_label_use_billboard = any(
+            getattr(actor, 'GetTextProperty', None) is not None
+            for actor in label_actors
+        )
+        self._well_label_current_font_size = int(
+            font_size if font_size is not None else self._current_well_label_font_size()
+        )
+        self._ensure_well_name_labels_attached()
+        return True
+
+    def _ensure_well_name_labels_attached(self):
+        """Keep label props attached after renderer-order refresh operations."""
+        if self._well_labels_forced_hidden:
+            self._remove_actor_list(self.well_label_actors)
+            self.well_label_actors = []
+            return False
+
+        if not self.well_label_actors:
+            return False
+
+        renderer = self._main_renderer()
+
+        if renderer is None:
+            return False
+
+        attached = False
+
+        for actor in self.well_label_actors:
+            if actor is None:
+                continue
+
+            already_present = False
+
+            try:
+                already_present = bool(
+                    renderer.HasViewProp(actor)
+                )
             except Exception:
+                pass
+
+            if not already_present:
                 try:
-                    renderer.RemoveActor(actor)
+                    renderer.AddViewProp(actor)
+                    attached = True
                 except Exception:
-                    pass
+                    try:
+                        renderer.AddActor(actor)
+                        attached = True
+                    except Exception:
+                        continue
 
-        return actors
+            try:
+                actor.SetVisibility(True)
+            except Exception:
+                pass
 
+        return attached
 
     def render_wells(
         self,
@@ -3472,11 +4722,7 @@ class GeometryPreviewRenderer:
 
         self.clear_wells(render_now=False)
 
-        well_data = getattr(
-            sim_data,
-            "parsed_well_data",
-            None,
-        )
+        well_data = self._resolved_well_data(sim_data)
 
         if not isinstance(well_data, dict):
             if render_now:
@@ -3645,15 +4891,32 @@ class GeometryPreviewRenderer:
             count += 1
 
         if well_head_points and well_names:
+            self._well_label_points = [
+                np.asarray(point, dtype=np.float64).reshape(3).copy()
+                for point in well_head_points
+            ]
+            self._well_label_texts = list(well_names)
             label_actors = self._add_well_name_labels(
-                well_head_points=well_head_points,
-                well_names=well_names,
+                well_head_points=self._well_label_points,
+                well_names=self._well_label_texts,
+                font_size=self._current_well_label_font_size(),
             )
 
             if label_actors:
                 self.well_label_actors.extend(
                     label_actors
                 )
+                self._well_label_use_billboard = any(
+                    getattr(actor, "GetTextProperty", None) is not None
+                    for actor in label_actors
+                )
+                self._well_label_current_font_size = self._current_well_label_font_size()
+
+        if self._well_labels_forced_hidden:
+            self.set_well_labels_forced_hidden(
+                True,
+                render_now=False,
+            )
 
         if count > 0:
             self._initialize_preview_camera_once(
@@ -3673,6 +4936,7 @@ class GeometryPreviewRenderer:
             )
 
             if self.well_label_actors:
+                self._ensure_well_name_labels_attached()
                 self._reset_well_label_zoom_reference()
 
         if render_now:
@@ -3718,18 +4982,8 @@ class GeometryPreviewRenderer:
         self,
         sim_data,
     ):
-        dfn_data = getattr(
-            sim_data,
-            "static_dfn_data",
-            None,
-        )
-
-        if not isinstance(dfn_data, dict):
-            return 0
-
-        fractures = dfn_data.get(
-            "fractures",
-            [],
+        fractures = self._resolved_natural_fractures(
+            sim_data
         )
 
         if not isinstance(fractures, list) or not fractures:
@@ -3816,116 +5070,59 @@ class GeometryPreviewRenderer:
         self,
         sim_data,
     ):
-        well_data = getattr(
-            sim_data,
-            "parsed_well_data",
-            None,
+        fractures = self._resolved_hydraulic_fractures(
+            sim_data
         )
 
-        if not isinstance(well_data, dict):
+        if not isinstance(fractures, list) or not fractures:
             return 0
 
-        wells = well_data.get(
-            "wells",
-            [],
+        grid_z_bounds = self._static_grid_z_bounds(
+            sim_data
         )
-
-        if not isinstance(wells, list):
-            return 0
-
-        grid_z_bounds = self._static_grid_z_bounds(sim_data)
 
         z_transform = self._build_geometry_z_transform(
-            z_values=self._hydraulic_fracture_z_values(wells),
+            z_values=self._natural_fracture_z_values(
+                fractures
+            ),
             grid_z_bounds=grid_z_bounds,
         )
 
         count = 0
 
-        for well in wells:
-            if not isinstance(well, dict):
-                continue
-
-            completions = well.get(
-                "completion_definitions",
-                [],
+        for fracture in fractures:
+            points = self._safe_points(
+                fracture.get(
+                    "vertices",
+                    fracture.get("points", []),
+                )
             )
 
-            if not isinstance(completions, list):
+            if points is None or len(points) < 3:
                 continue
 
-            for completion in completions:
-                if not isinstance(completion, dict):
-                    continue
+            points = self._apply_z_transform_to_points(
+                points,
+                z_transform,
+            )
 
-                if not completion.get("is_fractured", False):
-                    continue
+            if points is None or len(points) < 3:
+                continue
 
-                fracture_data = completion.get(
-                    "fracture",
-                    None,
+            actors = self._add_fracture_polygon(
+                points=points,
+                color=self.hydraulic_fracture_color,
+                edge_color=self.hydraulic_fracture_edge_color,
+            )
+
+            if actors:
+                self.hydraulic_fracture_actors.extend(
+                    actors
                 )
-
-                if not isinstance(fracture_data, dict):
-                    continue
-
-                if not fracture_data.get("geometry_available", False):
-                    continue
-
-                corners = fracture_data.get(
-                    "corners",
-                    [],
-                )
-
-                if not isinstance(corners, list) or len(corners) < 3:
-                    continue
-
-                raw_points = []
-
-                for corner in corners:
-                    if not isinstance(corner, dict):
-                        continue
-
-                    try:
-                        raw_points.append(
-                            (
-                                float(corner["x_m"]),
-                                float(corner["y_m"]),
-                                float(corner["z_m"]),
-                            )
-                        )
-
-                    except (
-                        KeyError,
-                        TypeError,
-                        ValueError,
-                    ):
-                        continue
-
-                points = self._safe_points(raw_points)
-
-                if points is None or len(points) < 3:
-                    continue
-
-                points = self._apply_z_transform_to_points(
-                    points,
-                    z_transform,
-                )
-
-                if points is None or len(points) < 3:
-                    continue
-
-                actors = self._add_fracture_polygon(
-                    points=points,
-                    color=self.hydraulic_fracture_color,
-                    edge_color=self.hydraulic_fracture_edge_color,
-                )
-
-                if actors:
-                    self.hydraulic_fracture_actors.extend(actors)
-                    count += 1
+                count += 1
 
         return count
+
 
     def render_fractures(
         self,
@@ -4613,6 +5810,11 @@ class GeometryPreviewRenderer:
 
         if overlay_renderer is not None:
             try:
+                overlay_renderer.RemoveActor2D(actor)
+            except Exception:
+                pass
+
+            try:
                 overlay_renderer.RemoveActor(actor)
             except Exception:
                 try:
@@ -4623,6 +5825,11 @@ class GeometryPreviewRenderer:
         main_renderer = self._main_renderer()
 
         if main_renderer is not None:
+            try:
+                main_renderer.RemoveActor2D(actor)
+            except Exception:
+                pass
+
             try:
                 main_renderer.RemoveActor(actor)
             except Exception:
@@ -4651,14 +5858,35 @@ class GeometryPreviewRenderer:
             self._remove_actor(actor)
 
     def _render(self):
-        if self._geometry_top_actors():
-            self.refresh_preview_stack(
-                render_now=False,
-            )
+        self.prepare_scene_for_render()
+
+        static_preview = getattr(
+            self.host,
+            "static_property_preview",
+            None,
+        )
+
+        layer_preview_active = False
+
+        if static_preview is not None and hasattr(
+            static_preview,
+            "refresh_layer_clipping_range",
+        ):
+            try:
+                layer_preview_active = bool(
+                    static_preview.refresh_layer_clipping_range(
+                        render_now=False,
+                    )
+                )
+            except Exception:
+                layer_preview_active = False
 
         if (
-            self._geometry_top_actors()
-            or self._has_visible_preview_background()
+            not layer_preview_active
+            and (
+                self._geometry_top_actors()
+                or self._has_visible_preview_background()
+            )
         ):
             self._apply_stable_scene_clipping_range()
 
@@ -4667,24 +5895,5 @@ class GeometryPreviewRenderer:
         else:
             self.plotter.render()
 
-        static_preview = getattr(
-            self.host,
-            "static_property_preview",
-            None,
-        )
 
-        if static_preview is not None and hasattr(
-            static_preview,
-            "refresh_layer_clipping_range",
-        ):
-            layer_preview_active = (
-                static_preview.refresh_layer_clipping_range(
-                    render_now=False,
-                )
-            )
-
-            if layer_preview_active:
-                try:
-                    self.plotter.render()
-                except Exception:
-                    pass
+GeometryLayerRenderer = GeometryPreviewRenderer
