@@ -42,7 +42,6 @@ from .project_state import normalize_model_config
 
 
 NULL_VALUE = 99999.0
-MATRIX_PERMEABILITY_SCALE = 1.0 / 1000.0
 
 
 class ModuleImportService:
@@ -250,11 +249,6 @@ class ModuleImportService:
         null_mask = np.isclose(numbers, NULL_VALUE)
         finite_mask = np.isfinite(numbers)
         transformed = numbers.copy()
-        scale = None
-        if rule.keyword.lower() in {
-                "matrix_kx_file", "matrix_ky_file", "matrix_kz_file"}:
-            transformed[~null_mask] *= MATRIX_PERMEABILITY_SCALE
-            scale = MATRIX_PERMEABILITY_SCALE
 
         valid_mask = finite_mask & ~null_mask
         grid = runtime.get("grid") or {}
@@ -277,7 +271,7 @@ class ModuleImportService:
             "min": _safe_stat(np.min, valid_values),
             "max": _safe_stat(np.max, valid_values),
             "mean": _safe_stat(np.mean, valid_values),
-            "scale": scale,
+            "scale": None,
         }
 
     def _expected_grid_count(self, runtime):
@@ -326,7 +320,19 @@ def normalize_module_business_data(module_key, values):
     if module_key != MODULE_WELL_PRODUCTION:
         return normalized
 
-    wells = dict(normalized.get("wells") or {})
+    # A wellhead file is an independent front-end input.  Do not manufacture
+    # an empty track/completion payload when the user has imported wellheads
+    # only; doing so would incorrectly trigger trajectory validation.
+    current_wells = normalized.get("wells") or {}
+    has_track_or_completion_data = any(
+        current_wells.get(key)
+        for key in ("well_list", "tracks", "completions")
+    )
+    if not has_track_or_completion_data:
+        normalized.pop("wells", None)
+        return normalized
+
+    wells = dict(current_wells)
     tracks = list(wells.get("tracks") or [])
     completions = list(wells.get("completions") or [])
     prior_types = {
@@ -462,15 +468,68 @@ def validate_module_business_data(module_key, values):
         pmax = _as_float(values.get("gas_table_pmax_bar"))
         if pmin is not None and pmax is not None:
             add_check(
-                "PVT 压力范围", pmin >= 0 and pmax > pmin,
+                "PVT 压力范围", pmin > 0 and pmax > pmin,
                 f"{pmin:g} ～ {pmax:g} bar",
-                error="PVT 最大压力必须大于非负的最小压力。")
+                error="PVT 最小压力必须大于零，最大压力必须大于最小压力。")
         if values.get("gas_table_n") is not None:
             count = _as_float(values.get("gas_table_n"))
             add_check(
                 "PVT 采样点数", count is not None and count.is_integer()
                 and count >= 2, values.get("gas_table_n"),
                 error="PVT 采样点数必须是不小于 2 的整数。")
+
+        pvt_mode = str(
+            values.get("pvt_input_mode") or "parameters").strip().lower()
+        if values.get("pvt_input_mode") is not None:
+            add_check(
+                "PVT 数据模式",
+                pvt_mode in {"table", "parameters"},
+                values.get("pvt_input_mode"),
+                error="PVT 数据模式必须是表格粘贴或参数计算。")
+
+        pvt_payload = values.get("gas_pvt_table")
+        pvt_rows = (
+            pvt_payload.get("rows")
+            if isinstance(pvt_payload, dict) else None)
+        if pvt_mode == "table":
+            add_check(
+                "PVT 表格数据量",
+                isinstance(pvt_rows, list) and len(pvt_rows) >= 2,
+                len(pvt_rows) if isinstance(pvt_rows, list) else 0,
+                error="表格粘贴模式至少需要两行完整 PVT 数据。")
+
+        if isinstance(pvt_rows, list) and pvt_rows:
+            previous_pressure = None
+            table_error = ""
+            for row_index, row in enumerate(pvt_rows, 1):
+                if not isinstance(row, dict):
+                    table_error = f"PVT 表格第 {row_index} 行结构无效。"
+                    break
+                numbers = {
+                    key: _as_float(row.get(key))
+                    for key in (
+                        "pressure_bar", "z", "bg", "viscosity_cp")
+                }
+                if any(value is None for value in numbers.values()):
+                    table_error = (
+                        f"PVT 表格第 {row_index} 行包含无效数字。")
+                    break
+                if any(value <= 0.0 for value in numbers.values()):
+                    table_error = (
+                        f"PVT 表格第 {row_index} 行的 P、Z、Bg、μg "
+                        "必须大于零。")
+                    break
+                pressure = numbers["pressure_bar"]
+                if (previous_pressure is not None
+                        and pressure <= previous_pressure):
+                    table_error = (
+                        f"PVT 表格第 {row_index} 行的压力必须严格递增。")
+                    break
+                previous_pressure = pressure
+            add_check(
+                "PVT 表格内容", not table_error,
+                f"{len(pvt_rows)} 行",
+                error=table_error)
 
     elif module_key == MODULE_INITIAL_CONDITIONS:
         positive("pressure", "初始压力")
@@ -502,12 +561,85 @@ def validate_module_business_data(module_key, values):
                 error="时间步必须满足 dt_min ≤ dt_init ≤ dt_max。")
 
     elif module_key == MODULE_ROCK_PROPERTIES:
-        positive("n", "相渗指数 n")
-        fraction("swi", "束缚水饱和度")
-        fraction("sgc", "残余气饱和度 Sgr")
+        relative_permeability = values.get("relative_permeability") or {}
+        if relative_permeability:
+            mode = str(relative_permeability.get("mode") or "")
+            add_check(
+                "相渗输入模式",
+                mode in {"table", "parameters"},
+                mode,
+                error="相渗输入模式必须是表格导入或参数计算。",
+            )
+            if mode == "table":
+                rows = [
+                    row for row in relative_permeability.get("table") or []
+                    if isinstance(row, dict)
+                ]
+                triples = [
+                    tuple(_as_float(row.get(key)) for key in ("sw", "krw", "krg"))
+                    for row in rows
+                ]
+                finite = bool(triples) and all(
+                    value is not None and math.isfinite(value)
+                    for triple in triples for value in triple
+                )
+                ranges_ok = finite and all(
+                    0.0 <= value <= 1.0
+                    for triple in triples for value in triple
+                )
+                sw_values = [triple[0] for triple in triples] if finite else []
+                increasing = len(sw_values) >= 2 and all(
+                    current < following
+                    for current, following in zip(sw_values, sw_values[1:])
+                )
+                add_check(
+                    "相渗表格数据",
+                    len(rows) >= 2 and finite and ranges_ok and increasing,
+                    f"{len(rows)} 个数据点",
+                    error=(
+                        "相渗表格至少需要两个有效数据点，"
+                        "Sw/Krw/Krg 必须位于 0 到 1 且 Sw 严格递增。"),
+                )
+            elif mode == "parameters":
+                parameters = relative_permeability.get("parameters") or {}
+                numbers = {
+                    key: _as_float(parameters.get(key))
+                    for key in (
+                        "nw", "ng", "krw_end", "krg_end", "swi", "sgc")
+                }
+                complete = all(
+                    value is not None and math.isfinite(value)
+                    for value in numbers.values()
+                )
+                exponents_ok = (
+                    complete
+                    and numbers["nw"] > 0.0
+                    and numbers["ng"] > 0.0
+                )
+                endpoints_ok = complete and all(
+                    0.0 <= numbers[key] <= 1.0
+                    for key in ("krw_end", "krg_end", "swi", "sgc")
+                )
+                saturation_ok = (
+                    complete
+                    and numbers["swi"] + numbers["sgc"] < 1.0
+                )
+                add_check(
+                    "相渗参数",
+                    complete and exponents_ok and endpoints_ok
+                    and saturation_ok,
+                    "独立气水指数与端点相渗",
+                    error=(
+                        "相渗指数必须大于 0，端点相渗、Swi、Sgr "
+                        "必须位于 0 到 1，且 Swi + Sgr < 1。"),
+                )
+        else:
+            positive("n", "相渗指数 n")
+            fraction("swi", "束缚水饱和度")
+            fraction("sgc", "残余气饱和度 Sgr")
         swi = _as_float(values.get("swi"))
         sgr = _as_float(values.get("sgc"))
-        if swi is not None and sgr is not None:
+        if not relative_permeability and swi is not None and sgr is not None:
             add_check(
                 "气水饱和度端点", swi + sgr < 1.0,
                 f"Swi + Sgr = {swi + sgr:.10g}",
@@ -538,6 +670,247 @@ def validate_module_business_data(module_key, values):
                 error="人工裂缝ID不能为空且不能重复。")
 
     elif module_key == MODULE_WELL_PRODUCTION:
+        wellhead = values.get("wellhead") or {}
+        if wellhead:
+            wellhead_rows = [
+                row for row in wellhead.get("rows") or []
+                if isinstance(row, dict)
+            ]
+            wellhead_names = [
+                str(row.get("well_name") or "").strip()
+                for row in wellhead_rows
+            ]
+            coordinates_valid = all(
+                _as_float(row.get(key)) is not None
+                for row in wellhead_rows
+                for key in ("x", "y", "kb")
+            )
+            add_check(
+                "井位数据",
+                bool(wellhead_rows)
+                and all(wellhead_names)
+                and len(wellhead_names) == len(set(wellhead_names))
+                and coordinates_valid,
+                f"{len(wellhead_rows)} 口井",
+                error="井位数据必须包含唯一井名以及有效的 X、Y、KB 数值。",
+            )
+
+        perforation = values.get("perforation") or {}
+        if perforation:
+            perforation_rows = [
+                row for row in perforation.get("rows") or []
+                if isinstance(row, dict)
+            ]
+            perforation_names = [
+                str(row.get("well_name") or "").strip()
+                for row in perforation_rows
+            ]
+            measured_depths_valid = all(
+                _as_float(row.get(key)) is not None
+                for row in perforation_rows
+                for key in ("md1", "md2")
+            )
+            add_check(
+                "射孔数据",
+                bool(perforation_rows)
+                and all(perforation_names)
+                and measured_depths_valid,
+                f"{len(perforation_rows)} 条",
+                error="射孔数据必须包含井名以及有效的 MD1、MD2 数值。",
+            )
+
+        trajectory = values.get("well_trajectory") or {}
+        if trajectory:
+            trajectory_wells = [
+                well for well in trajectory.get("wells") or []
+                if isinstance(well, dict)
+            ]
+            trajectory_names = [
+                str(well.get("well_name") or "").strip()
+                for well in trajectory_wells
+            ]
+            rows_valid = True
+            md_increasing = True
+            point_count = 0
+            for well in trajectory_wells:
+                rows = [
+                    row for row in well.get("rows") or []
+                    if isinstance(row, dict)
+                ]
+                point_count += len(rows)
+                if len(rows) < 2:
+                    rows_valid = False
+                    continue
+                triples = [
+                    tuple(_as_float(row.get(key)) for key in (
+                        "md_m", "x_m", "y_m", "z_m", "tvd_m"))
+                    for row in rows
+                ]
+                if not all(
+                        value is not None
+                        for values_row in triples
+                        for value in values_row):
+                    rows_valid = False
+                    continue
+                md_values = [values_row[0] for values_row in triples]
+                if not all(
+                        current < following
+                        for current, following in zip(
+                            md_values, md_values[1:])):
+                    md_increasing = False
+
+            add_check(
+                "DEV井轨迹",
+                bool(trajectory_wells)
+                and all(trajectory_names)
+                and len(trajectory_names) == len(set(trajectory_names))
+                and rows_valid
+                and md_increasing,
+                f"{len(trajectory_wells)} 口井，{point_count} 个轨迹点",
+                error=(
+                    "DEV井轨迹必须包含唯一井名，每口井至少两个轨迹点，"
+                    "MD/X/Y/Z/TVD必须有效且MD严格递增。"),
+            )
+            vertical_mode = str(
+                trajectory.get("vertical_mode") or "elevation_z")
+            add_check(
+                "井轨迹垂向解释",
+                vertical_mode in {
+                    "elevation_z", "tvd", "subsea_depth"},
+                vertical_mode,
+                error="井轨迹垂向坐标解释无效。",
+            )
+
+            undefined_coordinates = [
+                well.get("well_name")
+                for well in trajectory_wells
+                if str(
+                    (well.get("metadata") or {}).get(
+                        "coordinate_system") or "").strip().upper()
+                in {"", "UNDEFINED"}
+            ]
+            add_check(
+                "DEV坐标系声明",
+                not undefined_coordinates,
+                (
+                    "已定义"
+                    if not undefined_coordinates
+                    else "、".join(map(str, undefined_coordinates))
+                ),
+                warning="部分DEV文件未声明XYZ坐标系，请确认与网格坐标一致。",
+            )
+            undefined_azimuth = [
+                well.get("well_name")
+                for well in trajectory_wells
+                if str(
+                    (well.get("metadata") or {}).get(
+                        "azimuth_reference") or "").strip().upper()
+                in {"", "UNDEFINED"}
+            ]
+            add_check(
+                "DEV方位角参考",
+                not undefined_azimuth,
+                (
+                    "已定义"
+                    if not undefined_azimuth
+                    else "、".join(map(str, undefined_azimuth))
+                ),
+                warning="部分DEV文件未声明方位角参考方向。",
+            )
+
+            wellhead_by_name = {
+                str(row.get("well_name") or "").strip(): row
+                for row in wellhead_rows
+                if str(row.get("well_name") or "").strip()
+            } if wellhead else {}
+            mismatched = []
+            if wellhead_by_name:
+                for well in trajectory_wells:
+                    name = str(well.get("well_name") or "").strip()
+                    target = wellhead_by_name.get(name)
+                    metadata = well.get("metadata") or {}
+                    dev_values = (
+                        _as_float(metadata.get("wellhead_x")),
+                        _as_float(metadata.get("wellhead_y")),
+                        _as_float(metadata.get("wellhead_kb")),
+                    )
+                    target_values = (
+                        _as_float((target or {}).get("x")),
+                        _as_float((target or {}).get("y")),
+                        _as_float((target or {}).get("kb")),
+                    )
+                    if (
+                            target is None
+                            or None in dev_values
+                            or None in target_values
+                            or any(
+                                abs(left - right) > 0.01
+                                for left, right in zip(
+                                    dev_values, target_values))):
+                        mismatched.append(name)
+                add_check(
+                    "井轨迹与井位匹配",
+                    not mismatched,
+                    (
+                        f"{len(trajectory_wells)} 口井一致"
+                        if not mismatched else "、".join(mismatched)
+                    ),
+                    warning="部分DEV井口与井位模块不一致或没有同名井。",
+                )
+
+        generated_fractures = (
+            values.get("generated_hydraulic_fractures") or [])
+        if generated_fractures:
+            generated_rows = [
+                row for row in generated_fractures
+                if isinstance(row, dict)
+            ]
+            fracture_ids = [
+                str(row.get("fracture_id") or "").strip()
+                for row in generated_rows
+            ]
+            sources_valid = all(
+                str(row.get("well_name") or "").strip()
+                and str(row.get("source_perforation_id") or "").strip()
+                for row in generated_rows
+            )
+            geometry_valid = True
+            for row in generated_rows:
+                numeric = [
+                    _as_float(row.get(key)) for key in (
+                        "center_x", "center_y", "center_z",
+                        "length", "height", "aperture", "perm",
+                        "conductivity")
+                ]
+                corners = [
+                    corner for corner in row.get("corners") or []
+                    if isinstance(corner, dict)
+                ]
+                corner_values = [
+                    _as_float(corner.get(key))
+                    for corner in corners
+                    for key in ("x_m", "y_m", "z_m")
+                ]
+                if (
+                        any(value is None for value in numeric)
+                        or any(value <= 0.0 for value in numeric[3:])
+                        or len(corners) != 4
+                        or any(value is None for value in corner_values)):
+                    geometry_valid = False
+                    break
+            add_check(
+                "射孔生成人工裂缝",
+                bool(generated_rows)
+                and all(fracture_ids)
+                and len(fracture_ids) == len(set(fracture_ids))
+                and sources_valid
+                and geometry_valid,
+                f"{len(generated_rows)} 条",
+                error=(
+                    "射孔生成人工裂缝必须具有唯一ID、来源射孔、"
+                    "有效中心坐标、正数物性和四个有效角点。"),
+            )
+
         wells = values.get("wells") or {}
         summary = wells.get("summary") or {}
         well_list = wells.get("well_list") or []

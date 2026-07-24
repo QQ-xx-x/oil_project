@@ -13,7 +13,18 @@ def derive_hydraulic_fractures(well_values):
     调度事件仅用于计算状态，不会生成重复裂缝。
     """
 
-    wells = _wells_payload(well_values)
+    source_values = well_values if isinstance(well_values, dict) else {}
+    wells = _wells_payload(source_values)
+    generated = [
+        copy.deepcopy(row)
+        for row in (
+            source_values.get("generated_hydraulic_fractures")
+            or wells.get("generated_hydraulic_fractures")
+            or []
+        )
+        if isinstance(row, dict)
+        and str(row.get("fracture_id") or "").strip()
+    ]
     completions = _completion_rows(wells)
     event_rows = {}
     for row in completions:
@@ -71,6 +82,14 @@ def derive_hydraulic_fractures(well_values):
             "source_row": row.get("source_row"),
         })
 
+    by_id = {
+        str(row.get("fracture_id") or "").strip(): row
+        for row in records
+        if str(row.get("fracture_id") or "").strip()
+    }
+    for row in generated:
+        by_id[str(row.get("fracture_id") or "").strip()] = row
+    records = list(by_id.values())
     records.sort(key=lambda item: (
         item.get("well_name", ""),
         _sort_number(item.get("frac_id")),

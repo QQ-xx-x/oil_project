@@ -55,6 +55,8 @@ from .initial_state_widgets import (
 )
 from .well_production_widgets import (
     CompletionControlPage,
+    PerforationImportPage,
+    WellheadImportPage,
     WellTrajectoryPage,
 )
 from .solver_time_widgets import SimulationTimeControlPage
@@ -287,6 +289,14 @@ class ModuleInputDialog(QDialog):
                 page = InitialSaturationPage(
                     group.title, page_fields, self)
             elif (self.module_key == MODULE_WELL_PRODUCTION
+                    and group.key == "wellhead"):
+                page = WellheadImportPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_WELL_PRODUCTION
+                    and group.key == "perforation"):
+                page = PerforationImportPage(
+                    group.title, page_fields, self)
+            elif (self.module_key == MODULE_WELL_PRODUCTION
                     and group.key == "well_trajectory"):
                 page = WellTrajectoryPage(
                     group.title, page_fields, self)
@@ -328,6 +338,28 @@ class ModuleInputDialog(QDialog):
 
     def _import_module_data(self):
         current_group = self._current_group_key()
+        if (self.module_key == MODULE_WELL_PRODUCTION
+                and current_group == "wellhead"):
+            page = self.stack.currentWidget()
+            if isinstance(page, WellheadImportPage) and page.browse_file():
+                self.import_status.setText(
+                    f"已读取 {page.loaded_count} 口井位，等待应用")
+            return
+        if (self.module_key == MODULE_WELL_PRODUCTION
+                and current_group == "perforation"):
+            page = self.stack.currentWidget()
+            if isinstance(page, PerforationImportPage) and page.browse_file():
+                self.import_status.setText(
+                    f"已读取 {page.loaded_count} 条射孔记录，等待应用")
+            return
+        if (self.module_key == MODULE_WELL_PRODUCTION
+                and current_group == "well_trajectory"):
+            page = self.stack.currentWidget()
+            if isinstance(page, WellTrajectoryPage) and page.browse_files():
+                self.import_status.setText(
+                    f"已读取 {page.loaded_well_count} 口井、"
+                    f"{page.loaded_count} 个轨迹点，等待应用")
+            return
         if (self.module_key == MODULE_FRACTURE_SYSTEM
                 and current_group == "natural_fractures"):
             self._import_natural_fractures()

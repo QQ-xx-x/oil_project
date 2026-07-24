@@ -73,14 +73,6 @@ class CaseDatasetBuildError(ValueError):
     """CaseData 标准数据包无法构建时抛出。"""
 
 
-MATRIX_PERMEABILITY_FILE_KEYS = frozenset((
-    "matrix_kx_file",
-    "matrix_ky_file",
-    "matrix_kz_file",
-))
-MATRIX_PERMEABILITY_SCALE = 1.0 / 1000.0
-
-
 def build_case_dataset(case_data_path, output_dir, include_raw=True,
                        null_value=DEFAULT_NULL_VALUE, model_config=None,
                        business_overrides=None):
@@ -694,18 +686,9 @@ def _should_parse_property_file(file_key, model_config=None):
 
 
 def _apply_property_transform(file_key, values, null_value):
-    if file_key not in MATRIX_PERMEABILITY_FILE_KEYS:
-        return values, None
-
-    transformed = values.astype(np.float64, copy=True)
-    null_mask = np.isclose(transformed, float(null_value))
-    transformed[~null_mask] *= MATRIX_PERMEABILITY_SCALE
-    return transformed, {
-        "kind": "scale",
-        "scale": MATRIX_PERMEABILITY_SCALE,
-        "applied_to": "non_null_values",
-        "reason": "matrix permeability input divided by 1000",
-    }
+    # Property files are persisted exactly as imported.  Unit conversion, if
+    # needed by a downstream consumer, must not change the front-end dataset.
+    return values, None
 
 
 def _build_valid_mask(values, active_mask, null_value):

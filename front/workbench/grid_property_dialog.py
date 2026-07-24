@@ -30,7 +30,6 @@ from .single_file_import_service import SingleFileImportService
 
 
 NULL_VALUE = 99999.0
-PERMEABILITY_SCALE = 1.0 / 1000.0
 
 
 @dataclass(frozen=True)
@@ -560,10 +559,10 @@ class GridPropertyDialog(QDialog):
                 raise ValueError("ACTNUM 只能包含 0、1 或空值 99999。")
             array = numbers.astype(np.int8)
         else:
-            array = np.asarray(values, dtype=np.float64)
-            if spec.permeability:
-                null_mask = np.isclose(array, NULL_VALUE)
-                array[~null_mask] *= PERMEABILITY_SCALE
+            # Grid-property files are already expressed in the units chosen by
+            # the user.  Keep the imported values unchanged in the UI instead
+            # of applying an implicit permeability conversion.
+            array = np.asarray(values, dtype=np.float64).copy()
         self._validate_array(spec, array)
         return array
 

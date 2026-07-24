@@ -166,7 +166,7 @@ MODULE_SPECS = (
                 "relative_permeability_curve", "相渗曲线",
                 module_dialog_visible=False,
             ),
-            BusinessGroupSpec("fine_analysis", "吸附解析"),
+            BusinessGroupSpec("fine_analysis", "吸附解吸"),
             BusinessGroupSpec("sensitivity", "应力敏感"),
             BusinessGroupSpec("shape_factor", "形状因子"),
         ),
@@ -201,6 +201,8 @@ MODULE_SPECS = (
         MODULE_WELL_PRODUCTION,
         "井与生产控制",
         groups=(
+            BusinessGroupSpec("wellhead", "井位"),
+            BusinessGroupSpec("perforation", "射孔"),
             BusinessGroupSpec("well_trajectory", "井轨迹"),
             BusinessGroupSpec("completion_control", "完井与井控"),
         ),
