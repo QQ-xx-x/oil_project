@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """工程打开后的主界面，包含左侧切换面板和中央工作窗口。"""
 
+import copy
 import os
 
 from PyQt5.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
@@ -10,10 +11,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..data_models import SimulationData
-from ..simulation_runner import (
-    _corner_point_grid_from_dataset,
-    _normalize_parsed_wells_z_to_grid,
-)
+from ..simulation_runner import _corner_point_grid_from_dataset
 from .case_manager_panel import CaseManagerPanel
 from .case_artifact_repository import CaseArtifactRepository
 from .case_models import (
@@ -24,9 +22,14 @@ from .case_models import (
 )
 from .case_dataset_reader import CaseDatasetReadError, load_case_dataset
 from .chart_adapters import build_gas_pvt_curve_data, build_relative_permeability_data
+from .fracture_data_adapter import derive_hydraulic_fractures
 from .icon_registry import semantic_icon_kind
 from .icons import painted_icon
 from .input_tree import InputTree
+from .input_keyword_registry import (
+    MODULE_FRACTURE_SYSTEM,
+    MODULE_WELL_PRODUCTION,
+)
 from .message_log import MessageLogPanel
 from .model_config_dialog import (
     ensure_model_config_confirmed,
@@ -41,7 +44,10 @@ from .simulation_run_manager import (
     SimulationRunError,
     SimulationRunManager,
 )
-from .module_dataset_service import ModuleDatasetService
+from .module_dataset_service import (
+    ModuleDatasetService,
+    _dataset_wells_from_business,
+)
 from .workspace_tabs import WorkspaceTabs
 from .workflow_runner import WorkbenchWorkflowRunner
 from visual.pyvista_static_property_preview import (
@@ -232,6 +238,7 @@ class ProjectShell(QWidget):
         self._last_simulation_params = {}
         self._last_simulation_context = {}
         self._preview_data = None
+        self._well_geometry_log_signature = None
         self._result_load_thread = None
         self._result_load_worker = None
         self._result_load_context = {}
@@ -816,7 +823,7 @@ class ProjectShell(QWidget):
         self._show_progress("加载 3D 结果", 82, "补齐 Corner Point Grid")
         dataset_path = context.get("dataset_path") or ""
         self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
-        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
+        self._attach_project_geometry_data_to_sim_data(sim_data, dataset_path)
         self._attach_static_property_preview_data(sim_data, dataset_path)
         self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
@@ -1060,6 +1067,37 @@ class ProjectShell(QWidget):
         self.message_log.append_message(
             f"[参数] 已更新 {title}：{self._compact_values(values)}")
         self._show_status(f"已更新参数：{title}")
+        if key in {
+            MODULE_WELL_PRODUCTION,
+            MODULE_FRACTURE_SYSTEM,
+        }:
+            self._well_geometry_log_signature = None
+            sim_data = (
+                self._preview_data
+                or self.result_store.simulation_data
+            )
+            if sim_data is None:
+                sim_data = SimulationData()
+            self._preview_data = sim_data
+            self._attach_project_geometry_data_to_sim_data(
+                sim_data
+            )
+            dataset_path = (
+                getattr(
+                    self.project_state,
+                    "case_dataset_path",
+                    "",
+                )
+                or ""
+            )
+            if dataset_path and os.path.isdir(dataset_path):
+                self._attach_static_fracture_preview_data(
+                    sim_data,
+                    dataset_path,
+                )
+            self.workspace.refresh_geometry_data(
+                sim_data
+            )
         self.dataset_state_changed.emit()
 
     def _handle_case_dataset_built(self, dataset_path, manifest):
@@ -1084,12 +1122,6 @@ class ProjectShell(QWidget):
     def _ensure_preview_data_loaded(self):
         sim_data = self.result_store.simulation_data
         if sim_data is None:
-            dataset_path = getattr(self.project_state, "case_dataset_path", "") or ""
-            if not dataset_path or not os.path.isdir(dataset_path):
-                self.message_log.append_message(
-                    "[预览] 请先构建 CaseDataset 后再预览输入数据。")
-                self._show_status("预览数据不可用")
-                return None
             if self._preview_data is None:
                 self._preview_data = SimulationData()
             sim_data = self._preview_data
@@ -1100,16 +1132,18 @@ class ProjectShell(QWidget):
             if record is not None and record.dataset_path
             else getattr(self.project_state, "case_dataset_path", "") or ""
         )
-        self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
-        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
-        self._attach_static_property_preview_data(sim_data, dataset_path)
-        self._attach_static_fracture_preview_data(sim_data, dataset_path)
+        self._attach_project_geometry_data_to_sim_data(sim_data, dataset_path)
+        if dataset_path and os.path.isdir(dataset_path):
+            self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
+            self._attach_static_property_preview_data(sim_data, dataset_path)
+            self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
         sim_data.result_context = self._active_result_load_context()
 
         if not self._has_any_preview_payload(sim_data):
             self.message_log.append_message(
-                "[预览] 当前没有可用预览数据，请检查 CaseDataset 中的网格、属性、井或裂缝文件。")
+                "[预览] 当前没有可用预览数据，请先导入井/裂缝，"
+                "或构建包含网格与属性的 CaseDataset。")
             self._show_status("预览数据不可用")
             return None
         return sim_data
@@ -1119,9 +1153,42 @@ class ProjectShell(QWidget):
             return True
         if getattr(sim_data, "static_properties", None):
             return True
-        parsed_well_data = getattr(sim_data, "parsed_well_data", None)
-        if isinstance(parsed_well_data, dict) and parsed_well_data.get("wells"):
+
+        parsed_well_data = getattr(
+            sim_data,
+            "parsed_well_data",
+            None,
+        )
+        if (
+            isinstance(parsed_well_data, dict)
+            and isinstance(parsed_well_data.get("wells"), list)
+            and parsed_well_data.get("wells")
+        ):
             return True
+
+        trajectory = getattr(
+            sim_data,
+            "well_trajectory",
+            None,
+        )
+        if (
+            isinstance(trajectory, dict)
+            and isinstance(trajectory.get("wells"), list)
+            and trajectory.get("wells")
+        ):
+            return True
+
+        hydraulic_fractures = getattr(
+            sim_data,
+            "generated_hydraulic_fractures",
+            None,
+        )
+        if (
+            isinstance(hydraulic_fractures, list)
+            and hydraulic_fractures
+        ):
+            return True
+
         dfn_data = getattr(sim_data, "static_dfn_data", None)
         if isinstance(dfn_data, dict) and dfn_data.get("fractures"):
             return True
@@ -1286,7 +1353,7 @@ class ProjectShell(QWidget):
             self.message_log.append_message(f"[结果] 按需加载模拟结果失败：{exc}")
             return None
         self._ensure_corner_point_grid_for_slice(sim_data)
-        self._attach_parsed_wells_to_sim_data(sim_data)
+        self._attach_project_geometry_data_to_sim_data(sim_data)
         self._attach_static_property_preview_data(sim_data)
         self._attach_static_fracture_preview_data(sim_data)
         self._augment_corner_visual_layers(sim_data)
@@ -1436,7 +1503,7 @@ class ProjectShell(QWidget):
         sim_data.result_context = run_context.to_dict()
         dataset_path = run_context.dataset_path
         self._ensure_corner_point_grid_for_slice(sim_data, dataset_path)
-        self._attach_parsed_wells_to_sim_data(sim_data, dataset_path)
+        self._attach_project_geometry_data_to_sim_data(sim_data, dataset_path)
         self._attach_static_property_preview_data(sim_data, dataset_path)
         self._attach_static_fracture_preview_data(sim_data, dataset_path)
         self._augment_corner_visual_layers(sim_data)
@@ -1807,9 +1874,46 @@ class ProjectShell(QWidget):
             f"{len(dfn_data.get('fractures', []))} 条。"
         )
 
-    def _attach_parsed_wells_to_sim_data(self, sim_data, dataset_path=None):
-        dataset_path = dataset_path or (
-            getattr(
+    @staticmethod
+    def _module_state_values(state):
+        """从 ModuleInputState 或兼容字典中取得 parsed_data.values。"""
+        if state is None:
+            return {}
+
+        if isinstance(state, dict):
+            parsed_data = state.get("parsed_data")
+        else:
+            parsed_data = getattr(state, "parsed_data", None)
+
+        if isinstance(parsed_data, dict):
+            values = parsed_data.get("values")
+        else:
+            values = getattr(parsed_data, "values", None)
+
+        return values if isinstance(values, dict) else {}
+
+    def _attach_parsed_wells_to_sim_data(
+        self,
+        sim_data,
+        dataset_path=None,
+    ):
+        if sim_data is None:
+            return False
+
+        existing = getattr(
+            sim_data,
+            "parsed_well_data",
+            None,
+        )
+        existing_available = bool(
+            isinstance(existing, dict)
+            and isinstance(existing.get("wells"), list)
+            and existing.get("wells")
+        )
+
+        dataset_path = (
+            dataset_path
+            or getattr(
                 self.project_state,
                 "case_dataset_path",
                 "",
@@ -1817,13 +1921,35 @@ class ProjectShell(QWidget):
             or ""
         )
         if not dataset_path or not os.path.isdir(dataset_path):
-            self.message_log.append_message(
-                "[井渲染] 当前没有有效的 CaseDataset 路径，无法加载井轨迹。"
-            )
-            return
+            return existing_available
+
+        resolved_path = os.path.abspath(dataset_path)
+        wells_path = os.path.join(
+            resolved_path,
+            "wells.json",
+        )
+        try:
+            wells_mtime = os.path.getmtime(wells_path)
+        except OSError:
+            wells_mtime = None
+        source_signature = (
+            resolved_path,
+            wells_mtime,
+        )
+
+        if (
+            existing_available
+            and getattr(
+                sim_data,
+                "_parsed_well_dataset_signature",
+                None,
+            ) == source_signature
+        ):
+            return True
+
         try:
             dataset = load_case_dataset(
-                dataset_path,
+                resolved_path,
                 strict=False,
             )
         except (
@@ -1832,35 +1958,312 @@ class ProjectShell(QWidget):
             OSError,
         ) as exc:
             self.message_log.append_message(
-                f"[井渲染] 读取 CaseDataset 失败：{exc}"
+                f"[井预览] 读取 CaseDataset 井数据失败：{exc}"
             )
-            return
-        well_data = getattr(
-            dataset,
-            "wells",
+            return existing_available
+
+        well_data = copy.deepcopy(
+            getattr(
+                dataset,
+                "wells",
+                None,
+            )
+        )
+        wells = (
+            well_data.get("wells", [])
+            if isinstance(well_data, dict)
+            else []
+        )
+        wells = [
+            well
+            for well in wells
+            if isinstance(well, dict)
+        ]
+        if not wells:
+            if getattr(
+                sim_data,
+                "_parsed_wells_attached_from_dataset",
+                False,
+            ):
+                sim_data.parsed_well_data = None
+                sim_data._parsed_well_dataset_signature = (
+                    source_signature
+                )
+            return False
+
+        well_data["wells"] = wells
+        sim_data.parsed_well_data = well_data
+        sim_data._parsed_wells_attached_from_dataset = True
+        sim_data._parsed_well_dataset_signature = source_signature
+        self.message_log.append_message(
+            "[井预览] 已恢复 CaseDataset 旧链路："
+            f"{len(wells)} 口井；将与 UI 井轨迹/人工裂缝合并显示。"
+        )
+        return True
+
+    @staticmethod
+    def _legacy_project_well_payload(well_values):
+        """
+        Convert editable legacy well tables into renderer input.
+
+        The legacy UI stores flattened ``well_list`` / ``tracks`` /
+        ``completions`` under ``values["wells"]``.  Preview performs the
+        same conversion as Dataset generation, but does so in memory.
+        """
+        if not isinstance(well_values, dict):
+            return None
+        source = well_values.get("wells")
+        if not isinstance(source, dict):
+            return None
+
+        nested_wells = source.get("wells")
+        if isinstance(nested_wells, list):
+            payload = copy.deepcopy(source)
+        else:
+            payload = _dataset_wells_from_business(
+                source
+            )
+        if not isinstance(payload, dict):
+            return None
+
+        wells = [
+            well
+            for well in payload.get("wells", []) or []
+            if isinstance(well, dict)
+        ]
+        if not wells:
+            return None
+        payload["wells"] = wells
+        return payload
+
+    def _attach_project_legacy_wells_to_sim_data(
+        self,
+        sim_data,
+        well_values,
+    ):
+        """Attach legacy UI wells directly, without requiring CaseDataset."""
+        if sim_data is None:
+            return False
+
+        payload = self._legacy_project_well_payload(
+            well_values
+        )
+        if payload is None:
+            if getattr(
+                sim_data,
+                "_parsed_wells_attached_from_project",
+                False,
+            ):
+                sim_data.parsed_well_data = None
+                sim_data._parsed_wells_attached_from_project = False
+            return False
+
+        sim_data.parsed_well_data = payload
+        sim_data._parsed_wells_attached_from_project = True
+        sim_data._parsed_wells_attached_from_dataset = False
+        sim_data._parsed_well_dataset_signature = None
+        return True
+
+    def _attach_project_geometry_data_to_sim_data(
+        self,
+        sim_data,
+        dataset_path=None,
+    ):
+        if sim_data is None:
+            return False
+
+        getter = getattr(
+            self.project_state,
+            "get_module_input_state",
             None,
         )
-        if not isinstance(well_data, dict):
-            self.message_log.append_message(
-                "[井渲染] 当前 Dataset 中没有解析后的井数据。"
-            )
-            return
-        wells = well_data.get(
-            "wells",
-            [],
+        well_state = (
+            getter(MODULE_WELL_PRODUCTION)
+            if callable(getter)
+            else None
         )
-        if not isinstance(wells, list) or not wells:
-            self.message_log.append_message(
-                "[井渲染] 当前 Dataset 中没有可渲染的井轨迹。"
-            )
-            return
-        well_data = _normalize_parsed_wells_z_to_grid(
-            well_data,
-            dataset,
+        well_values = self._module_state_values(
+            well_state
         )
-        sim_data.parsed_well_data = well_data
-        self.message_log.append_message(
-            f"[井渲染] 已附加 {len(wells)} 口真实井轨迹到本次模拟结果。"
+        legacy_wells_available = (
+            self._attach_project_legacy_wells_to_sim_data(
+                sim_data,
+                well_values,
+            )
+        )
+        if not legacy_wells_available:
+            legacy_wells_available = (
+                self._attach_parsed_wells_to_sim_data(
+                    sim_data,
+                    dataset_path,
+                )
+            )
+        fracture_state = (
+            getter(MODULE_FRACTURE_SYSTEM)
+            if callable(getter)
+            else None
+        )
+        fracture_values = self._module_state_values(
+            fracture_state
+        )
+
+        wellhead = copy.deepcopy(
+            well_values.get("wellhead") or {}
+        )
+        well_trajectory = copy.deepcopy(
+            well_values.get("well_trajectory") or {}
+        )
+        perforation = copy.deepcopy(
+            well_values.get("perforation") or {}
+        )
+        explicit_hydraulic_fractures = copy.deepcopy(
+            fracture_values.get("hydraulic_fractures") or []
+        )
+        hydraulic_fractures = (
+            explicit_hydraulic_fractures
+            if (
+                isinstance(explicit_hydraulic_fractures, list)
+                and explicit_hydraulic_fractures
+            )
+            else derive_hydraulic_fractures(well_values)
+        )
+        fracture_parameters = copy.deepcopy(
+            well_values.get("generated_fracture_parameters") or {}
+        )
+
+        if not isinstance(wellhead, dict):
+            wellhead = {}
+        if not isinstance(well_trajectory, dict):
+            well_trajectory = {}
+        if not isinstance(perforation, dict):
+            perforation = {}
+        if not isinstance(hydraulic_fractures, list):
+            hydraulic_fractures = []
+        if not isinstance(fracture_parameters, dict):
+            fracture_parameters = {}
+
+        sim_data.wellhead = wellhead
+        sim_data.well_trajectory = well_trajectory
+        sim_data.perforation = perforation
+        sim_data.generated_hydraulic_fractures = hydraulic_fractures
+        sim_data.generated_fracture_parameters = fracture_parameters
+
+        natural_fractures = None
+        if "natural_fractures" in fracture_values:
+            natural_fractures = copy.deepcopy(
+                fracture_values.get("natural_fractures") or {}
+            )
+            if not isinstance(natural_fractures, dict):
+                natural_fractures = {}
+            sim_data.static_dfn_data = natural_fractures
+            sim_data._project_natural_fractures_attached = True
+        elif getattr(
+            sim_data,
+            "_project_natural_fractures_attached",
+            False,
+        ):
+            sim_data.static_dfn_data = None
+            sim_data._project_natural_fractures_attached = False
+
+        wells = [
+            well
+            for well in well_trajectory.get("wells", []) or []
+            if isinstance(well, dict)
+        ]
+        track_point_count = sum(
+            len(well.get("rows", []) or [])
+            for well in wells
+        )
+
+        calculation = (
+            perforation.get("calculation") or {}
+            if isinstance(perforation, dict)
+            else {}
+        )
+        calculated_rows = (
+            calculation.get("rows") or []
+            if isinstance(calculation, dict)
+            else []
+        )
+        calculated_perforation_count = sum(
+            1
+            for row in calculated_rows
+            if (
+                isinstance(row, dict)
+                and str(row.get("status") or "").strip().lower()
+                == "success"
+            )
+        )
+
+        well_revision = (
+            well_state.get("revision")
+            if isinstance(well_state, dict)
+            else getattr(well_state, "revision", None)
+        )
+        fracture_revision = (
+            fracture_state.get("revision")
+            if isinstance(fracture_state, dict)
+            else getattr(fracture_state, "revision", None)
+        )
+        natural_fracture_count = len(
+            (
+                natural_fractures
+                if isinstance(natural_fractures, dict)
+                else {}
+            ).get("fractures", []) or []
+        )
+        signature = (
+            well_revision,
+            fracture_revision,
+            len(wells),
+            track_point_count,
+            calculated_perforation_count,
+            natural_fracture_count,
+            len(hydraulic_fractures),
+        )
+
+        if signature != self._well_geometry_log_signature:
+            self._well_geometry_log_signature = signature
+
+            if (
+                wells
+                or natural_fracture_count
+                or hydraulic_fractures
+            ):
+                self.message_log.append_message(
+                    "[几何预览] 已从 ProjectState 挂载最新几何："
+                    f"井 {len(wells)} 口，"
+                    f"轨迹点 {track_point_count} 个，"
+                    f"已计算射孔 {calculated_perforation_count} 条，"
+                    f"天然裂缝 {natural_fracture_count} 条，"
+                    f"人工裂缝 {len(hydraulic_fractures)} 条。"
+                )
+            else:
+                available_keys = sorted(
+                    [
+                        f"well.{key}"
+                        for key in well_values.keys()
+                    ]
+                    + [
+                        f"fracture.{key}"
+                        for key in fracture_values.keys()
+                    ]
+                )
+                key_text = (
+                    ", ".join(available_keys)
+                    if available_keys
+                    else "无"
+                )
+                self.message_log.append_message(
+                    "[几何预览] 当前 ProjectState 中没有可显示的"
+                    "井或裂缝；"
+                    f"业务键：{key_text}。"
+                )
+        return bool(
+            wells
+            or natural_fracture_count
+            or hydraulic_fractures
+            or legacy_wells_available
         )
 
     def _handle_simulation_failed(self, message, context=None):
@@ -1933,101 +2336,8 @@ class ProjectShell(QWidget):
                 self.workspace.set_chart_data(key, data)
 
     def _augment_corner_visual_layers(self, sim_data):
-        params = self._last_simulation_params or {}
         fractures = getattr(sim_data, "fractures", []) or []
         self._apply_corner_origin_offset(sim_data, fractures)
-        parsed_well_data = getattr(sim_data, "parsed_well_data", None) or {}
-        hydraulic_signatures = []
-
-        def _normalize_points(points):
-            normalized = []
-            for point in points:
-                normalized.append((
-                    round(float(point[0]), 6),
-                    round(float(point[1]), 6),
-                    round(float(point[2]), 6),
-                ))
-            normalized.sort()
-            return tuple(normalized)
-
-        for well in parsed_well_data.get("wells", []) or []:
-            for completion in well.get("completion_definitions", []) or []:
-                if not completion.get("is_fractured", False):
-                    continue
-
-                fracture_data = completion.get("fracture")
-                if not isinstance(fracture_data, dict):
-                    continue
-
-                if not fracture_data.get("geometry_available", False):
-                    continue
-
-                corners = fracture_data.get("corners", []) or []
-                if len(corners) < 4:
-                    continue
-
-                try:
-                    csv_points = [
-                        (
-                            float(corner["x_m"]),
-                            float(corner["y_m"]),
-                            float(corner["z_m"]),
-                        )
-                        for corner in corners[:4]
-                    ]
-                except (KeyError, TypeError, ValueError):
-                    continue
-
-                hydraulic_signatures.append(_normalize_points(csv_points))
-
-        hydraulic_centers = []
-
-        for index, frac in enumerate(fractures):
-            try:
-                frac_id = int(
-                    frac.get(
-                        "id",
-                        frac.get("fracture_id", index),
-                    )
-                )
-            except (TypeError, ValueError):
-                frac_id = index
-
-            points = frac.get("points", []) or []
-
-            if len(points) < 4:
-                frac["type"] = "natural"
-                frac["is_hydraulic"] = 0
-                frac["fracture_source"] = "dfn"
-                continue
-
-            try:
-                final_signature = _normalize_points(points[:4])
-            except (TypeError, ValueError, IndexError):
-                frac["type"] = "natural"
-                frac["is_hydraulic"] = 0
-                frac["fracture_source"] = "dfn"
-                continue
-
-            is_hydraulic = final_signature in hydraulic_signatures
-
-            if is_hydraulic:
-                frac["type"] = "hydraulic"
-                frac["is_hydraulic"] = 1
-                frac["fracture_source"] = "well_completion_csv"
-
-                if points:
-                    hydraulic_centers.append(
-                        tuple(
-                            sum(float(point[axis]) for point in points) / len(points)
-                            for axis in range(3)
-                        )
-                    )
-
-            else:
-                frac["type"] = "natural"
-                frac["is_hydraulic"] = 0
-                frac["fracture_source"] = "dfn"
 
     """
     def _augment_corner_visual_layers(self, sim_data):

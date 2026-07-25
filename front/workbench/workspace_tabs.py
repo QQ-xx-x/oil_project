@@ -255,6 +255,45 @@ class WorkspaceTabs(QTabWidget):
         for page in self._pages_of_type("3d"):
             page.set_preview_data(sim_data)
 
+    def refresh_geometry_data(self, sim_data=None):
+        if sim_data is not None:
+            self._last_preview_data = sim_data
+        source = (
+            sim_data
+            or self._last_preview_data
+            or self._last_simulation_data
+        )
+        if source is None:
+            return False
+
+        refreshed = False
+        for page in self._pages_of_type("3d"):
+            try:
+                page.set_preview_data(source)
+                viewport = getattr(page, "viewport", None)
+                renderer = getattr(
+                    viewport,
+                    "_real_renderer",
+                    None,
+                )
+                if renderer is None:
+                    refreshed = True
+                    continue
+                refresh = getattr(
+                    renderer,
+                    "refresh_geometry_data",
+                    None,
+                )
+                if refresh is not None:
+                    refreshed = bool(
+                        refresh(source)
+                    ) or refreshed
+            except Exception as exc:
+                self.workspace_message.emit(
+                    f"[几何同步] 3D 窗口刷新失败：{exc}"
+                )
+        return refreshed
+
     def set_chart_data(self, chart_key, data):
         self._chart_data_by_key[chart_key] = data
         for page in self._pages_of_type("chart"):

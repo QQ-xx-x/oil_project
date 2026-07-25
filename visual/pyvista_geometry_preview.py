@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import numpy as np
 import pyvista as pv
@@ -57,7 +58,28 @@ WELL_FALLBACK_LINE_WIDTH = 4.0
                         
 PERFORATION_COLOR = (1.0, 0.82, 0.0)
 PERFORATION_OPACITY = 1.0
+
+# 兼容旧的“射孔整体显隐”开关。
 PERFORATION_VISIBLE = True
+
+# 射孔点与射孔段分别控制。射孔点位于每条计算成功 PERF 记录
+# 的 MD 中心位置；射孔段沿 DEV 轨迹的 MD1～MD2 区间绘制。
+PERFORATION_POINT_VISIBLE = True
+PERFORATION_SEGMENT_VISIBLE = True
+
+# 射孔点使用模型坐标中的真实三维球体显示。
+# 默认球半径等于井筒半径，因此球直径与井筒直径一致；
+# 修改井半径时，射孔球会按相同比例自动变化。
+PERFORATION_POINT_RADIUS_MULTIPLIER = 0.4
+PERFORATION_POINT_THETA_RESOLUTION = 16
+PERFORATION_POINT_PHI_RESOLUTION = 16
+
+# 旧常量名称保留用于兼容外部导入。实际渲染半径由
+# WELL_RADIUS * PERFORATION_POINT_RADIUS_MULTIPLIER 动态计算。
+PERFORATION_POINT_RADIUS = (
+    WELL_RADIUS * PERFORATION_POINT_RADIUS_MULTIPLIER
+)
+PERFORATION_POINT_SIZE = PERFORATION_POINT_RADIUS
 
 WELL_LABEL_FONT_SIZE = 10
 WELL_LABEL_MIN_FONT_SIZE = 6
@@ -74,9 +96,13 @@ WELL_LABEL_PIXEL_OFFSET_Y = 0
 WELL_LABEL_OFFSET_SCENE_RATIO = 0.008
 WELL_LABEL_OFFSET_RADIUS_MULTIPLIER = 4.0
                                    
-WELL_THIN_RADIUS_SCENE_RATIO = 2.0e-4
-WELL_THIN_LINE_MIN_WIDTH = 1.6
-WELL_THIN_LINE_MAX_WIDTH = 8.0
+WELL_THIN_RADIUS_SCENE_RATIO = 1.0e-3
+WELL_THIN_LINE_MIN_WIDTH = 2.5
+WELL_THIN_LINE_MAX_WIDTH = 10.0
+
+WELL_LABEL_COLLISION_SCENE_RATIO = 0.015
+WELL_LABEL_SPREAD_SCENE_RATIO = 0.018
+WELL_LABEL_SPREAD_Z_SCENE_RATIO = 0.004
                                                 
 GEOMETRY_CLIPPING_MARGIN_RATIO = 0.01
 GEOMETRY_CLIPPING_MIN_NEAR = 1.0e-3
@@ -122,8 +148,20 @@ class GeometryPreviewRenderer:
         )
 
         self.well_actors = []
+
+        # 射孔段和射孔点分别保存，perforation_actors 作为兼容聚合列表。
+        self.perforation_segment_actors = []
+        self.perforation_point_actors = []
         self.perforation_actors = []
+
         self.well_label_actors = []
+
+        # 每口井分别保存井筒、射孔段和射孔点 actor。
+        # UI 可通过 set_well_visible(well_name, visible) 单独控制一口井。
+        self._well_actor_groups = {}
+        self._hidden_well_names = set()
+        self._well_label_anchor_by_name = {}
+
         self.natural_fracture_actors = []
         self.hydraulic_fracture_actors = []
 
@@ -132,14 +170,44 @@ class GeometryPreviewRenderer:
         
         self._scene_geometry_data = {
             "well_data": None,
+            "perforation_data": None,
             "natural_fractures": [],
             "hydraulic_fractures": [],
         }
+        self._scene_geometry_signature = None
+        self._scene_geometry_revision = 0
+        self._wells_render_revision = -1
+        self._natural_fractures_render_revision = -1
+        self._hydraulic_fractures_render_revision = -1
 
         self.well_color = tuple(WELL_COLOR)
         self.well_radius = float(WELL_RADIUS)
         self.perforation_color = tuple(PERFORATION_COLOR)
-        self.show_perforations = bool(PERFORATION_VISIBLE)
+
+        # 射孔球默认与井筒等粗：球半径 = 井筒半径 × 比例。
+        # 保留实际半径字段，兼容旧 UI 和外部代码读取。
+        self.perforation_point_radius_multiplier = float(
+            PERFORATION_POINT_RADIUS_MULTIPLIER
+        )
+        self.perforation_point_radius = float(
+            self.well_radius
+            * self.perforation_point_radius_multiplier
+        )
+        self.perforation_point_size = self.perforation_point_radius
+
+        self.show_perforation_points = bool(
+            PERFORATION_VISIBLE and PERFORATION_POINT_VISIBLE
+        )
+        self.show_perforation_segments = bool(
+            PERFORATION_VISIBLE and PERFORATION_SEGMENT_VISIBLE
+        )
+
+        # 旧接口兼容值：只要射孔点或射孔段有一个被请求显示，就视为
+        # 射孔整体处于开启状态。
+        self.show_perforations = bool(
+            self.show_perforation_points
+            or self.show_perforation_segments
+        )
 
         self.natural_fracture_color = tuple(NATURAL_FRACTURE_COLOR)
         self.natural_fracture_edge_color = tuple(NATURAL_FRACTURE_EDGE_COLOR)
@@ -254,13 +322,130 @@ class GeometryPreviewRenderer:
         """返回井名是否被剖面模式强制隐藏。"""
         return bool(self._well_labels_forced_hidden)
 
+    @staticmethod
+    def _geometry_signature_value(value):
+        """把几何输入转换成可比较的轻量签名。"""
+        if isinstance(value, np.ndarray):
+            array = np.ascontiguousarray(value)
+            return (
+                "ndarray",
+                tuple(int(v) for v in array.shape),
+                str(array.dtype),
+                hash(array.tobytes()),
+            )
+
+        if isinstance(value, np.generic):
+            return GeometryPreviewRenderer._geometry_signature_value(
+                value.item()
+            )
+
+        if isinstance(value, dict):
+            return (
+                "dict",
+                tuple(
+                    (
+                        str(key),
+                        GeometryPreviewRenderer._geometry_signature_value(
+                            item
+                        ),
+                    )
+                    for key, item in sorted(
+                        value.items(),
+                        key=lambda pair: str(pair[0]),
+                    )
+                ),
+            )
+
+        if isinstance(value, (list, tuple)):
+            return (
+                type(value).__name__,
+                tuple(
+                    GeometryPreviewRenderer._geometry_signature_value(item)
+                    for item in value
+                ),
+            )
+
+        if isinstance(value, (set, frozenset)):
+            frozen = [
+                GeometryPreviewRenderer._geometry_signature_value(item)
+                for item in value
+            ]
+            return (
+                type(value).__name__,
+                tuple(sorted(frozen, key=repr)),
+            )
+
+        if isinstance(value, float):
+            if np.isnan(value):
+                return ("float", "nan")
+            if np.isposinf(value):
+                return ("float", "+inf")
+            if np.isneginf(value):
+                return ("float", "-inf")
+            return ("float", float(value))
+
+        if value is None or isinstance(
+            value,
+            (str, bytes, bool, int),
+        ):
+            return value
+
+        return (
+            type(value).__name__,
+            repr(value),
+        )
+
+    @classmethod
+    def _make_scene_geometry_signature(cls, scene_data):
+        return cls._geometry_signature_value(
+            {
+                "well_data": scene_data.get("well_data"),
+                "perforation_data": scene_data.get("perforation_data"),
+                "natural_fractures": scene_data.get(
+                    "natural_fractures",
+                    [],
+                ),
+                "hydraulic_fractures": scene_data.get(
+                    "hydraulic_fractures",
+                    [],
+                ),
+            }
+        )
+
+    def get_scene_geometry_revision(self) -> int:
+        return int(self._scene_geometry_revision)
+
+    def wells_need_scene_refresh(self) -> bool:
+        return (
+            self.is_wells_visible()
+            and self._wells_render_revision
+            != self._scene_geometry_revision
+        )
+
+    def fractures_need_scene_refresh(self) -> bool:
+        return (
+            (
+                self.is_natural_fractures_visible()
+                and self._natural_fractures_render_revision
+                != self._scene_geometry_revision
+            )
+            or (
+                self.is_hydraulic_fractures_visible()
+                and self._hydraulic_fractures_render_revision
+                != self._scene_geometry_revision
+            )
+        )
+
     def _remember_sim_data(self, sim_data):
         if sim_data is None:
-            return
+            return False
 
         self._last_sim_data = sim_data
-        self._scene_geometry_data = {
+        scene_data = {
             "well_data": self._resolved_well_data(
+                sim_data
+            ),
+            "perforation_data": self._resolved_perforation_data(
                 sim_data
             ),
             "natural_fractures": self._resolved_natural_fractures(
@@ -271,14 +456,25 @@ class GeometryPreviewRenderer:
             ),
         }
 
+        signature = self._make_scene_geometry_signature(
+            scene_data
+        )
+        changed = (
+            signature
+            != self._scene_geometry_signature
+        )
 
-    def _resolved_well_data(self, sim_data):
-        """
-        返回唯一井数据源。
+        self._scene_geometry_data = scene_data
+        self._scene_geometry_signature = signature
 
-        预览和模拟后都只使用预览阶段解析得到的 parsed_well_data。
-        禁止回退到 sim_data.wells，避免模拟结果再次创建另一套井 actor。
-        """
+        if changed:
+            self._scene_geometry_revision += 1
+
+        return changed
+
+
+    def _legacy_well_data(self, sim_data):
+        """Return the legacy CaseDataset well payload, when available."""
         if sim_data is None:
             sim_data = self._last_sim_data
 
@@ -287,7 +483,6 @@ class GeometryPreviewRenderer:
             "parsed_well_data",
             None,
         )
-
         if isinstance(well_data, dict):
             return well_data
 
@@ -296,12 +491,279 @@ class GeometryPreviewRenderer:
             "_parsed_well_data",
             None,
         )
-
         return (
             well_data
             if isinstance(well_data, dict)
             else None
         )
+
+    @staticmethod
+    def _wellhead_kb_by_name(sim_data):
+        wellhead_data = getattr(
+            sim_data,
+            "wellhead",
+            None,
+        )
+        if not isinstance(wellhead_data, dict):
+            return {}
+
+        result = {}
+        for row in wellhead_data.get("rows", []) or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(
+                row.get("well_name")
+                or row.get("name")
+                or ""
+            ).strip()
+            try:
+                kb = float(
+                    row.get(
+                        "kb",
+                        row.get("wellhead_kb"),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+            if name and np.isfinite(kb):
+                result[name.casefold()] = kb
+        return result
+
+    @staticmethod
+    def _completion_identity(completion):
+        if not isinstance(completion, dict):
+            return None
+        value = completion.get(
+            "comp_id",
+            completion.get("id"),
+        )
+        text = str(value or "").strip()
+        return text.casefold() if text else None
+
+    @classmethod
+    def _merge_completion_definitions(
+        cls,
+        primary,
+        secondary,
+    ):
+        result = [
+            copy.deepcopy(item)
+            for item in primary or []
+            if isinstance(item, dict)
+        ]
+        seen = {
+            identity
+            for identity in (
+                cls._completion_identity(item)
+                for item in result
+            )
+            if identity
+        }
+        for item in secondary or []:
+            if not isinstance(item, dict):
+                continue
+            identity = cls._completion_identity(item)
+            if identity and identity in seen:
+                continue
+            result.append(copy.deepcopy(item))
+            if identity:
+                seen.add(identity)
+        return result
+
+    @staticmethod
+    def _well_for_preview(
+        well,
+        wellhead_kb_by_name,
+    ):
+        if not isinstance(well, dict):
+            return None
+
+        result = copy.deepcopy(well)
+        well_name = str(
+            result.get("well_name")
+            or result.get("name")
+            or ""
+        ).strip()
+        result["well_name"] = well_name
+
+        rows = result.get("rows")
+        if not isinstance(rows, list) or not rows:
+            rows = result.get("track", [])
+        rows = [
+            copy.deepcopy(row)
+            for row in rows or []
+            if isinstance(row, dict)
+        ]
+
+        metadata = result.get("metadata")
+        metadata = (
+            copy.deepcopy(metadata)
+            if isinstance(metadata, dict)
+            else {}
+        )
+        reference = metadata.get("wellhead_kb")
+        try:
+            reference = float(reference)
+        except (TypeError, ValueError):
+            reference = None
+        if reference is None or not np.isfinite(reference):
+            reference = wellhead_kb_by_name.get(
+                well_name.casefold()
+            )
+
+        if reference is None or not np.isfinite(reference):
+            reference_candidates = []
+            for row in rows:
+                try:
+                    candidate = (
+                        float(row["tvd_m"])
+                        + float(row["z_m"])
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(candidate):
+                    reference_candidates.append(candidate)
+            if reference_candidates:
+                reference = float(
+                    np.median(reference_candidates)
+                )
+
+        if reference is None or not np.isfinite(reference):
+            z_values = []
+            for row in rows:
+                try:
+                    value = float(row["z_m"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(value):
+                    z_values.append(value)
+            if z_values:
+                reference = float(max(z_values))
+
+        if reference is not None and np.isfinite(reference):
+            metadata["wellhead_kb"] = float(reference)
+            for row in rows:
+                try:
+                    tvd = float(row.get("tvd_m"))
+                except (TypeError, ValueError):
+                    tvd = None
+                if tvd is not None and np.isfinite(tvd):
+                    continue
+                try:
+                    z = float(row["z_m"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(z):
+                    row["tvd_m"] = float(reference) - z
+
+        result["metadata"] = metadata
+        result["rows"] = rows
+        return result
+
+    def _resolved_well_data(self, sim_data):
+        """
+        Merge the current UI trajectory payload with legacy Dataset wells.
+
+        The UI trajectory wins for duplicate well names.  Legacy-only wells
+        are appended, while legacy completion definitions are retained so
+        their artificial-fracture geometry can still be rendered.
+        """
+        if sim_data is None:
+            sim_data = self._last_sim_data
+
+        current = getattr(
+            sim_data,
+            "well_trajectory",
+            None,
+        )
+        if not isinstance(current, dict):
+            current = None
+        legacy = self._legacy_well_data(
+            sim_data
+        )
+        if current is None and legacy is None:
+            return None
+
+        payload = copy.deepcopy(
+            current
+            if current is not None
+            else legacy
+        )
+        if not isinstance(payload, dict):
+            payload = {}
+        payload["vertical_mode"] = str(
+            (
+                current.get("vertical_mode")
+                if current is not None
+                else legacy.get("vertical_mode")
+            )
+            or "elevation_z"
+        )
+
+        wellhead_kb_by_name = (
+            self._wellhead_kb_by_name(sim_data)
+        )
+        merged_wells = []
+        well_index = {}
+
+        for source in (current, legacy):
+            if not isinstance(source, dict):
+                continue
+            for source_well in source.get("wells", []) or []:
+                well = self._well_for_preview(
+                    source_well,
+                    wellhead_kb_by_name,
+                )
+                if well is None:
+                    continue
+                name = str(
+                    well.get("well_name") or ""
+                ).strip()
+                key = name.casefold() if name else None
+
+                if key is None or key not in well_index:
+                    if key is not None:
+                        well_index[key] = len(merged_wells)
+                    merged_wells.append(well)
+                    continue
+
+                target = merged_wells[
+                    well_index[key]
+                ]
+                if not target.get("rows") and well.get("rows"):
+                    target["rows"] = copy.deepcopy(
+                        well["rows"]
+                    )
+                    target["metadata"] = copy.deepcopy(
+                        well.get("metadata") or {}
+                    )
+                target["completion_definitions"] = (
+                    self._merge_completion_definitions(
+                        target.get(
+                            "completion_definitions",
+                            [],
+                        ),
+                        well.get(
+                            "completion_definitions",
+                            [],
+                        ),
+                    )
+                )
+
+        payload["wells"] = merged_wells
+        return payload if merged_wells else None
+
+    def _resolved_perforation_data(self, sim_data):
+        """只读取最新射孔页面载荷 sim_data.perforation。"""
+        if sim_data is None:
+            sim_data = self._last_sim_data
+
+        data = getattr(
+            sim_data,
+            "perforation",
+            None,
+        )
+        return data if isinstance(data, dict) else None
 
 
     @staticmethod
@@ -455,11 +917,9 @@ class GeometryPreviewRenderer:
     ):
         result = []
         seen = set()
-
         for fracture in records or []:
             if not isinstance(fracture, dict):
                 continue
-
             if (
                 self._fracture_record_is_hydraulic(
                     fracture
@@ -467,21 +927,16 @@ class GeometryPreviewRenderer:
                 != bool(hydraulic)
             ):
                 continue
-
             points = self._fracture_record_points(
                 fracture
             )
-
             if points is None:
                 continue
-
             signature = self._fracture_record_signature(
                 points
             )
-
             if signature is None or signature in seen:
                 continue
-
             seen.add(signature)
             result.append(
                 {
@@ -498,99 +953,11 @@ class GeometryPreviewRenderer:
                     ),
                 }
             )
-
         return result
 
 
-    def _completion_hydraulic_fractures(
-        self,
-        sim_data,
-    ):
-        well_data = self._resolved_well_data(
-            sim_data
-        )
-
-        if not isinstance(well_data, dict):
-            return []
-
-        records = []
-
-        for well in well_data.get("wells", []) or []:
-            if not isinstance(well, dict):
-                continue
-
-            for completion in (
-                well.get(
-                    "completion_definitions",
-                    [],
-                )
-                or []
-            ):
-                if not isinstance(completion, dict):
-                    continue
-
-                if not completion.get(
-                    "is_fractured",
-                    False,
-                ):
-                    continue
-
-                fracture_data = completion.get(
-                    "fracture",
-                    None,
-                )
-
-                if not isinstance(
-                    fracture_data,
-                    dict,
-                ):
-                    continue
-
-                if not fracture_data.get(
-                    "geometry_available",
-                    False,
-                ):
-                    continue
-
-                points = self._fracture_record_points(
-                    {
-                        "corners": fracture_data.get(
-                            "corners",
-                            [],
-                        )
-                    }
-                )
-
-                if points is None:
-                    continue
-
-                records.append(
-                    {
-                        "vertices": points,
-                        "points": points,
-                        "is_hydraulic": 1,
-                        "type": "hydraulic",
-                        "well_name": well.get(
-                            "well_name",
-                            well.get("name", ""),
-                        ),
-                        "completion_id": completion.get(
-                            "comp_id",
-                            completion.get("id"),
-                        ),
-                    }
-                )
-
-        return records
-
-
     def _resolved_natural_fractures(self, sim_data):
-        """
-        返回唯一的天然裂缝数据源。
 
-        预览和模拟后都只使用 static_dfn_data 中由原始 DFN 文件解析的裂缝。
-        禁止合并 sim_data.fractures，避免同一裂缝因坐标细微差异重复渲染。
-        """
         if sim_data is None:
             sim_data = self._last_sim_data
 
@@ -599,9 +966,7 @@ class GeometryPreviewRenderer:
             "static_dfn_data",
             None,
         )
-
         candidates = []
-
         if isinstance(dfn_data, dict):
             static_fractures = dfn_data.get(
                 "fractures",
@@ -612,30 +977,118 @@ class GeometryPreviewRenderer:
                 candidates.extend(
                     static_fractures
                 )
-
         return self._normalized_fracture_records(
             candidates,
             hydraulic=False,
         )
 
+    def _completion_hydraulic_fractures(
+        self,
+        sim_data,
+    ):
+        well_data = self._resolved_well_data(
+            sim_data
+        )
+        if not isinstance(well_data, dict):
+            return []
+
+        records = []
+        for well in well_data.get("wells", []) or []:
+            if not isinstance(well, dict):
+                continue
+            well_name = str(
+                well.get("well_name")
+                or well.get("name")
+                or ""
+            ).strip()
+            for completion in (
+                well.get(
+                    "completion_definitions",
+                    [],
+                )
+                or []
+            ):
+                if not isinstance(completion, dict):
+                    continue
+                if not completion.get(
+                    "is_fractured",
+                    False,
+                ):
+                    continue
+                fracture_data = completion.get(
+                    "fracture",
+                )
+                if not isinstance(fracture_data, dict):
+                    continue
+                if (
+                    fracture_data.get(
+                        "geometry_available"
+                    )
+                    is False
+                ):
+                    continue
+                points = self._fracture_record_points(
+                    {
+                        "corners": fracture_data.get(
+                            "corners",
+                            [],
+                        )
+                    }
+                )
+                if points is None:
+                    continue
+                completion_id = completion.get(
+                    "comp_id",
+                    completion.get("id"),
+                )
+                records.append(
+                    {
+                        **copy.deepcopy(fracture_data),
+                        "vertices": points,
+                        "points": points,
+                        "is_hydraulic": 1,
+                        "type": "hydraulic",
+                        "fracture_type": "artificial",
+                        "source": "well_completion",
+                        "well_name": well_name,
+                        "completion_id": completion_id,
+                        "fracture_id": completion_id,
+                    }
+                )
+        return records
 
     def _resolved_hydraulic_fractures(
         self,
         sim_data,
     ):
-        """
-        返回唯一的人工裂缝数据源。
-
-        预览和模拟后都只使用 parsed_well_data 中完井文件解析出的人工裂缝。
-        禁止读取 sim_data.fractures 中的模拟结果裂缝，避免创建第二套 actor。
-        """
         if sim_data is None:
             sim_data = self._last_sim_data
-
-        candidates = self._completion_hydraulic_fractures(
-            sim_data
+        records = getattr(
+            sim_data,
+            "generated_hydraulic_fractures",
+            None,
         )
-
+        candidates = []
+        for fracture in (
+            records
+            if isinstance(records, list)
+            else []
+        ):
+            if not isinstance(fracture, dict):
+                continue
+            candidates.append(
+                {
+                    **fracture,
+                    "is_hydraulic": 1,
+                    "type": "hydraulic",
+                    "fracture_type": "artificial",
+                }
+            )
+        candidates.extend(
+            self._completion_hydraulic_fractures(
+                sim_data
+            )
+        )
         return self._normalized_fracture_records(
             candidates,
             hydraulic=True,
@@ -649,20 +1102,70 @@ class GeometryPreviewRenderer:
         render_now=False,
     ):
         """
-        设置预览/模拟共用的几何数据源，但不自动切换显隐状态。
+        设置预览/模拟共用的几何数据源。
+
+        如果井、射孔或裂缝数据发生变化，当前已经显示的几何会立即
+        使用新数据重建；没有显示的几何仍保持隐藏，不会被自动打开。
         """
-        self._remember_sim_data(
+        changed = self._remember_sim_data(
             sim_data
         )
 
-        if render_now:
-            self.refresh_preview_stack(
-                render_now=True,
+        if changed:
+            # _remember_sim_data 已经完成签名更新，这里直接使用缓存，
+            # 避免对大型井/裂缝数组重复计算一次数据签名。
+            self.refresh_changed_geometry(
+                sim_data=None,
+                render_now=False,
             )
+        else:
+            self.refresh_preview_stack(
+                render_now=False,
+            )
+
+        if render_now:
+            self._render()
 
         return dict(
             self._scene_geometry_data
         )
+
+    def refresh_changed_geometry(
+        self,
+        sim_data=None,
+        *,
+        force=False,
+        render_now=True,
+    ):
+        """立即刷新当前已经显示、且数据已经变化的井和裂缝。"""
+        if sim_data is not None:
+            self._remember_sim_data(sim_data)
+
+        wells_refreshed = False
+        fractures_refreshed = False
+
+        if force or self.wells_need_scene_refresh():
+            wells_refreshed = self._rebuild_visible_wells(
+                sim_data
+            )
+
+        if force or self.fractures_need_scene_refresh():
+            fractures_refreshed = self._rebuild_visible_fractures(
+                sim_data
+            )
+
+        self.refresh_preview_stack(
+            render_now=False,
+        )
+        self._apply_stable_geometry_clipping_range()
+
+        if render_now:
+            self._render()
+
+        return {
+            "wells_refreshed": bool(wells_refreshed),
+            "fractures_refreshed": bool(fractures_refreshed),
+        }
 
 
     def get_scene_geometry_data(self):
@@ -682,7 +1185,15 @@ class GeometryPreviewRenderer:
             "well_color": self.well_color,
             "well_radius": self.well_radius,
             "perforation_color": self.perforation_color,
+            "perforation_point_radius": self.perforation_point_radius,
+            "perforation_point_radius_multiplier": (
+                self.perforation_point_radius_multiplier
+            ),
+            # 兼容旧 UI 字段，数值语义为当前模型坐标半径。
+            "perforation_point_size": self.perforation_point_radius,
             "show_perforations": self.show_perforations,
+            "show_perforation_points": self.show_perforation_points,
+            "show_perforation_segments": self.show_perforation_segments,
             "natural_fracture_color": self.natural_fracture_color,
             "natural_fracture_edge_color": self.natural_fracture_edge_color,
             "hydraulic_fracture_color": self.hydraulic_fracture_color,
@@ -715,6 +1226,409 @@ class GeometryPreviewRenderer:
                 self.perforation_color,
             )
 
+    @staticmethod
+    def _set_actor_visibility(actor, visible):
+        if actor is None:
+            return False
+
+        visible = bool(visible)
+
+        try:
+            actor.SetVisibility(visible)
+            return True
+        except Exception:
+            pass
+
+        try:
+            actor.visibility = visible
+            return True
+        except Exception:
+            return False
+
+    def get_well_names(self):
+        """返回当前井轨迹数据中的井名，顺序与导入顺序一致。"""
+        well_data = self._scene_geometry_data.get("well_data")
+
+        if not isinstance(well_data, dict):
+            well_data = self._resolved_well_data(self._last_sim_data)
+
+        names = []
+        seen = set()
+
+        if isinstance(well_data, dict):
+            for well in well_data.get("wells", []) or []:
+                if not isinstance(well, dict):
+                    continue
+
+                name = str(well.get("well_name") or "").strip()
+
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+
+        return names
+
+    def is_well_visible(self, well_name):
+        name = str(well_name or "").strip()
+        if not name:
+            return False
+        return name not in self._hidden_well_names
+
+    def get_well_visibility_map(self):
+        return {
+            name: self.is_well_visible(name)
+            for name in self.get_well_names()
+        }
+
+    def _rebuild_visible_well_name_labels(self, font_size=None):
+        self._remove_actor_list(self.well_label_actors)
+        self.well_label_actors = []
+        self._well_label_points = []
+        self._well_label_texts = []
+        self._well_label_use_billboard = False
+        self._well_label_current_font_size = None
+        if self._well_labels_forced_hidden:
+            return False
+        names = [
+            name
+            for name in self.get_well_names()
+            if name not in self._hidden_well_names
+            and name in self._well_label_anchor_by_name
+        ]
+        if not names:
+            return False
+        points = [
+            np.asarray(
+                self._well_label_anchor_by_name[name],
+                dtype=np.float64,
+            ).reshape(3).copy()
+            for name in names
+        ]
+        points = self._spread_overlapping_well_label_points(
+            self._last_sim_data,
+            points,
+        )
+        self._well_label_points = [
+            np.asarray(point, dtype=np.float64).reshape(3).copy()
+            for point in points
+        ]
+        self._well_label_texts = list(names)
+        label_actors = self._add_well_name_labels(
+            well_head_points=self._well_label_points,
+            well_names=self._well_label_texts,
+            font_size=(
+                font_size
+                if font_size is not None
+                else self._current_well_label_font_size()
+            ),
+        )
+        if not label_actors:
+            return False
+        self.well_label_actors.extend(label_actors)
+        self._well_label_use_billboard = any(
+            getattr(actor, "GetTextProperty", None) is not None
+            for actor in label_actors
+        )
+        self._well_label_current_font_size = int(
+            font_size
+            if font_size is not None
+            else self._current_well_label_font_size()
+        )
+        self._ensure_well_name_labels_attached()
+        return True
+
+    def _sync_perforation_visibility_to_actors(self):
+        """同步全局射孔开关，同时尊重每口井自己的显隐状态。"""
+        grouped_actor_ids = set()
+
+        for well_name, group in self._well_actor_groups.items():
+            well_visible = well_name not in self._hidden_well_names
+
+            for actor in group.get(
+                "perforation_point_actors",
+                [],
+            ) or []:
+                grouped_actor_ids.add(id(actor))
+                self._set_actor_visibility(
+                    actor,
+                    well_visible and self.show_perforation_points,
+                )
+
+            for actor in group.get(
+                "perforation_segment_actors",
+                [],
+            ) or []:
+                grouped_actor_ids.add(id(actor))
+                self._set_actor_visibility(
+                    actor,
+                    well_visible and self.show_perforation_segments,
+                )
+
+        # 兼容未归入单井分组的旧 actor。
+        for actor in self.perforation_point_actors or []:
+            if id(actor) not in grouped_actor_ids:
+                self._set_actor_visibility(
+                    actor,
+                    self.show_perforation_points,
+                )
+
+        for actor in self.perforation_segment_actors or []:
+            if id(actor) not in grouped_actor_ids:
+                self._set_actor_visibility(
+                    actor,
+                    self.show_perforation_segments,
+                )
+
+        return True
+
+    def is_perforation_points_visible(self):
+        """返回 UI 请求的射孔点全局显隐状态。"""
+        return bool(self.show_perforation_points)
+
+    def are_perforation_points_visible(self):
+        """兼容复数命名。"""
+        return self.is_perforation_points_visible()
+
+    def is_perforation_segments_visible(self):
+        """返回 UI 请求的射孔段全局显隐状态。"""
+        return bool(self.show_perforation_segments)
+
+    def are_perforation_segments_visible(self):
+        """兼容复数命名。"""
+        return self.is_perforation_segments_visible()
+
+    def get_perforation_visibility_state(self):
+        """返回 UI 初始化按钮时使用的射孔显隐状态。"""
+        return {
+            "points": self.is_perforation_points_visible(),
+            "segments": self.is_perforation_segments_visible(),
+        }
+
+    def set_perforation_points_visible(
+        self,
+        visible,
+        render_now=True,
+    ):
+        visible = bool(visible)
+        changed = (
+            visible
+            != self.show_perforation_points
+        )
+        self.show_perforation_points = visible
+        self.show_perforations = bool(
+            self.show_perforation_points
+            or self.show_perforation_segments
+        )
+        self._sync_perforation_visibility_to_actors()
+        self._sync_geometry_overlay_attachment()
+        self._apply_stable_geometry_clipping_range()
+        if render_now and changed:
+            self._render()
+        return changed
+
+    def set_perforation_point_visible(
+        self,
+        visible,
+        render_now=True,
+    ):
+        return self.set_perforation_points_visible(
+            visible,
+            render_now=render_now,
+        )
+
+    def toggle_perforation_points_visible(
+        self,
+        render_now=True,
+    ):
+        target = not self.show_perforation_points
+        self.set_perforation_points_visible(
+            target,
+            render_now=render_now,
+        )
+        return target
+
+    def set_perforation_segments_visible(
+        self,
+        visible,
+        sim_data=None,
+        render_now=True,
+    ):
+        visible = bool(visible)
+        changed = (
+            visible
+            != self.show_perforation_segments
+        )
+        self.show_perforation_segments = visible
+        self.show_perforations = bool(
+            self.show_perforation_points
+            or self.show_perforation_segments
+        )
+
+        rebuilt = False
+        if changed:
+            rebuilt = self._rebuild_visible_wells(
+                sim_data
+            )
+
+        if not rebuilt:
+            self._sync_perforation_visibility_to_actors()
+            self._sync_geometry_overlay_attachment()
+            self._apply_stable_geometry_clipping_range()
+
+        if render_now and changed:
+            self._render()
+
+        return changed
+
+    def set_perforation_segment_visible(
+        self,
+        visible,
+        sim_data=None,
+        render_now=True,
+    ):
+        return self.set_perforation_segments_visible(
+            visible,
+            sim_data=sim_data,
+            render_now=render_now,
+        )
+
+    def toggle_perforation_segments_visible(
+        self,
+        sim_data=None,
+        render_now=True,
+    ):
+        target = not self.show_perforation_segments
+        self.set_perforation_segments_visible(
+            target,
+            sim_data=sim_data,
+            render_now=render_now,
+        )
+        return target
+
+    def set_well_visible(
+        self,
+        well_name,
+        visible,
+        render_now=True,
+    ):
+        name = str(well_name or "").strip()
+        if not name:
+            return False
+        available_names = self.get_well_names()
+        exact_name = next(
+            (
+                item
+                for item in available_names
+                if item == name
+            ),
+            None,
+        )
+        if exact_name is None:
+            lowered = name.casefold()
+            exact_name = next(
+                (
+                    item
+                    for item in available_names
+                    if item.casefold() == lowered
+                ),
+                None,
+            )
+        if exact_name is None:
+            return False
+        name = exact_name
+        visible = bool(visible)
+        if visible:
+            self._hidden_well_names.discard(name)
+        else:
+            self._hidden_well_names.add(name)
+
+        group = self._well_actor_groups.get(name) or {}
+        for actor in group.get(
+            "well_actors",
+            [],
+        ) or []:
+            self._set_actor_visibility(
+                actor,
+                visible,
+            )
+
+        for actor in group.get(
+            "perforation_segment_actors",
+            [],
+        ) or []:
+            self._set_actor_visibility(
+                actor,
+                visible and self.show_perforation_segments,
+            )
+
+        for actor in group.get(
+            "perforation_point_actors",
+            [],
+        ) or []:
+            self._set_actor_visibility(
+                actor,
+                visible and self.show_perforation_points,
+            )
+
+        self._rebuild_visible_well_name_labels()
+        self._sync_geometry_overlay_attachment()
+        self._apply_stable_geometry_clipping_range()
+
+        if render_now:
+            self._render()
+
+        return True
+
+    def set_single_well_visible(
+        self,
+        well_name,
+        visible,
+        render_now=True,
+    ):
+        return self.set_well_visible(
+            well_name,
+            visible,
+            render_now=render_now,
+        )
+
+    def toggle_well_visible(
+        self,
+        well_name,
+        render_now=True,
+    ):
+        target_visible = not self.is_well_visible(well_name)
+
+        if not self.set_well_visible(
+            well_name,
+            target_visible,
+            render_now=render_now,
+        ):
+            return None
+
+        return target_visible
+
+    def set_well_visibility_map(
+        self,
+        visibility_by_name,
+        render_now=True,
+    ):
+        if not isinstance(visibility_by_name, dict):
+            return False
+
+        changed = False
+
+        for name, visible in visibility_by_name.items():
+            changed = self.set_well_visible(
+                name,
+                visible,
+                render_now=False,
+            ) or changed
+
+        if render_now and changed:
+            self._render()
+
+        return changed
+
     def _rebuild_visible_wells(self, sim_data=None):
         if not self.is_wells_visible():
             return False
@@ -745,11 +1659,25 @@ class GeometryPreviewRenderer:
 
         self.clear_fractures(render_now=False)
 
+        natural_count = 0
+        hydraulic_count = 0
+
         if natural_visible:
-            self._render_natural_fractures(data)
+            natural_count = self._render_natural_fractures(data)
 
         if hydraulic_visible:
-            self._render_hydraulic_fractures(data)
+            hydraulic_count = self._render_hydraulic_fractures(data)
+
+        self._natural_fractures_render_revision = (
+            self._scene_geometry_revision
+            if natural_visible and natural_count > 0
+            else -1
+        )
+        self._hydraulic_fractures_render_revision = (
+            self._scene_geometry_revision
+            if hydraulic_visible and hydraulic_count > 0
+            else -1
+        )
 
         self.refresh_preview_stack(render_now=False)
         return True
@@ -760,7 +1688,12 @@ class GeometryPreviewRenderer:
         well_color=None,
         well_radius=None,
         perforation_color=None,
+        perforation_point_radius=None,
+        perforation_point_size=None,
+        perforation_point_radius_multiplier=None,
         show_perforations=None,
+        show_perforation_points=None,
+        show_perforation_segments=None,
         fracture_color=None,
         natural_fracture_color=None,
         hydraulic_fracture_color=None,
@@ -776,7 +1709,9 @@ class GeometryPreviewRenderer:
 
         well_color_changed = False
         perforation_color_changed = False
-        perforation_visibility_changed = False
+        perforation_point_visibility_changed = False
+        perforation_segment_visibility_changed = False
+        perforation_point_geometry_changed = False
         well_geometry_changed = False
         fracture_style_changed = False
 
@@ -791,8 +1726,25 @@ class GeometryPreviewRenderer:
             if not np.isfinite(value) or value <= 0.0:
                 raise ValueError("井半径必须是大于 0 的有限数值")
 
-            well_geometry_changed = not np.isclose(value, self.well_radius)
+            well_geometry_changed = not np.isclose(
+                value,
+                self.well_radius,
+            )
             self.well_radius = value
+
+            # 射孔球跟随井筒半径变化。只要井半径变化，
+            # 同步更新球半径并重建射孔点 actor。
+            followed_radius = float(
+                self.well_radius
+                * self.perforation_point_radius_multiplier
+            )
+            if not np.isclose(
+                followed_radius,
+                self.perforation_point_radius,
+            ):
+                perforation_point_geometry_changed = True
+            self.perforation_point_radius = followed_radius
+            self.perforation_point_size = followed_radius
 
         if perforation_color is not None:
             value = self._normalize_color(
@@ -802,58 +1754,190 @@ class GeometryPreviewRenderer:
                 value != self.perforation_color
             )
             self.perforation_color = value
+        if perforation_point_radius_multiplier is not None:
+            multiplier = float(
+                perforation_point_radius_multiplier
+            )
+            if not np.isfinite(multiplier) or multiplier <= 0.0:
+                raise ValueError(
+                    "射孔点半径比例必须是大于 0 的有限数值"
+                )
+
+            new_radius = float(
+                self.well_radius * multiplier
+            )
+            perforation_point_geometry_changed = (
+                perforation_point_geometry_changed
+                or not np.isclose(
+                    multiplier,
+                    self.perforation_point_radius_multiplier,
+                )
+                or not np.isclose(
+                    new_radius,
+                    self.perforation_point_radius,
+                )
+            )
+            self.perforation_point_radius_multiplier = multiplier
+            self.perforation_point_radius = new_radius
+            self.perforation_point_size = new_radius
+
+        point_radius_value = (
+            perforation_point_radius
+            if perforation_point_radius is not None
+            else perforation_point_size
+        )
+
+        if point_radius_value is not None:
+            value = float(point_radius_value)
+
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    "射孔点半径必须是大于 0 的有限数值"
+                )
+
+            # 兼容旧接口：外部仍可传绝对球半径。内部将其换算为
+            # 相对井半径的比例，之后井半径变化时仍会同比例跟随。
+            multiplier = float(
+                value / max(self.well_radius, 1.0e-12)
+            )
+            perforation_point_geometry_changed = (
+                perforation_point_geometry_changed
+                or not np.isclose(
+                    value,
+                    self.perforation_point_radius,
+                )
+                or not np.isclose(
+                    multiplier,
+                    self.perforation_point_radius_multiplier,
+                )
+            )
+            self.perforation_point_radius_multiplier = multiplier
+            self.perforation_point_radius = value
+            self.perforation_point_size = value
 
         if show_perforations is not None:
             value = bool(show_perforations)
-            perforation_visibility_changed = (
-                value != self.show_perforations
+            perforation_point_visibility_changed = (
+                perforation_point_visibility_changed
+                or value
+                != self.show_perforation_points
             )
-            self.show_perforations = value
+            perforation_segment_visibility_changed = (
+                perforation_segment_visibility_changed
+                or value
+                != self.show_perforation_segments
+            )
+            self.show_perforation_points = value
+            self.show_perforation_segments = value
+
+        if show_perforation_points is not None:
+            value = bool(show_perforation_points)
+            perforation_point_visibility_changed = (
+                perforation_point_visibility_changed
+                or value
+                != self.show_perforation_points
+            )
+            self.show_perforation_points = value
+
+        if show_perforation_segments is not None:
+            value = bool(show_perforation_segments)
+            perforation_segment_visibility_changed = (
+                perforation_segment_visibility_changed
+                or value
+                != self.show_perforation_segments
+            )
+            self.show_perforation_segments = value
+
+        self.show_perforations = bool(
+            self.show_perforation_points
+            or self.show_perforation_segments
+        )
 
         if fracture_color is not None:
             value = self._normalize_color(fracture_color)
 
-            if value != self.natural_fracture_color or value != self.hydraulic_fracture_color:
+            if (
+                value != self.natural_fracture_color
+                or value != self.hydraulic_fracture_color
+            ):
                 fracture_style_changed = True
 
             self.natural_fracture_color = value
             self.hydraulic_fracture_color = value
 
         if natural_fracture_color is not None:
-            value = self._normalize_color(natural_fracture_color)
-            fracture_style_changed = fracture_style_changed or value != self.natural_fracture_color
+            value = self._normalize_color(
+                natural_fracture_color
+            )
+            fracture_style_changed = (
+                fracture_style_changed
+                or value
+                != self.natural_fracture_color
+            )
             self.natural_fracture_color = value
 
         if hydraulic_fracture_color is not None:
-            value = self._normalize_color(hydraulic_fracture_color)
-            fracture_style_changed = fracture_style_changed or value != self.hydraulic_fracture_color
+            value = self._normalize_color(
+                hydraulic_fracture_color
+            )
+            fracture_style_changed = (
+                fracture_style_changed
+                or value
+                != self.hydraulic_fracture_color
+            )
             self.hydraulic_fracture_color = value
 
         if fracture_edge_color is not None:
-            value = self._normalize_color(fracture_edge_color)
+            value = self._normalize_color(
+                fracture_edge_color
+            )
 
-            if value != self.natural_fracture_edge_color or value != self.hydraulic_fracture_edge_color:
+            if (
+                value != self.natural_fracture_edge_color
+                or value
+                != self.hydraulic_fracture_edge_color
+            ):
                 fracture_style_changed = True
 
             self.natural_fracture_edge_color = value
             self.hydraulic_fracture_edge_color = value
 
         if natural_fracture_edge_color is not None:
-            value = self._normalize_color(natural_fracture_edge_color)
-            fracture_style_changed = fracture_style_changed or value != self.natural_fracture_edge_color
+            value = self._normalize_color(
+                natural_fracture_edge_color
+            )
+            fracture_style_changed = (
+                fracture_style_changed
+                or value
+                != self.natural_fracture_edge_color
+            )
             self.natural_fracture_edge_color = value
 
         if hydraulic_fracture_edge_color is not None:
-            value = self._normalize_color(hydraulic_fracture_edge_color)
-            fracture_style_changed = fracture_style_changed or value != self.hydraulic_fracture_edge_color
+            value = self._normalize_color(
+                hydraulic_fracture_edge_color
+            )
+            fracture_style_changed = (
+                fracture_style_changed
+                or value
+                != self.hydraulic_fracture_edge_color
+            )
             self.hydraulic_fracture_edge_color = value
 
         if fracture_show_edges is not None:
             value = bool(fracture_show_edges)
-            fracture_style_changed = fracture_style_changed or value != self.fracture_show_edges
+            fracture_style_changed = (
+                fracture_style_changed
+                or value
+                != self.fracture_show_edges
+            )
             self.fracture_show_edges = value
 
-            if value and fracture_edge_line_width is None and self.fracture_edge_line_width <= 0.0:
+            if (
+                value
+                and fracture_edge_line_width is None
+                and self.fracture_edge_line_width <= 0.0
+            ):
                 self.fracture_edge_line_width = 1.0
                 fracture_style_changed = True
 
@@ -861,32 +1945,57 @@ class GeometryPreviewRenderer:
             value = float(fracture_edge_line_width)
 
             if not np.isfinite(value) or value < 0.0:
-                raise ValueError("裂缝边框宽度必须是大于等于 0 的有限数值")
+                raise ValueError(
+                    "裂缝边框宽度必须是大于等于 0 的有限数值"
+                )
 
-            fracture_style_changed = fracture_style_changed or not np.isclose(
-                value,
-                self.fracture_edge_line_width,
+            fracture_style_changed = (
+                fracture_style_changed
+                or not np.isclose(
+                    value,
+                    self.fracture_edge_line_width,
+                )
             )
             self.fracture_edge_line_width = value
 
         rebuilt = False
 
-        if well_geometry_changed or perforation_visibility_changed:
-            rebuilt = self._rebuild_visible_wells(sim_data) or rebuilt
+        # 射孔段显隐会改变井轨迹的颜色分段。关闭射孔段时必须
+        # 重建为完整普通井筒，避免原射孔位置留下空白。
+        if (
+            well_geometry_changed
+            or perforation_segment_visibility_changed
+            or perforation_point_geometry_changed
+        ):
+            rebuilt = self._rebuild_visible_wells(
+                sim_data
+            ) or rebuilt
         elif well_color_changed:
             self._update_well_actor_colors()
 
         if perforation_color_changed:
             self._update_perforation_actor_colors()
 
+        if (
+            perforation_point_visibility_changed
+            and not rebuilt
+        ):
+            self._sync_perforation_visibility_to_actors()
+            self._sync_geometry_overlay_attachment()
+            self._apply_stable_geometry_clipping_range()
+
         if fracture_style_changed:
-            rebuilt = self._rebuild_visible_fractures(sim_data) or rebuilt
+            rebuilt = self._rebuild_visible_fractures(
+                sim_data
+            ) or rebuilt
 
         if render_now and (
             rebuilt
             or well_color_changed
             or perforation_color_changed
-            or perforation_visibility_changed
+            or perforation_point_visibility_changed
+            or perforation_segment_visibility_changed
+            or perforation_point_geometry_changed
             or fracture_style_changed
         ):
             self._render()
@@ -924,6 +2033,46 @@ class GeometryPreviewRenderer:
     ):
         return self.set_geometry_style(
             show_perforations=visible,
+            sim_data=sim_data,
+            render_now=render_now,
+        )
+
+    def set_perforation_point_radius(
+        self,
+        radius,
+        sim_data=None,
+        render_now=True,
+    ):
+        return self.set_geometry_style(
+            perforation_point_radius=radius,
+            sim_data=sim_data,
+            render_now=render_now,
+        )
+
+    def set_perforation_point_radius_multiplier(
+        self,
+        multiplier,
+        sim_data=None,
+        render_now=True,
+    ):
+        """设置射孔球半径相对井筒半径的比例。
+
+        multiplier=1.0 时，射孔球直径与井筒直径一致。
+        """
+        return self.set_geometry_style(
+            perforation_point_radius_multiplier=multiplier,
+            sim_data=sim_data,
+            render_now=render_now,
+        )
+
+    def set_perforation_point_size(
+        self,
+        size,
+        sim_data=None,
+        render_now=True,
+    ):
+        return self.set_perforation_point_radius(
+            size,
             sim_data=sim_data,
             render_now=render_now,
         )
@@ -1068,14 +2217,6 @@ class GeometryPreviewRenderer:
             pass
 
     def _install_geometry_render_observers(self):
-        # 不再监听 RenderWindow 的 StartEvent。
-        # StartEvent 会在每一帧渲染前触发；若在这里持续修改相机
-        # clipping range，放大模型时 near/far 会反复变化，导致
-        # 深度缓冲精度抖动和共面网格线闪烁。
-        
-        # 相机裁剪范围只在场景内容发生变化、主动调用 _render()
-        # 之前更新一次。相机交互过程继续使用 VTK/PyVista 自带的
-        # 自动裁剪行为。
         camera = getattr(
             self.plotter,
             "camera",
@@ -1124,8 +2265,6 @@ class GeometryPreviewRenderer:
         self._sync_well_name_labels_with_camera()
 
     def _on_geometry_render_start(self, *_args):
-        # 兼容旧实例可能残留的 StartEvent observer。
-        # 此处只维护井名标签，不再修改 clipping range。
         if self._geometry_clipping_guard:
             return
 
@@ -1401,12 +2540,6 @@ class GeometryPreviewRenderer:
         sim_data,
         ordered_points,
     ):
-        """返回沿井头朝向偏移后的井名锚点。
-
-        ordered_points 已按 MD 从小到大排序，因此第一个点是井头，
-        第二个点定义井头朝向。井名沿着“井头外侧方向”偏移，
-        不同井的偏移方向会随各自井头朝向变化。
-        """
         try:
             points = np.asarray(
                 ordered_points,
@@ -1462,6 +2595,84 @@ class GeometryPreviewRenderer:
             return head.copy()
 
         return label_point
+
+    def _spread_overlapping_well_label_points(
+        self,
+        sim_data,
+        label_points,
+    ):
+        try:
+            points = np.asarray(
+                label_points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return label_points
+
+        if points.shape[0] <= 1 or not np.isfinite(points).all():
+            return [point.copy() for point in points]
+
+        reference_length = self._scene_reference_length(
+            sim_data,
+            fallback_points=points,
+        )
+        collision_distance = max(
+            reference_length * WELL_LABEL_COLLISION_SCENE_RATIO,
+            float(self.well_radius) * 10.0,
+        )
+        spread_radius = max(
+            reference_length * WELL_LABEL_SPREAD_SCENE_RATIO,
+            float(self.well_radius) * 14.0,
+        )
+        z_step = max(
+            reference_length * WELL_LABEL_SPREAD_Z_SCENE_RATIO,
+            float(self.well_radius) * 4.0,
+        )
+
+        remaining = set(range(points.shape[0]))
+        groups = []
+
+        while remaining:
+            seed = remaining.pop()
+            group = [seed]
+            queue = [seed]
+
+            while queue:
+                current = queue.pop()
+                nearby = [
+                    index
+                    for index in remaining
+                    if np.linalg.norm(points[index] - points[current])
+                    <= collision_distance
+                ]
+                for index in nearby:
+                    remaining.remove(index)
+                    queue.append(index)
+                    group.append(index)
+
+            groups.append(group)
+
+        adjusted = points.copy()
+
+        for group in groups:
+            count = len(group)
+            if count <= 1:
+                continue
+
+            center = np.mean(points[group], axis=0)
+            for local_index, source_index in enumerate(group):
+                angle = (2.0 * np.pi * local_index) / count
+                vertical_index = local_index - (count - 1) * 0.5
+                adjusted[source_index] = center + np.asarray(
+                    [
+                        np.cos(angle) * spread_radius,
+                        np.sin(angle) * spread_radius,
+                        vertical_index * z_step,
+                    ],
+                    dtype=np.float64,
+                )
+
+        return [point.copy() for point in adjusted]
 
     def _has_visible_preview_background(self) -> bool:
         if self._actor_is_visible(self.grid_actor):
@@ -2043,350 +3254,537 @@ class GeometryPreviewRenderer:
 
 
     @staticmethod
-    def _completion_perforation_intervals(well):
-        if not isinstance(well, dict):
+    def _trajectory_point_z(point, vertical_mode):
+        mode = str(vertical_mode or "elevation_z").strip().lower()
+
+        if mode == "tvd":
+            return float(point["tvd_m"])
+        if mode == "subsea_depth":
+            return -float(point["z_m"])
+        return float(point["z_m"])
+
+    @classmethod
+    def _well_trajectory_z_values(cls, well_data):
+        if not isinstance(well_data, dict):
             return []
 
-        completions = well.get(
-            "completion_definitions",
-            [],
-        )
+        mode = well_data.get("vertical_mode", "elevation_z")
+        values = []
+        for well in well_data.get("wells", []) or []:
+            if not isinstance(well, dict):
+                continue
+            for point in well.get("rows", []) or []:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    z = cls._trajectory_point_z(point, mode)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if np.isfinite(z):
+                    values.append(float(z))
+        return values
 
-        if not isinstance(completions, list):
-            return []
+    @classmethod
+    def _raw_geometry_z_transform_for_wells(cls, well_data):
+        """
+        将射孔和人工裂缝保存的原始 DEV z_m 转换到井轨迹当前垂向模式。
 
-        intervals = []
+        返回函数接收原始 Z 和井名。TVD 模式优先使用各井的 KB；
+        如果 DEV 未直接提供 KB，则用轨迹上的 median(TVD + Z) 推导。
+        """
+        if not isinstance(well_data, dict):
+            return lambda z, _well_name="": float(z)
 
-        for completion in completions:
-            if not isinstance(completion, dict):
+        mode = str(
+            well_data.get("vertical_mode")
+            or "elevation_z"
+        ).strip().lower()
+
+        if mode == "subsea_depth":
+            return lambda z, _well_name="": -float(z)
+        if mode != "tvd":
+            return lambda z, _well_name="": float(z)
+
+        references = {}
+        all_references = []
+        for well in well_data.get("wells", []) or []:
+            if not isinstance(well, dict):
                 continue
 
-            event = str(
-                completion.get(
-                    "event",
-                    "",
-                )
-                or ""
-            ).strip().upper()
+            well_name = str(
+                well.get("well_name") or ""
+            ).strip()
+            metadata = well.get("metadata") or {}
+            reference = metadata.get("wellhead_kb")
+            try:
+                reference = float(reference)
+            except (TypeError, ValueError):
+                reference = None
 
-            if event and event != "PERF":
+            if reference is None or not np.isfinite(reference):
+                candidates = []
+                for row in well.get("rows", []) or []:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        candidate = (
+                            float(row["tvd_m"])
+                            + float(row["z_m"])
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if np.isfinite(candidate):
+                        candidates.append(candidate)
+                reference = (
+                    float(np.median(candidates))
+                    if candidates
+                    else None
+                )
+
+            if reference is not None and np.isfinite(reference):
+                if well_name:
+                    references[well_name] = float(reference)
+                all_references.append(float(reference))
+
+        fallback_reference = (
+            float(np.median(all_references))
+            if all_references
+            else None
+        )
+
+        def transform(z, well_name=""):
+            z = float(z)
+            reference = references.get(
+                str(well_name or "").strip(),
+                fallback_reference,
+            )
+            if reference is None:
+                return z
+            return float(reference) - z
+
+        return transform
+
+    @staticmethod
+    def _xyz_from_value(value):
+        """从前端保存的点记录中读取原始 XYZ，不做坐标推算。"""
+        if isinstance(value, dict):
+            x = value.get("x_m", value.get("x"))
+            y = value.get("y_m", value.get("y"))
+            z = value.get("z_m", value.get("z"))
+            try:
+                point = np.asarray(
+                    [float(x), float(y), float(z)],
+                    dtype=np.float64,
+                )
+            except (TypeError, ValueError):
+                return None
+        else:
+            try:
+                point = np.asarray(
+                    value,
+                    dtype=np.float64,
+                ).reshape(-1)
+            except Exception:
+                return None
+
+            if point.size < 3:
+                return None
+            point = point[:3]
+
+        if not np.isfinite(point).all():
+            return None
+
+        return point.astype(
+            np.float64,
+            copy=True,
+        )
+
+    @classmethod
+    def _perforation_row_xyz(
+        cls,
+        row,
+        role,
+    ):
+        """读取射孔计算结果中保存的起点、终点或中心点 XYZ。"""
+        if not isinstance(row, dict):
+            return None
+
+        role = str(role or "").strip().lower()
+        nested_keys = {
+            "start": (
+                "start",
+                "start_point",
+                "start_xyz",
+                "start_xyz_m",
+                "start_coordinates",
+                "point1",
+                "p1",
+            ),
+            "end": (
+                "end",
+                "end_point",
+                "end_xyz",
+                "end_xyz_m",
+                "end_coordinates",
+                "point2",
+                "p2",
+            ),
+            "center": (
+                "center",
+                "centre",
+                "center_point",
+                "centre_point",
+                "center_xyz",
+                "centre_xyz",
+                "center_xyz_m",
+                "midpoint",
+                "middle_point",
+            ),
+        }.get(role, ())
+
+        for key in nested_keys:
+            if key not in row:
+                continue
+            point = cls._xyz_from_value(row.get(key))
+            if point is not None:
+                return point
+
+        flat_key_groups = {
+            "start": (
+                ("start_x", "start_y", "start_z"),
+                ("start_x_m", "start_y_m", "start_z_m"),
+                ("x_start", "y_start", "z_start"),
+                ("x1", "y1", "z1"),
+                ("p1_x", "p1_y", "p1_z"),
+            ),
+            "end": (
+                ("end_x", "end_y", "end_z"),
+                ("end_x_m", "end_y_m", "end_z_m"),
+                ("x_end", "y_end", "z_end"),
+                ("x2", "y2", "z2"),
+                ("p2_x", "p2_y", "p2_z"),
+            ),
+            "center": (
+                ("center_x", "center_y", "center_z"),
+                ("center_x_m", "center_y_m", "center_z_m"),
+                ("centre_x", "centre_y", "centre_z"),
+                ("mid_x", "mid_y", "mid_z"),
+                ("midpoint_x", "midpoint_y", "midpoint_z"),
+                ("xc", "yc", "zc"),
+            ),
+        }.get(role, ())
+
+        for keys in flat_key_groups:
+            if not all(key in row for key in keys):
+                continue
+            point = cls._xyz_from_value(
+                [row[key] for key in keys]
+            )
+            if point is not None:
+                return point
+
+        return None
+
+    @classmethod
+    def _calculated_perforation_geometry_by_well(
+        cls,
+        perforation_data,
+        z_transform=None,
+        source_z_transform=None,
+    ):
+        """
+        按井名整理前端已经计算并保存的射孔几何。
+
+        XYZ 只读取计算结果，不再根据 MD 对 DEV 轨迹重新插值。
+        MD 仅用于把保存的几何点插入井轨迹的正确顺序。
+        """
+        if not isinstance(perforation_data, dict):
+            return {}
+
+        calculation = perforation_data.get("calculation") or {}
+        rows = calculation.get("rows") or []
+        grouped = {}
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            if str(row.get("status") or "").strip().lower() != "success":
+                continue
+
+            well_name = str(row.get("well_name") or "").strip()
+            if not well_name:
                 continue
 
             try:
-                md_top = float(
-                    completion["md_top_m"]
-                )
-                md_bottom = float(
-                    completion["md_bottom_m"]
-                )
-            except (
-                KeyError,
-                TypeError,
-                ValueError,
-            ):
+                md1 = float(row["md1"])
+                md2 = float(row["md2"])
+            except (KeyError, TypeError, ValueError):
                 continue
 
-            if not np.isfinite(
-                [md_top, md_bottom]
-            ).all():
+            if not np.isfinite([md1, md2]).all():
                 continue
 
-            start = min(md_top, md_bottom)
-            end = max(md_top, md_bottom)
+            start_xyz = cls._perforation_row_xyz(
+                row,
+                "start",
+            )
+            end_xyz = cls._perforation_row_xyz(
+                row,
+                "end",
+            )
+            center_xyz = cls._perforation_row_xyz(
+                row,
+                "center",
+            )
 
-            if end - start <= 1.0e-10:
+            # 成功记录必须至少具有前端保存的起点和终点坐标。
+            if start_xyz is None or end_xyz is None:
                 continue
 
-            intervals.append(
-                (
-                    float(start),
-                    float(end),
+            if md2 < md1:
+                md1, md2 = md2, md1
+                start_xyz, end_xyz = end_xyz, start_xyz
+
+            if md2 - md1 <= 1.0e-10:
+                continue
+
+            def transform_point(point):
+                if point is None:
+                    return None
+                result = np.asarray(
+                    point,
+                    dtype=np.float64,
+                ).reshape(3).copy()
+                if callable(source_z_transform):
+                    result[2] = float(
+                        source_z_transform(
+                            result[2],
+                            well_name,
+                        )
+                    )
+                if callable(z_transform):
+                    result[2] = float(
+                        z_transform(result[2])
+                    )
+                return result if np.isfinite(result).all() else None
+
+            start_xyz = transform_point(start_xyz)
+            end_xyz = transform_point(end_xyz)
+            center_xyz = transform_point(center_xyz)
+
+            if start_xyz is None or end_xyz is None:
+                continue
+
+            center_md = row.get(
+                "center_md",
+                row.get(
+                    "mid_md",
+                    (md1 + md2) * 0.5,
+                ),
+            )
+            try:
+                center_md = float(center_md)
+            except (TypeError, ValueError):
+                center_md = (md1 + md2) * 0.5
+
+            if not np.isfinite(center_md):
+                center_md = (md1 + md2) * 0.5
+
+            center_md = min(
+                max(center_md, md1),
+                md2,
+            )
+
+            grouped.setdefault(
+                well_name,
+                [],
+            ).append(
+                {
+                    "md1": float(md1),
+                    "md2": float(md2),
+                    "center_md": float(center_md),
+                    "start_xyz": start_xyz,
+                    "center_xyz": center_xyz,
+                    "end_xyz": end_xyz,
+                    "source_row": row,
+                }
+            )
+
+        for records in grouped.values():
+            records.sort(
+                key=lambda item: (
+                    item["md1"],
+                    item["md2"],
                 )
             )
 
-        if not intervals:
-            return []
+        return grouped
 
-        intervals.sort(
-            key=lambda item: item[0]
-        )
-
-        merged = []
-
-        for start, end in intervals:
-            if (
-                not merged
-                or start > merged[-1][1] + 1.0e-8
-            ):
-                merged.append(
-                    [start, end]
-                )
-            else:
-                merged[-1][1] = max(
-                    merged[-1][1],
-                    end,
-                )
-
-        return [
-            (
-                float(start),
-                float(end),
-            )
-            for start, end in merged
-        ]
-
-    @staticmethod
-    def _interpolate_track_point_at_md(
-        track_md,
-        track_points,
-        target_md,
-    ):
-        track_md = np.asarray(
-            track_md,
-            dtype=np.float64,
-        ).reshape(-1)
-        track_points = np.asarray(
-            track_points,
-            dtype=np.float64,
-        ).reshape(-1, 3)
-
-        if (
-            track_md.size < 2
-            or track_points.shape[0] != track_md.size
-        ):
-            return None
-
-        target_md = float(target_md)
-
-        if target_md <= track_md[0]:
-            return track_points[0].copy()
-
-        if target_md >= track_md[-1]:
-            return track_points[-1].copy()
-
-        right = int(
-            np.searchsorted(
-                track_md,
-                target_md,
-                side="right",
-            )
-        )
-        left = max(
-            right - 1,
-            0,
-        )
-        right = min(
-            right,
-            track_md.size - 1,
-        )
-
-        md0 = float(track_md[left])
-        md1 = float(track_md[right])
-
-        if abs(md1 - md0) <= 1.0e-12:
-            return track_points[left].copy()
-
-        ratio = (
-            target_md - md0
-        ) / (
-            md1 - md0
-        )
-
-        return (
-            track_points[left]
-            + ratio
-            * (
-                track_points[right]
-                - track_points[left]
-            )
-        )
-
-    def _split_track_by_perforations(
+    def _split_track_by_perforation_geometry(
         self,
         valid_points,
-        perforation_intervals,
+        perforation_records,
     ):
+        """
+        使用前端保存的射孔 XYZ 分割井轨迹。
+
+        原始 DEV 点保持原样；射孔边界和中心使用计算结果中的 XYZ，
+        不调用 MD 插值函数重新生成坐标。
+        """
         if not valid_points:
             return []
 
-        clean_md = []
-        clean_points = []
-
-        for md, xyz in valid_points:
-            md = float(md)
-            xyz = np.asarray(
-                xyz,
-                dtype=np.float64,
-            ).reshape(3)
-
-            if not np.isfinite(
-                [md, *xyz]
-            ).all():
-                continue
-
-            if (
-                clean_md
-                and abs(md - clean_md[-1]) <= 1.0e-10
-            ):
-                clean_points[-1] = xyz
-                continue
-
-            clean_md.append(md)
-            clean_points.append(xyz)
-
-        if len(clean_md) < 2:
-            return []
-
-        track_md = np.asarray(
-            clean_md,
-            dtype=np.float64,
-        )
-        track_points = np.asarray(
-            clean_points,
-            dtype=np.float64,
-        )
-
-        track_min = float(track_md[0])
-        track_max = float(track_md[-1])
-
-        clipped_intervals = []
-
-        for start, end in perforation_intervals or []:
-            start = max(
-                float(start),
-                track_min,
-            )
-            end = min(
-                float(end),
-                track_max,
-            )
-
-            if end - start > 1.0e-10:
-                clipped_intervals.append(
-                    (
-                        start,
-                        end,
-                    )
-                )
-
-        breakpoints = list(
-            track_md.tolist()
-        )
-
-        for start, end in clipped_intervals:
-            breakpoints.extend(
-                [
-                    start,
-                    end,
-                ]
-            )
-
-        breakpoints = np.asarray(
-            sorted(set(breakpoints)),
-            dtype=np.float64,
-        )
-
         samples = []
 
-        for md in breakpoints:
-            point = self._interpolate_track_point_at_md(
-                track_md,
-                track_points,
-                md,
-            )
+        for md, xyz in valid_points:
+            try:
+                md = float(md)
+                xyz = np.asarray(
+                    xyz,
+                    dtype=np.float64,
+                ).reshape(3)
+            except Exception:
+                continue
 
-            if point is None:
+            if not np.isfinite([md, *xyz]).all():
                 continue
 
             samples.append(
-                (
-                    float(md),
-                    point,
-                )
+                {
+                    "md": md,
+                    "point": xyz.copy(),
+                    "priority": 0,
+                }
             )
 
         if len(samples) < 2:
             return []
 
+        track_min = min(item["md"] for item in samples)
+        track_max = max(item["md"] for item in samples)
+        intervals = []
+
+        for record in perforation_records or []:
+            if not isinstance(record, dict):
+                continue
+
+            start = max(float(record["md1"]), track_min)
+            end = min(float(record["md2"]), track_max)
+            if end - start <= 1.0e-10:
+                continue
+
+            intervals.append((start, end))
+
+            exact_points = (
+                (record["md1"], record.get("start_xyz"), 2),
+                (record.get("center_md"), record.get("center_xyz"), 3),
+                (record["md2"], record.get("end_xyz"), 2),
+            )
+
+            for md, point, priority in exact_points:
+                if point is None or md is None:
+                    continue
+                try:
+                    md = float(md)
+                    point = np.asarray(
+                        point,
+                        dtype=np.float64,
+                    ).reshape(3)
+                except Exception:
+                    continue
+                if not np.isfinite([md, *point]).all():
+                    continue
+                if md < track_min - 1.0e-9 or md > track_max + 1.0e-9:
+                    continue
+                samples.append(
+                    {
+                        "md": md,
+                        "point": point.copy(),
+                        "priority": int(priority),
+                    }
+                )
+
+        samples.sort(
+            key=lambda item: (
+                item["md"],
+                item["priority"],
+            )
+        )
+
+        deduplicated = []
+        for item in samples:
+            if (
+                deduplicated
+                and abs(item["md"] - deduplicated[-1]["md"])
+                <= 1.0e-10
+            ):
+                if item["priority"] >= deduplicated[-1]["priority"]:
+                    deduplicated[-1] = item
+                continue
+            deduplicated.append(item)
+
+        if len(deduplicated) < 2:
+            return []
+
         def is_perforation_md(md):
-            for start, end in clipped_intervals:
-                if (
-                    md >= start - 1.0e-9
-                    and md <= end + 1.0e-9
-                ):
-                    return True
-            return False
+            return any(
+                start - 1.0e-9 <= md <= end + 1.0e-9
+                for start, end in intervals
+            )
 
         result = []
 
-        for index in range(len(samples) - 1):
-            md0, point0 = samples[index]
-            md1, point1 = samples[index + 1]
+        for index in range(len(deduplicated) - 1):
+            current = deduplicated[index]
+            following = deduplicated[index + 1]
+            md0 = current["md"]
+            md1 = following["md"]
 
             if md1 - md0 <= 1.0e-12:
                 continue
 
-            segment_is_perforation = (
-                is_perforation_md(
-                    (md0 + md1) * 0.5
-                )
+            is_perforation = is_perforation_md(
+                (md0 + md1) * 0.5
             )
+            point0 = current["point"]
+            point1 = following["point"]
 
             if (
                 result
-                and result[-1]["is_perforation"]
-                == segment_is_perforation
+                and result[-1]["is_perforation"] == is_perforation
             ):
-                last_point = result[-1]["points"][-1]
-
                 if np.linalg.norm(
-                    point0 - last_point
+                    point0 - result[-1]["points"][-1]
                 ) > 1.0e-8:
-                    result[-1]["points"].append(
-                        point0
-                    )
-
-                result[-1]["points"].append(
-                    point1
-                )
+                    result[-1]["points"].append(point0)
+                result[-1]["points"].append(point1)
             else:
                 result.append(
                     {
-                        "is_perforation": (
-                            segment_is_perforation
-                        ),
-                        "points": [
-                            point0,
-                            point1,
-                        ],
+                        "is_perforation": is_perforation,
+                        "points": [point0, point1],
                     }
                 )
 
         normalized = []
-
         for item in result:
             points = []
-
             for point in item["points"]:
                 point = np.asarray(
                     point,
                     dtype=np.float64,
                 ).reshape(3)
-
                 if (
                     not points
-                    or np.linalg.norm(
-                        point - points[-1]
-                    ) > 1.0e-8
+                    or np.linalg.norm(point - points[-1]) > 1.0e-8
                 ):
                     points.append(point)
 
             if len(points) >= 2:
                 normalized.append(
                     {
-                        "is_perforation": item[
-                            "is_perforation"
-                        ],
+                        "is_perforation": item["is_perforation"],
                         "points": np.asarray(
                             points,
                             dtype=np.float64,
@@ -2456,6 +3854,89 @@ class GeometryPreviewRenderer:
         self._configure_depth_sorted_geometry_actor(
             actor
         )
+
+        return actor
+
+    def _add_perforation_points_actor(
+        self,
+        points,
+    ):
+        try:
+            array = np.asarray(
+                points,
+                dtype=np.float64,
+            ).reshape(-1, 3)
+        except Exception:
+            return None
+
+        valid = np.isfinite(
+            array
+        ).all(axis=1)
+        array = array[valid]
+
+        if array.shape[0] == 0:
+            return None
+
+        # 每次创建 actor 时都按当前井筒半径计算，确保射孔球
+        # 始终跟随井半径。默认 multiplier=1.0，球直径与井直径一致。
+        radius = float(
+            self.well_radius
+            * self.perforation_point_radius_multiplier
+        )
+        self.perforation_point_radius = radius
+        self.perforation_point_size = radius
+
+        if not np.isfinite(radius) or radius <= 0.0:
+            return None
+
+        try:
+            point_cloud = pv.PolyData(array)
+            sphere = pv.Sphere(
+                radius=radius,
+                theta_resolution=int(
+                    PERFORATION_POINT_THETA_RESOLUTION
+                ),
+                phi_resolution=int(
+                    PERFORATION_POINT_PHI_RESOLUTION
+                ),
+            )
+            glyphs = point_cloud.glyph(
+                geom=sphere,
+                orient=False,
+                scale=False,
+            )
+
+            if glyphs is None or glyphs.n_points == 0:
+                return None
+
+            actor = self.plotter.add_mesh(
+                glyphs,
+                color=self.perforation_color,
+                opacity=float(
+                    PERFORATION_OPACITY
+                ),
+                lighting=True,
+                smooth_shading=True,
+                ambient=0.85,
+                diffuse=0.45,
+                specular=0.08,
+                specular_power=12.0,
+                pickable=False,
+                render=False,
+            )
+        except Exception:
+            return None
+
+        self._configure_depth_sorted_geometry_actor(
+            actor
+        )
+
+        try:
+            mapper = actor.GetMapper()
+            if mapper is not None:
+                mapper.ScalarVisibilityOff()
+        except Exception:
+            pass
 
         return actor
 
@@ -2686,14 +4167,20 @@ class GeometryPreviewRenderer:
             self.perforation_actors
         )
         self._remove_actor_list(self.well_label_actors)
+
         self.well_actors = []
+        self.perforation_segment_actors = []
+        self.perforation_point_actors = []
         self.perforation_actors = []
         self.well_label_actors = []
+        self._well_actor_groups = {}
+        self._well_label_anchor_by_name = {}
         self._well_label_reference_view_scale = None
         self._well_label_current_font_size = None
         self._well_label_points = []
         self._well_label_texts = []
         self._well_label_use_billboard = False
+        self._wells_render_revision = -1
 
         self._sync_geometry_overlay_attachment()
 
@@ -2703,6 +4190,7 @@ class GeometryPreviewRenderer:
     def clear_natural_fractures(self, render_now=True):
         self._remove_actor_list(self.natural_fracture_actors)
         self.natural_fracture_actors = []
+        self._natural_fractures_render_revision = -1
 
         self._sync_geometry_overlay_attachment()
 
@@ -2712,6 +4200,7 @@ class GeometryPreviewRenderer:
     def clear_hydraulic_fractures(self, render_now=True):
         self._remove_actor_list(self.hydraulic_fracture_actors)
         self.hydraulic_fracture_actors = []
+        self._hydraulic_fractures_render_revision = -1
 
         self._sync_geometry_overlay_attachment()
 
@@ -2752,10 +4241,8 @@ class GeometryPreviewRenderer:
         )
 
     def is_wells_visible(self) -> bool:
-        return bool(
-            self.well_actors
-            or self.perforation_actors
-        )
+        """仅返回井筒本体是否已显示，不再把射孔点/射孔段算入井显示状态。"""
+        return bool(self.well_actors)
 
     def is_natural_fractures_visible(self) -> bool:
         return bool(self.natural_fracture_actors)
@@ -2912,9 +4399,6 @@ class GeometryPreviewRenderer:
         ]
 
     def _geometry_top_actors(self):
-        # add_point_labels() 返回的是二维标签 Actor。
-        # 井名不能进入普通三维网格 Actor 的 renderer 重排链路，
-        # 否则 RemoveActor/AddActor 后标签会在部分 PyVista 版本中消失。
         return self._geometry_mesh_actors()
 
     @staticmethod
@@ -4717,14 +6201,22 @@ class GeometryPreviewRenderer:
         self._configure_preview_scene()
 
         if self.is_wells_visible():
-            self.clear_wells(render_now=render_now)
+            self.clear_wells(
+                render_now=render_now
+            )
             return False
 
-        self.clear_wells(render_now=False)
+        self.clear_wells(
+            render_now=False
+        )
 
-        well_data = self._resolved_well_data(sim_data)
-
-        if not isinstance(well_data, dict):
+        well_data = self._resolved_well_data(
+            sim_data
+        )
+        if not isinstance(
+            well_data,
+            dict,
+        ):
             if render_now:
                 self._render()
             return False
@@ -4733,39 +6225,98 @@ class GeometryPreviewRenderer:
             "wells",
             [],
         )
-
-        if not isinstance(wells, list) or not wells:
+        if not isinstance(
+            wells,
+            list,
+        ) or not wells:
             if render_now:
                 self._render()
             return False
 
+        vertical_mode = str(
+            well_data.get("vertical_mode")
+            or "elevation_z"
+        )
+        z_transform = self._build_geometry_z_transform(
+            z_values=self._well_trajectory_z_values(
+                well_data
+            ),
+            grid_z_bounds=self._static_grid_z_bounds(
+                sim_data
+            ),
+        )
+        source_z_transform = (
+            self._raw_geometry_z_transform_for_wells(
+                well_data
+            )
+        )
+
+        perforation_data = (
+            self._resolved_perforation_data(
+                sim_data
+            )
+        )
+        perforation_geometry_by_well = (
+            self._calculated_perforation_geometry_by_well(
+                perforation_data,
+                z_transform=z_transform,
+                source_z_transform=source_z_transform,
+            )
+        )
+
         count = 0
-        well_head_points = []
-        well_names = []
+        self._well_actor_groups = {}
+        self._well_label_anchor_by_name = {}
 
         for well in wells:
-            if not isinstance(well, dict):
+            if not isinstance(
+                well,
+                dict,
+            ):
                 continue
 
+            well_name = str(
+                well.get("well_name")
+                or ""
+            ).strip()
             raw_track = well.get(
-                "track",
+                "rows",
                 [],
             )
-
-            if not isinstance(raw_track, list):
+            if not isinstance(
+                raw_track,
+                list,
+            ):
                 continue
 
             valid_points = []
 
             for point in raw_track:
-                if not isinstance(point, dict):
+                if not isinstance(
+                    point,
+                    dict,
+                ):
                     continue
 
                 try:
-                    md = float(point["md_m"])
-                    x = float(point["x_m"])
-                    y = float(point["y_m"])
-                    z = float(point["z_m"])
+                    md = float(
+                        point["md_m"]
+                    )
+                    x = float(
+                        point["x_m"]
+                    )
+                    y = float(
+                        point["y_m"]
+                    )
+                    raw_z = (
+                        self._trajectory_point_z(
+                            point,
+                            vertical_mode,
+                        )
+                    )
+                    z = float(
+                        z_transform(raw_z)
+                    )
                 except (
                     KeyError,
                     TypeError,
@@ -4773,15 +6324,17 @@ class GeometryPreviewRenderer:
                 ):
                     continue
 
-                if not np.isfinite([md, x, y, z]).all():
+                if not np.isfinite(
+                    [md, x, y, z]
+                ).all():
                     continue
 
                 valid_points.append(
                     (
                         md,
-                        np.array(
+                        np.asarray(
                             [x, y, z],
-                            dtype=float,
+                            dtype=np.float64,
                         ),
                     )
                 )
@@ -4790,35 +6343,70 @@ class GeometryPreviewRenderer:
                 continue
 
             valid_points.sort(
-                key=lambda item: item[0],
+                key=lambda item: item[0]
             )
 
             ordered_points = []
+            clean_valid_points = []
 
-            for _, xyz in valid_points:
-                if not ordered_points:
-                    ordered_points.append(xyz)
+            for md, xyz in valid_points:
+                if (
+                    clean_valid_points
+                    and abs(
+                        md
+                        - clean_valid_points[-1][0]
+                    )
+                    <= 1.0e-10
+                ):
+                    clean_valid_points[-1] = (
+                        md,
+                        xyz,
+                    )
+                    if ordered_points:
+                        ordered_points[-1] = xyz
                     continue
 
-                if np.linalg.norm(xyz - ordered_points[-1]) > 1e-8:
-                    ordered_points.append(xyz)
-
-            if len(ordered_points) < 2:
-                continue
-
-            if self.show_perforations:
-                perforation_intervals = (
-                    self._completion_perforation_intervals(
-                        well
+                clean_valid_points.append(
+                    (
+                        md,
+                        xyz,
                     )
                 )
-            else:
-                perforation_intervals = []
 
+                if (
+                    not ordered_points
+                    or np.linalg.norm(
+                        xyz
+                        - ordered_points[-1]
+                    )
+                    > 1.0e-8
+                ):
+                    ordered_points.append(
+                        xyz
+                    )
+
+            valid_points = clean_valid_points
+
+            if (
+                len(valid_points) < 2
+                or len(ordered_points) < 2
+            ):
+                continue
+
+            # 射孔段直接使用前端计算结果中保存的起点、中心和终点 XYZ。
+            # MD 只用于维持这些已保存点在 DEV 轨迹中的先后顺序。
+            active_perforation_geometry = (
+                perforation_geometry_by_well.get(
+                    well_name,
+                    [],
+                )
+                if self.show_perforation_segments
+                else []
+            )
             track_segments = (
-                self._split_track_by_perforations(
+                self._split_track_by_perforation_geometry(
                     valid_points,
-                    perforation_intervals,
+                    active_perforation_geometry,
                 )
             )
 
@@ -4826,28 +6414,33 @@ class GeometryPreviewRenderer:
                 continue
 
             rendered_segment_count = 0
+            well_group = {
+                "well_actors": [],
+                "perforation_segment_actors": [],
+                "perforation_point_actors": [],
+                # 兼容旧代码读取该键。
+                "perforation_actors": [],
+            }
 
             for segment in track_segments:
                 is_perforation = bool(
                     segment["is_perforation"]
-                )
-                segment_color = (
-                    self.perforation_color
-                    if is_perforation
-                    else self.well_color
-                )
-                segment_opacity = (
-                    PERFORATION_OPACITY
-                    if is_perforation
-                    else WELL_OPACITY
                 )
 
                 actor = (
                     self._add_well_track_segment_actor(
                         sim_data=sim_data,
                         points=segment["points"],
-                        color=segment_color,
-                        opacity=segment_opacity,
+                        color=(
+                            self.perforation_color
+                            if is_perforation
+                            else self.well_color
+                        ),
+                        opacity=(
+                            PERFORATION_OPACITY
+                            if is_perforation
+                            else WELL_OPACITY
+                        ),
                     )
                 )
 
@@ -4855,62 +6448,148 @@ class GeometryPreviewRenderer:
                     continue
 
                 if is_perforation:
+                    self.perforation_segment_actors.append(
+                        actor
+                    )
                     self.perforation_actors.append(
                         actor
                     )
+                    well_group[
+                        "perforation_segment_actors"
+                    ].append(actor)
+                    well_group[
+                        "perforation_actors"
+                    ].append(actor)
                 else:
                     self.well_actors.append(
                         actor
                     )
+                    well_group[
+                        "well_actors"
+                    ].append(actor)
 
                 rendered_segment_count += 1
 
             if rendered_segment_count == 0:
                 continue
 
-            well_name = str(
-                well.get(
-                    "well_name",
-                    well.get("name", ""),
+            # 射孔点直接使用前端计算结果中保存的中心 XYZ。
+            perforation_points = []
+
+            for record in (
+                perforation_geometry_by_well.get(
+                    well_name,
+                    [],
                 )
-                or ""
-            ).strip()
+                or []
+            ):
+                point = record.get("center_xyz")
+                if point is None:
+                    continue
+
+                point = np.asarray(
+                    point,
+                    dtype=np.float64,
+                ).reshape(3)
+
+                if not np.isfinite(point).all():
+                    continue
+
+                if any(
+                    np.linalg.norm(
+                        point - existing
+                    ) <= 1.0e-8
+                    for existing in perforation_points
+                ):
+                    continue
+
+                perforation_points.append(point)
+
+            if perforation_points:
+                point_actor = (
+                    self._add_perforation_points_actor(
+                        perforation_points
+                    )
+                )
+
+                if point_actor is not None:
+                    self.perforation_point_actors.append(
+                        point_actor
+                    )
+                    self.perforation_actors.append(
+                        point_actor
+                    )
+                    well_group[
+                        "perforation_point_actors"
+                    ].append(
+                        point_actor
+                    )
+                    well_group[
+                        "perforation_actors"
+                    ].append(
+                        point_actor
+                    )
 
             if well_name:
-                label_point = self._well_name_label_point(
-                    sim_data=sim_data,
-                    ordered_points=ordered_points,
+                self._well_actor_groups[
+                    well_name
+                ] = well_group
+
+                well_visible = (
+                    well_name
+                    not in self._hidden_well_names
+                )
+
+                for actor in well_group[
+                    "well_actors"
+                ]:
+                    self._set_actor_visibility(
+                        actor,
+                        well_visible,
+                    )
+
+                for actor in well_group[
+                    "perforation_segment_actors"
+                ]:
+                    self._set_actor_visibility(
+                        actor,
+                        well_visible
+                        and self.show_perforation_segments,
+                    )
+
+                for actor in well_group[
+                    "perforation_point_actors"
+                ]:
+                    self._set_actor_visibility(
+                        actor,
+                        well_visible
+                        and self.show_perforation_points,
+                    )
+
+                label_point = (
+                    self._well_name_label_point(
+                        sim_data=sim_data,
+                        ordered_points=ordered_points,
+                    )
                 )
 
                 if label_point is not None:
-                    well_head_points.append(
-                        label_point
+                    self._well_label_anchor_by_name[
+                        well_name
+                    ] = (
+                        np.asarray(
+                            label_point,
+                            dtype=np.float64,
+                        ).reshape(3).copy()
                     )
-                    well_names.append(well_name)
 
             count += 1
 
-        if well_head_points and well_names:
-            self._well_label_points = [
-                np.asarray(point, dtype=np.float64).reshape(3).copy()
-                for point in well_head_points
-            ]
-            self._well_label_texts = list(well_names)
-            label_actors = self._add_well_name_labels(
-                well_head_points=self._well_label_points,
-                well_names=self._well_label_texts,
-                font_size=self._current_well_label_font_size(),
-            )
-
-            if label_actors:
-                self.well_label_actors.extend(
-                    label_actors
-                )
-                self._well_label_use_billboard = any(
-                    getattr(actor, "GetTextProperty", None) is not None
-                    for actor in label_actors
-                )
-                self._well_label_current_font_size = self._current_well_label_font_size()
+        self._rebuild_visible_well_name_labels(
+            font_size=(
+                self._current_well_label_font_size()
+            ),
+        )
 
         if self._well_labels_forced_hidden:
             self.set_well_labels_forced_hidden(
@@ -4919,30 +6598,45 @@ class GeometryPreviewRenderer:
             )
 
         if count > 0:
+            self._wells_render_revision = (
+                self._scene_geometry_revision
+            )
             self._initialize_preview_camera_once(
                 sim_data=sim_data,
                 bounds=self._actors_bounds(
                     [
-                        *(self.well_actors or []),
-                        *(
-                            self.perforation_actors
-                            or []
-                        ),
-                    ],
+                        actor
+                        for actor in [
+                            *(
+                                self.well_actors
+                                or []
+                            ),
+                            *(
+                                self.perforation_actors
+                                or []
+                            ),
+                        ]
+                        if self._actor_is_visible(
+                            actor
+                        )
+                    ]
                 ),
             )
             self.refresh_preview_stack(
-                render_now=False,
+                render_now=False
             )
 
             if self.well_label_actors:
                 self._ensure_well_name_labels_attached()
                 self._reset_well_label_zoom_reference()
+        else:
+            self._wells_render_revision = -1
 
         if render_now:
             self._render()
 
         return count > 0
+
 
     def render_natural_fractures(
         self,
@@ -4963,6 +6657,9 @@ class GeometryPreviewRenderer:
         )
 
         if count > 0:
+            self._natural_fractures_render_revision = (
+                self._scene_geometry_revision
+            )
             self._initialize_preview_camera_once(
                 sim_data=sim_data,
                 bounds=self._actors_bounds(
@@ -4972,6 +6669,8 @@ class GeometryPreviewRenderer:
             self.refresh_preview_stack(
                 render_now=False,
             )
+        else:
+            self._natural_fractures_render_revision = -1
 
         if render_now:
             self._render()
@@ -5051,6 +6750,9 @@ class GeometryPreviewRenderer:
         )
 
         if count > 0:
+            self._hydraulic_fractures_render_revision = (
+                self._scene_geometry_revision
+            )
             self._initialize_preview_camera_once(
                 sim_data=sim_data,
                 bounds=self._actors_bounds(
@@ -5060,6 +6762,8 @@ class GeometryPreviewRenderer:
             self.refresh_preview_stack(
                 render_now=False,
             )
+        else:
+            self._hydraulic_fractures_render_revision = -1
 
         if render_now:
             self._render()
@@ -5081,9 +6785,49 @@ class GeometryPreviewRenderer:
             sim_data
         )
 
+        # 人工裂缝由射孔位置生成，本质上与 DEV 井轨迹使用同一套
+        # 原始 Z 坐标。不能再根据“人工裂缝自身的窄 Z 范围”单独
+        # 猜测翻转方向，否则井轨迹可能判定为 z -> -z，而位于深部的
+        # 人工裂缝因其局部范围未与网格重叠而保持原值，最终井和裂缝
+        # 会被渲染到场景两侧。优先使用整套 DEV 轨迹确定统一变换。
+        well_data = self._resolved_well_data(sim_data)
+        source_z_transform = (
+            self._raw_geometry_z_transform_for_wells(
+                well_data
+            )
+        )
+        well_z_values = (
+            self._well_trajectory_z_values(well_data)
+            if isinstance(well_data, dict)
+            else []
+        )
+        fracture_z_values = []
+        for fracture in fractures:
+            if not isinstance(fracture, dict):
+                continue
+            well_name = str(
+                fracture.get("well_name") or ""
+            ).strip()
+            points = self._fracture_record_points(
+                fracture
+            )
+            if points is None:
+                continue
+            for point in points:
+                try:
+                    value = source_z_transform(
+                        point[2],
+                        well_name,
+                    )
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if np.isfinite(value):
+                    fracture_z_values.append(float(value))
         z_transform = self._build_geometry_z_transform(
-            z_values=self._natural_fracture_z_values(
-                fractures
+            z_values=(
+                well_z_values
+                if well_z_values
+                else fracture_z_values
             ),
             grid_z_bounds=grid_z_bounds,
         )
@@ -5091,6 +6835,9 @@ class GeometryPreviewRenderer:
         count = 0
 
         for fracture in fractures:
+            well_name = str(
+                fracture.get("well_name") or ""
+            ).strip()
             points = self._safe_points(
                 fracture.get(
                     "vertices",
@@ -5103,7 +6850,12 @@ class GeometryPreviewRenderer:
 
             points = self._apply_z_transform_to_points(
                 points,
-                z_transform,
+                lambda z, current_well=well_name: z_transform(
+                    source_z_transform(
+                        z,
+                        current_well,
+                    )
+                ),
             )
 
             if points is None or len(points) < 3:
@@ -5138,17 +6890,26 @@ class GeometryPreviewRenderer:
 
         self.clear_fractures(render_now=False)
 
-        total_count = 0
-
-        total_count += self._render_natural_fractures(
+        natural_count = self._render_natural_fractures(
             sim_data,
         )
 
-        total_count += self._render_hydraulic_fractures(
+        hydraulic_count = self._render_hydraulic_fractures(
             sim_data,
         )
+        total_count = natural_count + hydraulic_count
 
         if total_count > 0:
+            self._natural_fractures_render_revision = (
+                self._scene_geometry_revision
+                if natural_count > 0
+                else -1
+            )
+            self._hydraulic_fractures_render_revision = (
+                self._scene_geometry_revision
+                if hydraulic_count > 0
+                else -1
+            )
             fracture_actors = [
                 *(self.natural_fracture_actors or []),
                 *(self.hydraulic_fracture_actors or []),
@@ -5163,6 +6924,9 @@ class GeometryPreviewRenderer:
             self.refresh_preview_stack(
                 render_now=False,
             )
+        else:
+            self._natural_fractures_render_revision = -1
+            self._hydraulic_fractures_render_revision = -1
 
         if render_now:
             self._render()
@@ -5277,70 +7041,22 @@ class GeometryPreviewRenderer:
         return z_values
 
     @staticmethod
-    def _hydraulic_fracture_z_values(wells):
+    def _hydraulic_fracture_z_values(fractures):
+        """读取新人工裂缝记录中的 vertices/points/corners 的 Z。"""
         z_values = []
-
-        if not isinstance(wells, list):
+        if not isinstance(fractures, list):
             return z_values
 
-        for well in wells:
-            if not isinstance(well, dict):
-                continue
-
-            completions = well.get(
-                "completion_definitions",
-                [],
+        for fracture in fractures:
+            points = GeometryPreviewRenderer._fracture_record_points(
+                fracture
             )
-
-            if not isinstance(completions, list):
+            if points is None:
                 continue
-
-            for completion in completions:
-                if not isinstance(completion, dict):
-                    continue
-
-                if not completion.get("is_fractured", False):
-                    continue
-
-                fracture_data = completion.get(
-                    "fracture",
-                    None,
-                )
-
-                if not isinstance(fracture_data, dict):
-                    continue
-
-                if not fracture_data.get("geometry_available", False):
-                    continue
-
-                corners = fracture_data.get(
-                    "corners",
-                    [],
-                )
-
-                if not isinstance(corners, list):
-                    continue
-
-                for corner in corners:
-                    if not isinstance(corner, dict):
-                        continue
-
-                    try:
-                        z = float(
-                            corner["z_m"]
-                        )
-
-                    except (
-                        KeyError,
-                        TypeError,
-                        ValueError,
-                    ):
-                        continue
-
-                    if np.isfinite(z):
-                        z_values.append(z)
-
+            array = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+            z_values.extend(array[:, 2].tolist())
         return z_values
+
 
     @staticmethod
     def _finite_range(values):

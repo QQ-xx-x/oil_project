@@ -6955,19 +6955,58 @@ class PyVistaRenderer:
         self.setup_camera(sim_data)
         self._render()
     
+
     
-    # 统一井 / 裂缝显隐
-    
-    # 模拟前预览和模拟后结果始终共用 GeometryPreviewRenderer 中同一批 actor。
-    # 本类不再创建任何模拟专用井或裂缝 actor。
-    
+    @staticmethod
+    def _normalize_shared_fracture_type(fracture_type):
+        value = str(fracture_type or "").strip().lower()
+        aliases = {
+            "natural": "natural",
+            "dfn": "natural",
+            "hydraulic": "hydraulic",
+            "artificial": "hydraulic",
+            "all": None,
+            "fractures": None,
+            "": None,
+        }
+        if value not in aliases:
+            raise ValueError(
+                f"Unsupported fracture type: {fracture_type}"
+            )
+        return aliases[value]
+
+    def refresh_geometry_data(
+        self,
+        sim_data,
+        *,
+        render_now=True,
+    ):
+        """刷新当前已显示的井和裂缝 actor，同时保持各图层显隐状态。"""
+        if sim_data is None:
+            return False
+
+        self.geometry_layers.set_scene_data(
+            sim_data,
+            render_now=False,
+        )
+
+        if render_now:
+            self._render()
+
+        return True
+
     def set_shared_fractures_visible(
         self,
         visible,
         sim_data=None,
         render_now=True,
+        fracture_type=None,
     ):
+        """按 natural/hydraulic 独立控制模拟与预览共用的裂缝 actors。"""
         visible = bool(visible)
+        fracture_type = self._normalize_shared_fracture_type(
+            fracture_type
+        )
 
         if sim_data is not None:
             self.geometry_layers.set_scene_data(
@@ -6981,22 +7020,83 @@ class PyVistaRenderer:
                 None,
             )
 
-        current = self.geometry_layers.is_fractures_visible()
+        if fracture_type is None:
+            natural_visible = bool(
+                self.geometry_layers
+                .is_natural_fractures_visible()
+            )
+            hydraulic_visible = bool(
+                self.geometry_layers
+                .is_hydraulic_fractures_visible()
+            )
+
+            if visible and sim_data is not None:
+                if not natural_visible:
+                    self.geometry_layers.render_natural_fractures(
+                        sim_data,
+                        render_now=False,
+                    )
+                if not hydraulic_visible:
+                    self.geometry_layers.render_hydraulic_fractures(
+                        sim_data,
+                        render_now=False,
+                    )
+            elif not visible and (
+                natural_visible or hydraulic_visible
+            ):
+                self.geometry_layers.clear_fractures(
+                    render_now=False,
+                )
+
+            if render_now:
+                self._render()
+
+            return bool(
+                self.geometry_layers.is_fractures_visible()
+            )
+
+        if fracture_type == "natural":
+            is_visible = (
+                self.geometry_layers
+                .is_natural_fractures_visible
+            )
+            render_fractures = (
+                self.geometry_layers
+                .render_natural_fractures
+            )
+            clear_fractures = (
+                self.geometry_layers
+                .clear_natural_fractures
+            )
+        elif fracture_type == "hydraulic":
+            is_visible = (
+                self.geometry_layers
+                .is_hydraulic_fractures_visible
+            )
+            render_fractures = (
+                self.geometry_layers
+                .render_hydraulic_fractures
+            )
+            clear_fractures = (
+                self.geometry_layers
+                .clear_hydraulic_fractures
+            )
+        current = bool(is_visible())
 
         if visible and not current and sim_data is not None:
-            self.geometry_layers.render_fractures(
+            render_fractures(
                 sim_data,
                 render_now=False,
             )
         elif not visible and current:
-            self.geometry_layers.clear_fractures(
+            clear_fractures(
                 render_now=False,
             )
 
         if render_now:
             self._render()
 
-        return self.geometry_layers.is_fractures_visible()
+        return bool(is_visible())
 
 
     def set_shared_wells_visible(
@@ -7109,27 +7209,55 @@ class PyVistaRenderer:
             self.cache["grid_lines_actor"].visibility = show
         self._render()
 
-    def has_fractures(self) -> bool:
+    def has_fractures(self, fracture_type=None) -> bool:
+        fracture_type = self._normalize_shared_fracture_type(
+            fracture_type
+        )
+        if fracture_type == "natural":
+            return bool(
+                self.geometry_layers
+                .is_natural_fractures_visible()
+            )
+        if fracture_type == "hydraulic":
+            return bool(
+                self.geometry_layers
+                .is_hydraulic_fractures_visible()
+            )
         return bool(
             self.geometry_layers.is_fractures_visible()
         )
 
-    def ensure_fractures(self, sim_data) -> bool:
-        if self.geometry_layers.is_fractures_visible():
+    def ensure_fractures(
+        self,
+        sim_data,
+        fracture_type=None,
+        render_now=True,
+    ) -> bool:
+        if self.has_fractures(fracture_type):
             return True
 
         return bool(
-            self.geometry_layers.render_fractures(
-                sim_data,
-                render_now=True,
+            self.set_shared_fractures_visible(
+                visible=True,
+                sim_data=sim_data,
+                render_now=render_now,
+                fracture_type=fracture_type,
             )
         )
 
-    def toggle_fractures(self, show):
+    def toggle_fractures(
+        self,
+        show,
+        fracture_type=None,
+        sim_data=None,
+        render_now=True,
+    ):
         """旧接口：直接控制预览/模拟共用的裂缝 actor。"""
         return self.set_shared_fractures_visible(
             visible=show,
-            render_now=True,
+            sim_data=sim_data,
+            render_now=render_now,
+            fracture_type=fracture_type,
         )
 
 
@@ -7494,10 +7622,11 @@ class PyVistaRenderer:
         """兼容旧名称，实际调用统一几何渲染器的切换接口。"""
         return self.render_fractures(sim_data)
 
-    def hide_fractures(self):
+    def hide_fractures(self, fracture_type=None):
         return self.set_shared_fractures_visible(
             False,
             render_now=True,
+            fracture_type=fracture_type,
         )
 
     
@@ -7854,18 +7983,32 @@ class PyVistaRenderer:
         self._render()
         return True
 
-    def toggle_fractures_visibility(self, visible):
+    def toggle_fractures_visibility(
+        self,
+        visible,
+        fracture_type=None,
+        sim_data=None,
+        render_now=True,
+    ):
         """模拟和预览按钮共同控制同一批预览裂缝 actor。"""
         return self.set_shared_fractures_visible(
             visible=visible,
-            render_now=True,
+            sim_data=sim_data,
+            render_now=render_now,
+            fracture_type=fracture_type,
         )
 
-    def toggle_wells_visibility(self, visible):
+    def toggle_wells_visibility(
+        self,
+        visible,
+        sim_data=None,
+        render_now=True,
+    ):
         """模拟和预览按钮共同控制同一批预览井 actor。"""
         return self.set_shared_wells_visible(
             visible=visible,
-            render_now=True,
+            sim_data=sim_data,
+            render_now=render_now,
         )
 
 

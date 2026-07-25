@@ -102,7 +102,7 @@ STATIC_PROPERTY_SPECS = {
         ],
         "label": "Matrix Kx",
         "internal_key": "matrix_kx",
-        "scale": 0.001,
+        "scale": 1.0,
         "unit": "",
     },
     "MATRIX_PERMY": {
@@ -113,7 +113,7 @@ STATIC_PROPERTY_SPECS = {
         ],
         "label": "Matrix Ky",
         "internal_key": "matrix_ky",
-        "scale": 0.001,
+        "scale": 1.0,
         "unit": "",
     },
     "MATRIX_PERMZ": {
@@ -124,7 +124,7 @@ STATIC_PROPERTY_SPECS = {
         ],
         "label": "Matrix Kz",
         "internal_key": "matrix_kz",
-        "scale": 0.001,
+        "scale": 1.0,
         "unit": "",
     },
     "DFN_PORO": {
@@ -244,54 +244,12 @@ def _is_valid_path(
     )
 
 
-def _scale_static_property_values(
-    values,
-    property_key: str,
-    null_value: float = 99999.0,
-) -> np.ndarray:
-    canonical_key = (
-        normalize_static_property_key(
-            property_key
-        )
-    )
-
-    spec = STATIC_PROPERTY_SPECS[
-        canonical_key
-    ]
-
-    array = np.asarray(
+def _raw_static_property_values(values) -> np.ndarray:
+    """保持解析器返回的原始数值，不做缩放、单位换算或重映射。"""
+    return np.asarray(
         values,
         dtype=np.float64,
-    ).copy()
-
-    scale = float(
-        spec.get(
-            "scale",
-            1.0,
-        )
     )
-
-    if abs(scale - 1.0) < 1e-15:
-        return array
-
-    valid_mask = (
-        np.isfinite(array)
-        & (
-            np.abs(
-                array
-                - float(null_value)
-            )
-            > 1e-12
-        )
-    )
-
-    array[valid_mask] = (
-        array[valid_mask]
-        * scale
-    )
-
-    return array
-
 
 def property_files_from_case_dataset(
     case_dataset: Dict[str, Any],
@@ -414,12 +372,8 @@ def attach_static_property_preview_data_from_files(
             expected_len=total,
         )
 
-        values = (
-            _scale_static_property_values(
-                values,
-                property_key=canonical_key,
-                null_value=null_value,
-            )
+        values = _raw_static_property_values(
+            values
         )
 
         internal_key = spec[
@@ -440,7 +394,8 @@ def attach_static_property_preview_data_from_files(
             "file_path": str(file_path),
             "label": spec["label"],
             "internal_key": internal_key,
-            "scale": spec["scale"],
+            "scale": 1.0,
+            "value_transform": "none",
             "unit": spec.get(
                 "unit",
                 "",
