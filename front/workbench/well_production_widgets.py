@@ -21,6 +21,7 @@ from .perforation_geometry import (
     merge_generated_fractures,
 )
 from .perforation_parser import parse_perforation_file
+from .well_completion_control_parser import parse_completion_control_file
 from .well_trajectory_dev_parser import (
     build_trajectory_payload,
     parse_dev_files,
@@ -1328,6 +1329,7 @@ class CompletionControlPage(QWidget):
         ("control_type", "控制方式"),
         ("bhp_bar", "井底压力 BHP (bar)"),
         ("connection_target", "连接对象 / Target"),
+        ("target_id", "连接对象 ID / Target ID"),
     )
     EVENT_COLUMNS = (
         ("date", "时间 / Day"),
@@ -1344,6 +1346,9 @@ class CompletionControlPage(QWidget):
         self.fields = tuple(fields or ())
         self.bindings = [(field, self) for field in self.fields]
         self._completions = []
+        self._import_payload = {}
+        self._trajectory_payload = {}
+        self._generated_fractures = []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 12, 16, 14)
@@ -1351,6 +1356,29 @@ class CompletionControlPage(QWidget):
         title_label = QLabel(title)
         title_label.setObjectName("parameterTitle")
         outer.addWidget(title_label)
+
+        file_group = QGroupBox("完井与井控文件")
+        file_layout = QVBoxLayout(file_group)
+        file_layout.setContentsMargins(12, 10, 12, 10)
+        file_layout.setSpacing(7)
+        file_row = QHBoxLayout()
+        file_row.addWidget(QLabel("文件名"))
+        self.file_path_edit = QLineEdit()
+        self.file_path_edit.setObjectName("completionControlFilePath")
+        self.file_path_edit.setReadOnly(True)
+        self.file_path_edit.setPlaceholderText(
+            "请选择精简完井与井控 CSV 文件")
+        file_row.addWidget(self.file_path_edit, 1)
+        self.import_button = QPushButton("导入 CSV...")
+        self.import_button.setObjectName("importCompletionControlButton")
+        self.import_button.clicked.connect(self.browse_file)
+        file_row.addWidget(self.import_button)
+        file_layout.addLayout(file_row)
+        self.file_summary_label = QLabel("尚未导入完井与井控文件")
+        self.file_summary_label.setObjectName("parameterDescription")
+        self.file_summary_label.setWordWrap(True)
+        file_layout.addWidget(self.file_summary_label)
+        outer.addWidget(file_group)
 
         metrics = QHBoxLayout()
         metrics.setSpacing(7)
@@ -1398,11 +1426,97 @@ class CompletionControlPage(QWidget):
         return table
 
     def set_values(self, values, module_key):
+        del module_key
+        source_values = values or {}
+        self._trajectory_payload = copy.deepcopy(
+            source_values.get("well_trajectory") or {})
+        self._generated_fractures = copy.deepcopy(list(
+            source_values.get("generated_hydraulic_fractures") or []))
+        self._import_payload = copy.deepcopy(
+            source_values.get("completion_control") or {})
         wells = (values or {}).get("wells") or {}
-        self._completions = copy.deepcopy(
-            list(wells.get("completions") or []))
+        imported_rows = self._import_payload.get("rows")
+        self._completions = copy.deepcopy(list(
+            imported_rows
+            if isinstance(imported_rows, list)
+            else wells.get("completions") or []))
+        self._render_source()
         self._update_metrics()
         self._render_tables()
+
+    @property
+    def loaded_count(self):
+        return len(self._completions)
+
+    def browse_file(self):
+        current_path = str(self._import_payload.get("source_path") or "")
+        initial_dir = (
+            os.path.dirname(current_path) if current_path else "")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择完井与井控文件",
+            initial_dir,
+            "完井与井控 CSV (*.csv);;所有文件 (*)",
+        )
+        if not path:
+            return False
+        if self._completions:
+            answer = QMessageBox.question(
+                self,
+                "替换当前完井与井控数据",
+                "导入文件将替换当前页面中的完井定义和调度记录，是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                return False
+        try:
+            self.load_file(path)
+        except (OSError, TypeError, ValueError, UnicodeError) as exc:
+            QMessageBox.warning(
+                self,
+                "完井与井控导入失败",
+                str(exc) or "完井与井控文件无法解析。",
+            )
+            return False
+        return True
+
+    def load_file(self, path):
+        payload = parse_completion_control_file(
+            path,
+            generated_fractures=self._generated_fractures,
+            trajectory_payload=self._trajectory_payload,
+        )
+        self._completions = copy.deepcopy(payload.get("rows") or [])
+        self._import_payload = copy.deepcopy({
+            key: value for key, value in payload.items()
+            if key != "rows"
+        })
+        self._render_source()
+        self._update_metrics()
+        self._render_tables()
+        self.values_changed.emit()
+        return copy.deepcopy(payload)
+
+    def _render_source(self):
+        path = str(self._import_payload.get("source_path") or "")
+        self.file_path_edit.setText(path)
+        self.file_path_edit.setToolTip(path)
+        summary = self._import_payload.get("summary") or {}
+        if not path:
+            self.file_summary_label.setText("尚未导入完井与井控文件")
+            return
+        warning_count = int(summary.get("warning_count") or 0)
+        warning_text = (
+            f"；{warning_count} 条关联提示"
+            if warning_count else "；全部记录校验通过")
+        self.file_summary_label.setText(
+            f"已导入 {int(summary.get('record_count') or 0)} 条记录："
+            f"PERF {int(summary.get('definition_count') or 0)}、"
+            f"OPEN {int(summary.get('open_count') or 0)}、"
+            f"SHUT {int(summary.get('shut_count') or 0)}、"
+            f"CONTROL {int(summary.get('control_count') or 0)}"
+            f"{warning_text}")
 
     def _update_metrics(self):
         counts = {key: 0 for key in ("PERF", "OPEN", "SHUT", "CONTROL")}
@@ -1464,9 +1578,20 @@ class CompletionControlPage(QWidget):
         elif key == "event":
             row[key] = _internal_event(text)
         elif key == "connection_target":
-            row[key] = _internal_connection(text)
+            target = _internal_connection(text)
+            row.update({
+                "target": target,
+                "connection_target": target,
+                "is_fractured": target in {
+                    "fracture", "matrix_and_fracture"},
+                "connect_matrix": target in {
+                    "matrix", "matrix_and_fracture"},
+                "connect_fracture": target in {
+                    "fracture", "matrix_and_fracture"},
+            })
         else:
             row[key] = _coerce_value(text, item.data(FIELD_VALUE_ROLE))
+        self._refresh_import_summary()
         self._update_metrics()
         self.values_changed.emit()
 
@@ -1482,9 +1607,16 @@ class CompletionControlPage(QWidget):
             "rw_m": None,
             "control_type": "BHP",
             "bhp_bar": None,
+            "target": "none",
+            "target_id": "",
             "connection_target": "none",
+            "is_fractured": False,
+            "connect_matrix": False,
+            "connect_fracture": False,
+            "frac_id": None,
         }
         self._completions.append(row)
+        self._refresh_import_summary()
         self._update_metrics()
         self._render_tables()
         target = self.definition_table if event == "PERF" else self.event_table
@@ -1502,17 +1634,157 @@ class CompletionControlPage(QWidget):
             if 0 <= source_index < len(self._completions):
                 self._completions.pop(source_index)
         if indexes:
+            self._refresh_import_summary()
             self._update_metrics()
             self._render_tables()
             self.values_changed.emit()
 
     def collect_values(self, values):
-        wells = dict(values.get("wells") or {})
-        wells["completions"] = copy.deepcopy(self._completions)
-        values["wells"] = wells
+        if self._completions:
+            self._refresh_import_summary()
+            if self._import_payload:
+                payload = copy.deepcopy(self._import_payload)
+                payload.setdefault(
+                    "schema_version", "completion_control_compact_v1")
+                values["completion_control"] = payload
+            else:
+                values.pop("completion_control", None)
+            values["wells"] = _wells_with_completion_control(
+                values.get("wells") or {},
+                values.get("well_trajectory") or self._trajectory_payload,
+                self._completions,
+            )
+        else:
+            values.pop("completion_control", None)
+            wells = dict(values.get("wells") or {})
+            if wells:
+                wells["completions"] = []
+                wells["summary"] = _completion_summary(
+                    wells.get("summary") or {}, [])
+                values["wells"] = wells
 
     def refresh_derived(self, values, module_key):
-        return None
+        del module_key
+        source_values = values or {}
+        self._trajectory_payload = copy.deepcopy(
+            source_values.get("well_trajectory") or {})
+        self._generated_fractures = copy.deepcopy(list(
+            source_values.get("generated_hydraulic_fractures") or []))
+
+    def _refresh_import_summary(self):
+        summary = _completion_file_summary(self._completions)
+        if self._import_payload:
+            previous_warning_count = int(
+                (self._import_payload.get("summary") or {}).get(
+                    "warning_count") or 0)
+            summary["warning_count"] = previous_warning_count
+            self._import_payload["summary"] = summary
+        self._render_source()
+
+
+def _completion_file_summary(rows):
+    counts = {event: 0 for event in ("PERF", "OPEN", "SHUT", "CONTROL")}
+    wells = set()
+    linked = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        event = str(row.get("event") or "").upper()
+        if event in counts:
+            counts[event] += 1
+        well_name = str(row.get("well_name") or "").strip()
+        if well_name:
+            wells.add(well_name)
+        if event == "PERF" and str(
+                row.get("generated_fracture_id") or "").strip():
+            linked += 1
+    return {
+        "record_count": sum(counts.values()),
+        "well_count": len(wells),
+        "definition_count": counts["PERF"],
+        "open_count": counts["OPEN"],
+        "shut_count": counts["SHUT"],
+        "control_count": counts["CONTROL"],
+        "linked_fracture_count": linked,
+        "warning_count": 0,
+    }
+
+
+def _completion_summary(existing, rows):
+    summary = dict(existing or {})
+    counts = _completion_file_summary(rows)
+    summary.update({
+        "completion_definition_count": counts["definition_count"],
+        "event_count": counts["record_count"],
+        "perf_event_count": counts["definition_count"],
+        "open_event_count": counts["open_count"],
+        "shut_event_count": counts["shut_count"],
+        "control_event_count": counts["control_count"],
+        "matrix_completion_count": sum(
+            1 for row in rows or []
+            if isinstance(row, dict)
+            and str(row.get("event") or "").upper() == "PERF"
+            and row.get("connect_matrix")
+        ),
+        "fracture_completion_count": sum(
+            1 for row in rows or []
+            if isinstance(row, dict)
+            and str(row.get("event") or "").upper() == "PERF"
+            and row.get("connect_fracture")
+        ),
+    })
+    return summary
+
+
+def _wells_with_completion_control(existing, trajectory, completions):
+    wells = copy.deepcopy(existing or {})
+    trajectory_wells = [
+        row for row in (trajectory or {}).get("wells") or []
+        if isinstance(row, dict)
+    ]
+    if trajectory_wells:
+        well_types = {}
+        for row in completions or []:
+            name = str(row.get("well_name") or "").strip()
+            well_type = str(row.get("well_type") or "").strip()
+            if name and well_type:
+                well_types.setdefault(name, well_type)
+        well_list = []
+        tracks = []
+        for well in trajectory_wells:
+            name = str(well.get("well_name") or "").strip()
+            track_rows = [
+                row for row in well.get("rows") or []
+                if isinstance(row, dict)
+            ]
+            md_values = [
+                float(row["md_m"]) for row in track_rows
+                if row.get("md_m") is not None
+            ]
+            well_list.append({
+                "well_name": name,
+                "well_type": well_types.get(name, "PRODUCER"),
+                "track_point_count": len(track_rows),
+                "md_min": min(md_values) if md_values else None,
+                "md_max": max(md_values) if md_values else None,
+            })
+            for point in track_rows:
+                payload = copy.deepcopy(point)
+                payload["well_name"] = name
+                tracks.append(payload)
+        wells.update({
+            "schema_version": "wells_v2_event_comp_id",
+            "well_list": well_list,
+            "tracks": tracks,
+        })
+    wells["completions"] = copy.deepcopy(list(completions or []))
+    summary = _completion_summary(wells.get("summary") or {}, completions)
+    if trajectory_wells:
+        summary["well_count"] = len(trajectory_wells)
+    elif wells.get("well_list"):
+        summary["well_count"] = len(wells.get("well_list") or [])
+    wells["summary"] = summary
+    return wells
 
 
 def _row_value(row, key):
