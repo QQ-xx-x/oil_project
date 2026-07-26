@@ -88,6 +88,28 @@ def derive_hydraulic_fractures(well_values):
         if str(row.get("fracture_id") or "").strip()
     }
     for row in generated:
+        well_name = str(row.get("well_name") or "").strip()
+        linked_rows = []
+        for candidate_id in (
+                row.get("fracture_id"),
+                row.get("comp_id"),
+                row.get("source_perforation_id")):
+            candidate_key = (
+                well_name, str(candidate_id or "").strip())
+            if all(candidate_key) and event_rows.get(candidate_key):
+                linked_rows = event_rows[candidate_key]
+                break
+        if linked_rows:
+            history = _event_history(linked_rows)
+            row["events"] = history
+            row["status"] = _current_status(history)
+            definition_dates = [
+                event.get("date") for event in history
+                if event.get("event") == "PERF"
+                and event.get("date") is not None
+            ]
+            if definition_dates:
+                row["definition_date"] = definition_dates[0]
         by_id[str(row.get("fracture_id") or "").strip()] = row
     records = list(by_id.values())
     records.sort(key=lambda item: (

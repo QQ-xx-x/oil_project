@@ -23,6 +23,11 @@ PVT_MODE_TABLE = "table"
 PVT_MODE_PARAMETERS = "parameters"
 PVT_TABLE_COLUMNS = (
     ("pressure_bar", "压力 P (bar)"),
+    ("bg", "体积系数 Bg"),
+    ("viscosity_cp", "气体黏度 μg (cP)"),
+)
+PVT_CALCULATED_COLUMNS = (
+    ("pressure_bar", "压力 P (bar)"),
     ("z", "偏差因子 Z"),
     ("bg", "体积系数 Bg"),
     ("viscosity_cp", "气体黏度 μg (cP)"),
@@ -85,6 +90,7 @@ def _normalize_pvt_header(text):
     normalized = normalized.replace("μ", "u").replace("µ", "u")
     aliases = {
         "p": "pressure_bar",
+        "pres": "pressure_bar",
         "pbar": "pressure_bar",
         "pressure": "pressure_bar",
         "pressurebar": "pressure_bar",
@@ -105,6 +111,7 @@ def _normalize_pvt_header(text):
         "气体体积系数": "bg",
         "气体体积系数bg": "bg",
         "ug": "viscosity_cp",
+        "visg": "viscosity_cp",
         "mug": "viscosity_cp",
         "viscosity": "viscosity_cp",
         "viscositycp": "viscosity_cp",
@@ -156,8 +163,10 @@ def parse_pvt_clipboard_table(text):
         header_keys = None
     if not matrix or not any(any(cell for cell in row) for row in matrix):
         raise ValueError("剪贴板中只有表头，没有 PVT 数据。")
-    if any(len(row) > len(PVT_TABLE_COLUMNS) for row in matrix):
-        raise ValueError("每行最多只能粘贴 P、Z、Bg、μg 四列数据。")
+    if any(len(row) > len(PVT_CALCULATED_COLUMNS) for row in matrix):
+        raise ValueError(
+            "每行最多只能粘贴 P、Bg、μg 三列数据；"
+            "旧版 P、Z、Bg、μg 四列也可兼容。")
     return matrix, header_keys
 
 
@@ -448,6 +457,7 @@ class PVTTablePage(_EditableFluidPage):
         self._table_cells = []
         self._generated_rows = []
         self._active_rows = []
+        self._available_chart_keys = []
         self._active_mode = PVT_MODE_PARAMETERS
         self._rendering_table = False
         self._loading_values = False
@@ -532,7 +542,7 @@ class PVTTablePage(_EditableFluidPage):
         layout.addLayout(actions)
 
         self.table_note = QLabel(
-            "从 Excel 复制 P、Z、Bg、μg 四列后，选中起始单元格按 Ctrl+V；"
+            "从 Excel 复制 P、Bg、μg 三列后，选中起始单元格按 Ctrl+V；"
             "支持中英文表头，也可双击单元格输入。")
         self.table_note.setObjectName("parameterDescription")
         self.table_note.setWordWrap(True)
@@ -651,10 +661,15 @@ class PVTTablePage(_EditableFluidPage):
             except (TypeError, ValueError, OverflowError):
                 rows = []
         if rows:
+            stored_columns = (
+                PVT_CALCULATED_COLUMNS
+                if self._active_mode == PVT_MODE_PARAMETERS
+                else PVT_TABLE_COLUMNS
+            )
             values["gas_pvt_table"] = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "source_mode": self._active_mode,
-                "columns": [key for key, _label in PVT_TABLE_COLUMNS],
+                "columns": [key for key, _label in stored_columns],
                 "rows": copy.deepcopy(rows),
             }
         else:
@@ -686,7 +701,7 @@ class PVTTablePage(_EditableFluidPage):
         self.data_table.set_paste_enabled(table_mode)
         if table_mode:
             self.table_note.setText(
-                "从 Excel 复制 P、Z、Bg、μg 四列后，选中起始单元格按 "
+                "从 Excel 复制 P、Bg、μg 三列后，选中起始单元格按 "
                 "Ctrl+V；支持中英文表头，也可双击单元格输入。")
             self._render_table_cells()
             self._update_table_preview()
@@ -845,7 +860,7 @@ class PVTTablePage(_EditableFluidPage):
                 continue
             if len(texts) < len(PVT_TABLE_COLUMNS) or not all(texts):
                 raise ValueError(
-                    f"PVT 表格第 {row_index} 行不完整，请填写 P、Z、Bg、μg。")
+                    f"PVT 表格第 {row_index} 行不完整，请填写 P、Bg、μg。")
             try:
                 numbers = [float(text) for text in texts]
             except ValueError as exc:
@@ -856,7 +871,7 @@ class PVTTablePage(_EditableFluidPage):
                     f"PVT 表格第 {row_index} 行必须填写有限数字。")
             if not all(value > 0.0 for value in numbers):
                 raise ValueError(
-                    f"PVT 表格第 {row_index} 行的 P、Z、Bg、μg 必须大于零。")
+                    f"PVT 表格第 {row_index} 行的 P、Bg、μg 必须大于零。")
             if previous_pressure is not None and numbers[0] <= previous_pressure:
                 raise ValueError(
                     f"PVT 表格第 {row_index} 行的压力必须严格大于上一行。")
@@ -879,7 +894,7 @@ class PVTTablePage(_EditableFluidPage):
             self._show_placeholder(message)
             return
         if not rows:
-            message = "请从 Excel 粘贴 P、Z、Bg、μg 四列数据。"
+            message = "请从 Excel 粘贴 P、Bg、μg 三列数据。"
             self.table_status.setText(message)
             self._show_placeholder(message)
         elif len(rows) == 1:
@@ -900,7 +915,14 @@ class PVTTablePage(_EditableFluidPage):
             self._show_placeholder("输入至少两行完整 PVT 数据后显示曲线。")
             return
         pressures = [float(row["pressure_bar"]) for row in valid_rows]
-        for key, _tab_title, y_label, color in self.CHART_SPECS:
+        available_chart_keys = []
+        for index, (key, _tab_title, y_label, color) in enumerate(
+                self.CHART_SPECS):
+            has_data = all(row.get(key) is not None for row in valid_rows)
+            self.chart_tabs.setTabVisible(index, has_data)
+            if not has_data:
+                continue
+            available_chart_keys.append(key)
             values = [float(row[key]) for row in valid_rows]
             chart = self._charts[key]
             figure = chart["figure"]
@@ -925,10 +947,19 @@ class PVTTablePage(_EditableFluidPage):
             chart["canvas"].draw_idle()
 
         self._active_rows = copy.deepcopy(valid_rows)
+        self._available_chart_keys = available_chart_keys
         self.metric_cards["source"].set_value(source)
         self.metric_cards["point_count"].set_value(str(len(valid_rows)))
         self.metric_cards["pressure_range"].set_value(
             f"{pressures[0]:.6g} – {pressures[-1]:.6g}")
+        current_index = self.chart_tabs.currentIndex()
+        if (current_index < 0
+                or self.CHART_SPECS[current_index][0]
+                not in self._available_chart_keys):
+            for index, (key, *_rest) in enumerate(self.CHART_SPECS):
+                if key in self._available_chart_keys:
+                    self.chart_tabs.setCurrentIndex(index)
+                    break
         self._update_current_metric_cards()
         self.chart_stack.setCurrentWidget(self.chart_tabs)
 
@@ -939,12 +970,17 @@ class PVTTablePage(_EditableFluidPage):
             return
         index = max(0, self.chart_tabs.currentIndex())
         key = self.CHART_SPECS[index][0]
+        if key not in self._available_chart_keys:
+            self.metric_cards["current_min"].set_value(None)
+            self.metric_cards["current_max"].set_value(None)
+            return
         values = [float(row[key]) for row in self._active_rows]
         self.metric_cards["current_min"].set_value(min(values))
         self.metric_cards["current_max"].set_value(max(values))
 
     def _show_placeholder(self, message):
         self._active_rows = []
+        self._available_chart_keys = []
         self.chart_placeholder.setText(
             str(message or "输入有效数据后显示 PVT 曲线。"))
         for card in self.metric_cards.values():
@@ -970,16 +1006,26 @@ class PVTTablePage(_EditableFluidPage):
         start_row = max(0, self.data_table.currentRow())
         start_column = max(0, self.data_table.currentColumn())
         if header_keys:
-            target_columns = [key_to_column[key] for key in header_keys]
+            target_columns = [
+                key_to_column.get(key) for key in header_keys
+            ]
         else:
             widest = max(len(row) for row in matrix)
-            if start_column + widest > len(PVT_TABLE_COLUMNS):
+            if widest == len(PVT_CALCULATED_COLUMNS):
+                if start_column != 0:
+                    QMessageBox.warning(
+                        self, "粘贴失败",
+                        "旧版 P、Z、Bg、μg 四列数据请从第一列开始粘贴。")
+                    return
+                target_columns = [0, None, 1, 2]
+            elif start_column + widest > len(PVT_TABLE_COLUMNS):
                 QMessageBox.warning(
                     self, "粘贴失败",
-                    "粘贴数据超出 P、Z、Bg、μg 四列，请重新选择起始单元格。")
+                    "粘贴数据超出 P、Bg、μg 三列，请重新选择起始单元格。")
                 return
-            target_columns = list(
-                range(start_column, start_column + widest))
+            else:
+                target_columns = list(
+                    range(start_column, start_column + widest))
 
         required_rows = start_row + len(matrix)
         if self.data_table.rowCount() <= required_rows:
@@ -992,6 +1038,8 @@ class PVTTablePage(_EditableFluidPage):
                         continue
                     row_index = start_row + row_offset
                     target_column = target_columns[source_column]
+                    if target_column is None:
+                        continue
                     item = self.data_table.item(row_index, target_column)
                     if item is None:
                         item = QTableWidgetItem()

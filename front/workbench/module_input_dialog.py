@@ -360,6 +360,13 @@ class ModuleInputDialog(QDialog):
                     f"已读取 {page.loaded_well_count} 口井、"
                     f"{page.loaded_count} 个轨迹点，等待应用")
             return
+        if (self.module_key == MODULE_WELL_PRODUCTION
+                and current_group == "completion_control"):
+            page = self.stack.currentWidget()
+            if isinstance(page, CompletionControlPage) and page.browse_file():
+                self.import_status.setText(
+                    f"已读取 {page.loaded_count} 条完井与井控记录，等待应用")
+            return
         if (self.module_key == MODULE_FRACTURE_SYSTEM
                 and current_group == "natural_fractures"):
             self._import_natural_fractures()

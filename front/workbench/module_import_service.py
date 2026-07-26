@@ -508,15 +508,20 @@ def validate_module_business_data(module_key, values):
                 numbers = {
                     key: _as_float(row.get(key))
                     for key in (
-                        "pressure_bar", "z", "bg", "viscosity_cp")
+                        "pressure_bar", "bg", "viscosity_cp")
                 }
+                if pvt_mode == "parameters":
+                    numbers["z"] = _as_float(row.get("z"))
                 if any(value is None for value in numbers.values()):
                     table_error = (
                         f"PVT 表格第 {row_index} 行包含无效数字。")
                     break
                 if any(value <= 0.0 for value in numbers.values()):
+                    required_labels = (
+                        "P、Z、Bg、μg"
+                        if pvt_mode == "parameters" else "P、Bg、μg")
                     table_error = (
-                        f"PVT 表格第 {row_index} 行的 P、Z、Bg、μg "
+                        f"PVT 表格第 {row_index} 行的 {required_labels} "
                         "必须大于零。")
                     break
                 pressure = numbers["pressure_bar"]
